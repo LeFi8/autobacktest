@@ -95,11 +95,12 @@ def calculate_psr_dsr(
             # Expected maximum of N standard normal variables approximation
             z_term_1 = norm.ppf(1.0 - 1.0 / effective_trials)
             z_term_2 = norm.ppf(1.0 - 1.0 / (effective_trials * np.e))
-            # Handle infinity bounds in ppf
+            # Handle infinity bounds in ppf using Extreme Value Theory (EVT)
+            # asymptotic approximation
             if np.isinf(z_term_1):
-                z_term_1 = 3.0
+                z_term_1 = np.sqrt(2.0 * np.log(effective_trials))
             if np.isinf(z_term_2):
-                z_term_2 = 2.0
+                z_term_2 = np.sqrt(2.0 * np.log(effective_trials * np.e))
 
             max_z = (1.0 - euler_gamma) * z_term_1 + euler_gamma * z_term_2
             sr0 = sigma_sr * max_z

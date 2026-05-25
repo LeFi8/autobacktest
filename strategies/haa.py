@@ -2,6 +2,7 @@
 
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 
@@ -26,8 +27,11 @@ def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFra
     )
     filter_ticker = config.get("filter_ticker", "TIP")
 
-    # Resample daily prices to end-of-month prices for monthly rebalancing
-    monthly_prices = prices.resample("ME").last()
+    # Extract daily prices of actual last trading days for each month
+    last_trading_days = prices.groupby(prices.index.to_period("M")).apply(
+        lambda x: x.index[-1]
+    )
+    monthly_prices = prices.loc[last_trading_days]
 
     # Calculate momentum score:
     # 12 * (p0/p1 - 1) + 4 * (p0/p3 - 1) + 2 * (p0/p6 - 1) + (p0/p12 - 1)
@@ -41,12 +45,12 @@ def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFra
         p6 = monthly_prices.iloc[i - 6]
         p12 = monthly_prices.iloc[i - lookback]
 
-        # Calculate scores safely preventing division by zero
+        # Calculate scores safely preventing division by zero or NaN cascades
         score = (
-            12.0 * (p0 / p1 - 1.0)
-            + 4.0 * (p0 / p3 - 1.0)
-            + 2.0 * (p0 / p6 - 1.0)
-            + 1.0 * (p0 / p12 - 1.0)
+            12.0 * (p0.div(p1.replace(0.0, np.nan)).fillna(1.0) - 1.0)
+            + 4.0 * (p0.div(p3.replace(0.0, np.nan)).fillna(1.0) - 1.0)
+            + 2.0 * (p0.div(p6.replace(0.0, np.nan)).fillna(1.0) - 1.0)
+            + 1.0 * (p0.div(p12.replace(0.0, np.nan)).fillna(1.0) - 1.0)
         )
         mom_scores.loc[date] = score
 

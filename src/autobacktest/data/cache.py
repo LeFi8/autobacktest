@@ -101,7 +101,11 @@ class CachedDataProvider(DataProvider):
                     cached_df.to_parquet(cache_file)
                     ticker_df = cached_df.loc[start_dt:end_dt]
                 else:
-                    ticker_df = pd.DataFrame()
+                    ticker_df = (
+                        cached_df.loc[start_dt:end_dt]
+                        if not cached_df.empty
+                        else pd.DataFrame()
+                    )
 
             # Align prices
             if not ticker_df.empty:

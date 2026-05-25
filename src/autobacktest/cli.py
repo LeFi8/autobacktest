@@ -133,6 +133,11 @@ def evaluate(
 
     module = importlib.util.module_from_spec(spec)
     try:
+        # Security log warning for execution of dynamic third-party strategy files
+        typer.echo(
+            "WARNING: Dynamically executing external python module: "
+            f"{strategy_path.resolve()}"
+        )
         spec.loader.exec_module(module)
     except Exception as e:
         typer.echo(f"Error: Failed to execute strategy file module: {e}")
