@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 
 import pandas as pd
+
 from autobacktest.data.base import DataProvider
 from autobacktest.data.cache import CachedDataProvider
 

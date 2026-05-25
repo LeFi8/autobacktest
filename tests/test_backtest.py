@@ -2,6 +2,7 @@
 
 import numpy as np
 import pandas as pd
+
 from autobacktest.evaluator.backtest import run_vectorized_backtest
 from autobacktest.evaluator.costs import calculate_turnover_and_costs
 
