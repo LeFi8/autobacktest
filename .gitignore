@@ -1,0 +1,33 @@
+# Python virtual environments
+.venv/
+venv/
+ENV/
+
+# Python caching & bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Project caches & data
+data/cache/
+runs/
+*.parquet
+
+# OS specific files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Environments & secrets
+.env
+.env.*
+
+tmp/
