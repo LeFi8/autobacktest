@@ -62,3 +62,18 @@ strict = true
 warn_unreachable = true
 pretty = true
 show_error_codes = true
+
+[[tool.mypy.overrides]]
+module = [
+    "yfinance.*",
+    "litellm.*",
+    "pandas_market_calendars.*",
+    "scipy.*",
+    "joblib.*",
+    "git.*",
+    "typer.*",
+    "yaml.*",
+    "pandas.*",
+    "numpy.*",
+]
+ignore_missing_imports = true
