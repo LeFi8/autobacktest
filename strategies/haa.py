@@ -37,7 +37,8 @@ def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFra
     # 12 * (p0/p1 - 1) + 4 * (p0/p3 - 1) + 2 * (p0/p6 - 1) + (p0/p12 - 1)
     mom_scores = pd.DataFrame(index=monthly_prices.index, columns=prices.columns)
 
-    for i in range(lookback, len(monthly_prices)):
+    start_idx = max(12, lookback)
+    for i in range(start_idx, len(monthly_prices)):
         date = monthly_prices.index[i]
         p0 = monthly_prices.iloc[i]
         p1 = monthly_prices.iloc[i - 1]
@@ -66,19 +67,22 @@ def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFra
 
         if tip_score > 0.0:
             # Risk-On: Invest in offensive asset with the highest positive score
-            off_scores = scores_t[offensive_universe].dropna()
+            valid_off = [t for t in offensive_universe if t in scores_t.index]
+            off_scores = scores_t[valid_off].dropna()
             if not off_scores.empty and off_scores.max() > 0.0:
                 best_off = off_scores.idxmax()
                 weights.loc[date, best_off] = 1.0
             else:
                 # Fallback to defensive if no offensive score is positive
-                def_scores = scores_t[defensive_universe].dropna()
+                valid_def = [t for t in defensive_universe if t in scores_t.index]
+                def_scores = scores_t[valid_def].dropna()
                 if not def_scores.empty:
                     best_def = def_scores.idxmax()
                     weights.loc[date, best_def] = 1.0
         else:
             # Risk-Off: Invest in defensive asset with the highest score
-            def_scores = scores_t[defensive_universe].dropna()
+            valid_def = [t for t in defensive_universe if t in scores_t.index]
+            def_scores = scores_t[valid_def].dropna()
             if not def_scores.empty:
                 best_def = def_scores.idxmax()
                 weights.loc[date, best_def] = 1.0

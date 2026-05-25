@@ -123,7 +123,7 @@ def evaluate(
 
     # Load YAML config
     with config_path.open() as f:
-        config = yaml.safe_load(f)
+        config = yaml.safe_load(f) or {}
 
     # Dynamically import strategy signals generator
     spec = importlib.util.spec_from_file_location(strategy_name, strategy_path)

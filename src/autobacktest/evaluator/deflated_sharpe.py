@@ -25,7 +25,7 @@ def calculate_effective_trials(
         return int(max(returns_matrix.shape[1], 1))
 
     # Compute correlation matrix
-    corr = returns_matrix.corr().fillna(0.0)
+    corr = returns_matrix.corr().fillna(0.0).clip(-1.0, 1.0)
 
     # Convert correlation to distance matrix: d_ij = sqrt(0.5 * (1 - rho_ij))
     dist = np.sqrt(0.5 * (1.0 - corr))
@@ -87,7 +87,7 @@ def calculate_psr_dsr(
 
     # Calculate expected maximum Sharpe ratio under the null hypothesis (SR0)
     sr0 = 0.0
-    if effective_trials > 1 and historical_sharpes:
+    if effective_trials > 1 and historical_sharpes and len(historical_sharpes) > 1:
         # Calculate standard deviation of Sharpes across trials
         sigma_sr = float(np.std(historical_sharpes, ddof=1))
         if sigma_sr > 0.0:
@@ -109,7 +109,7 @@ def calculate_psr_dsr(
     # Var(SR) = (1 - skew*SR + (kurt-1)/4 * SR^2) / (T - 1)
     # Adjusted to daily basis for the test statistic denominator
     num_var = 1.0 - skew * daily_sharpe + (abs_kurt - 1.0) / 4.0 * (daily_sharpe**2)
-    var_sharpe = num_var / (n_days - 1)
+    var_sharpe = max(num_var, 1e-8) / (n_days - 1)
     std_sharpe = np.sqrt(var_sharpe)
 
     # Convert SR0 to daily basis for comparison

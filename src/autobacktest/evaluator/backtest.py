@@ -27,8 +27,8 @@ def run_vectorized_backtest(
             pd.DataFrame(),
         )
 
-    # Reindex weights to align with all price dates
-    daily_weights = weights.reindex(prices.index)
+    # Reindex weights to align with all price dates and columns
+    daily_weights = weights.reindex(index=prices.index, columns=prices.columns)
 
     # Rebalance weights forward-fill (holding positions until next rebalance)
     # Fill pre-first-rebalance NaNs with 0.0

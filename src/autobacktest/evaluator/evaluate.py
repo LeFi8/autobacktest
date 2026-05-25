@@ -43,9 +43,11 @@ def calculate_information_ratio(
     if aligned.empty:
         return 0.0
     active_returns = aligned.iloc[:, 0] - aligned.iloc[:, 1]
+    if len(active_returns) < 2:
+        return 0.0
     mean_active = active_returns.mean()
     tracking_error = active_returns.std(ddof=1)
-    if tracking_error == 0.0:
+    if tracking_error == 0.0 or np.isnan(tracking_error):
         return 0.0
     return float((mean_active / tracking_error) * np.sqrt(252))
 
@@ -71,8 +73,8 @@ def generate_window_report(
     )
 
     # Standard performance metrics
-    mean_ret = net_returns.mean()
-    std_ret = net_returns.std(ddof=1)
+    mean_ret = net_returns.mean() if not net_returns.empty else 0.0
+    std_ret = net_returns.std(ddof=1) if len(net_returns) >= 2 else 0.0
 
     ann_ret = 0.0
     if not net_returns.empty:
@@ -129,6 +131,10 @@ def evaluate_strategy(
 
     if prices.empty:
         raise ValueError("No price history returned for requested strategy universe.")
+    if benchmark_prices.empty or benchmark_ticker not in benchmark_prices.columns:
+        raise ValueError(
+            f"No price history returned for benchmark ticker: {benchmark_ticker}"
+        )
 
     # Calculate daily percentage returns of the benchmark
     bench_returns = benchmark_prices[benchmark_ticker].pct_change().fillna(0.0)
