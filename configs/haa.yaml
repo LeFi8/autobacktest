@@ -1,0 +1,21 @@
+# Historical Asset Allocation (HAA) Configuration
+universe:
+  - SPY  # US Large Cap
+  - IWM  # US Small Cap
+  - QQQ  # US Tech
+  - VGK  # Europe
+  - EWJ  # Japan
+  - VWO  # Emerging Markets
+  - VNQ  # US Real Estate
+  - DBC  # Commodities
+  - IEF  # US 10Y Treasury (Defensive)
+  - BIL  # US 1-3M Treasury (Defensive)
+  - TIP  # Inflation Protected Bonds (Filter)
+
+# Benchmark index
+benchmark: SPY
+
+# Strategy parameterization
+momentum_lookback: 12
+max_drawdown_limit: 0.15
+turnover_limit: 1.5

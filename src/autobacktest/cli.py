@@ -1,6 +1,12 @@
 """Command-line interface for AutoBacktest."""
 
+import importlib.util
+from pathlib import Path
+
 import typer
+import yaml
+
+from autobacktest.evaluator.evaluate import evaluate_strategy
 
 app = typer.Typer(
     name="autobacktest",
@@ -76,6 +82,82 @@ def reset(
 ) -> None:
     """Clean the run directory and reset target strategies to baseline."""
     typer.echo(f"TODO: reset subcommand (strategy={strategy})")
+
+
+@app.command()
+def evaluate(
+    strategy: str = typer.Option(
+        ...,
+        "--strategy",
+        "-s",
+        help="Path to strategy file (e.g., strategies/haa.py).",
+    ),
+    start_date: str = typer.Option(
+        "2015-01-01",
+        "--start-date",
+        help="Start date YYYY-MM-DD for backtesting.",
+    ),
+    end_date: str = typer.Option(
+        "2026-01-01",
+        "--end-date",
+        help="End date YYYY-MM-DD for backtesting.",
+    ),
+) -> None:
+    """Run walk-forward and holdout evaluation on a target strategy file."""
+    strategy_path = Path(strategy)
+    if not strategy_path.exists():
+        typer.echo(f"Error: Strategy file not found at {strategy_path}")
+        raise typer.Exit(code=1)
+
+    strategy_name = strategy_path.stem
+    config_path = Path("configs") / f"{strategy_name}.yaml"
+    if not config_path.exists():
+        # Fallback to strategy_path's parent relative directory configs
+        config_path = (
+            strategy_path.resolve().parent.parent / "configs" / f"{strategy_name}.yaml"
+        )
+
+    if not config_path.exists():
+        typer.echo(f"Error: Strategy config file not found at {config_path}")
+        raise typer.Exit(code=1)
+
+    # Load YAML config
+    with config_path.open() as f:
+        config = yaml.safe_load(f) or {}
+
+    # Dynamically import strategy signals generator
+    spec = importlib.util.spec_from_file_location(strategy_name, strategy_path)
+    if spec is None or spec.loader is None:
+        typer.echo(f"Error: Failed to construct loader for {strategy_path}")
+        raise typer.Exit(code=1)
+
+    module = importlib.util.module_from_spec(spec)
+    try:
+        # Security log warning for execution of dynamic third-party strategy files
+        typer.echo(
+            "WARNING: Dynamically executing external python module: "
+            f"{strategy_path.resolve()}"
+        )
+        spec.loader.exec_module(module)
+    except Exception as e:
+        typer.echo(f"Error: Failed to execute strategy file module: {e}")
+        raise typer.Exit(code=1) from e
+
+    if not hasattr(module, "generate_signals"):
+        typer.echo("Error: Strategy module must export a generate_signals function.")
+        raise typer.Exit(code=1)
+
+    typer.echo(f"Initializing evaluation of strategy: {strategy_name}...")
+    report_data = evaluate_strategy(
+        strategy_name,
+        module.generate_signals,
+        config,
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+    typer.echo("--- Evaluation Report ---")
+    typer.echo(report_data.to_json())
 
 
 def main() -> None:

@@ -1,1 +1,1 @@
-"""Test suite for AutoBacktest."""
+"""Unit tests for the AutoBacktest package."""
