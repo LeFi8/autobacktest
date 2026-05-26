@@ -69,62 +69,64 @@ def run_optimization(
     run_id = f"{strategy_name}-{datetime.now(tz=UTC):%Y%m%d-%H%M%S}"
     branch = git_ledger.create_run_branch(run_id)
 
-    # 4. Setup ledger and event log
+    # 4. Setup ledger and event log — wrapped in try/finally so they are always
+    # closed even if baseline evaluation or any loop iteration raises.
     run_dir.mkdir(parents=True, exist_ok=True)
     ledger = LedgerStore(run_dir / "ledger.db")
     event_log = EventLog(run_dir / run_id / "events.jsonl")
-
-    # 5. Load baseline config
-    config_obj = StrategyConfig.from_yaml(cfg_path)
-    config = config_obj.model_dump()
-
-    # 6. Record run metadata
-    dataset_hash = _compute_dataset_hash(config)
-    ledger.create_run(
-        run_id=run_id,
-        strategy_name=strategy_name,
-        program_path=str(program_path),
-        provider=provider.provider_name,
-        model=getattr(provider, "model", "unknown"),
-        branch=branch,
-        dataset_hash=dataset_hash,
-        iterations=iterations,
-        started_at=datetime.now(tz=UTC).isoformat(),
-    )
-
-    # 7. Baseline evaluation (iteration 0 — not written to events.jsonl)
-    baseline_fn = _load_signals(strat_path)
-    baseline_report, baseline_returns = evaluate_strategy_detailed(
-        strategy_name, baseline_fn, config, start_date=start_date, end_date=end_date
-    )
-    _deflate(baseline_report, baseline_returns, ledger)
-    incumbent = baseline_report
-    incumbent_returns = baseline_returns
-    baseline_sha: str | None = git_ledger._repo.head.commit.hexsha
-    ledger.record_attempt(
-        run_id=run_id,
-        iteration=0,
-        strategy_name=strategy_name,
-        dataset_hash=dataset_hash,
-        config_yaml=cfg_path.read_text(encoding="utf-8"),
-        observed_sharpe=baseline_report.observed_sharpe,
-        deflated_sharpe=baseline_report.deflated_sharpe,
-        target_metric=target_metric.value,
-        target_metric_value=_get_metric_value(baseline_report, target_metric),
-        holdout_max_drawdown=baseline_report.holdout_metrics.max_drawdown,
-        holdout_turnover=baseline_report.holdout_metrics.turnover,
-        regime_passed=baseline_report.regime_passed,
-        accepted=True,
-        committed=True,
-        commit_sha=baseline_sha,
-        rejection_reason=None,
-        report_json=baseline_report.to_json(),
-        holdout_returns=baseline_returns,
-    )
-
-    # 8. Optimization loop
-    n_committed = 0
+    incumbent_returns = pd.Series(dtype=float)  # set before try so finally can read it
+    incumbent: EvaluationReport  # assigned during baseline below
     try:
+        # 5. Load baseline config
+        config_obj = StrategyConfig.from_yaml(cfg_path)
+        config = config_obj.model_dump()
+
+        # 6. Record run metadata
+        dataset_hash = _compute_dataset_hash(config)
+        ledger.create_run(
+            run_id=run_id,
+            strategy_name=strategy_name,
+            program_path=str(program_path),
+            provider=provider.provider_name,
+            model=getattr(provider, "model", "unknown"),
+            branch=branch,
+            dataset_hash=dataset_hash,
+            iterations=iterations,
+            started_at=datetime.now(tz=UTC).isoformat(),
+        )
+
+        # 7. Baseline evaluation (iteration 0 — not written to events.jsonl)
+        baseline_fn = _load_signals(strat_path)
+        baseline_report, baseline_returns = evaluate_strategy_detailed(
+            strategy_name, baseline_fn, config, start_date=start_date, end_date=end_date
+        )
+        _deflate(baseline_report, baseline_returns, ledger)
+        incumbent = baseline_report
+        incumbent_returns = baseline_returns
+        baseline_sha: str | None = git_ledger._repo.head.commit.hexsha
+        ledger.record_attempt(
+            run_id=run_id,
+            iteration=0,
+            strategy_name=strategy_name,
+            dataset_hash=dataset_hash,
+            config_yaml=cfg_path.read_text(encoding="utf-8"),
+            observed_sharpe=baseline_report.observed_sharpe,
+            deflated_sharpe=baseline_report.deflated_sharpe,
+            target_metric=target_metric.value,
+            target_metric_value=_get_metric_value(baseline_report, target_metric),
+            holdout_max_drawdown=baseline_report.holdout_metrics.max_drawdown,
+            holdout_turnover=baseline_report.holdout_metrics.turnover,
+            regime_passed=baseline_report.regime_passed,
+            accepted=True,
+            committed=True,
+            commit_sha=baseline_sha,
+            rejection_reason=None,
+            report_json=baseline_report.to_json(),
+            holdout_returns=baseline_returns,
+        )
+
+        # 8. Optimization loop
+        n_committed = 0
         for k in range(1, iterations + 1):
             event: dict[str, object] = {
                 "iteration": k,
@@ -175,12 +177,11 @@ def run_optimization(
 
             event["validation"] = {"passed": True}
 
-            # 8d. Apply to real files
-            strat_path.write_text(edit.strategy_code, encoding="utf-8")
-            cfg_path.write_text(edit.config_yaml, encoding="utf-8")
-
-            # 8e. Evaluate
+            # 8d. Apply to real files and 8e. Evaluate — both inside the same
+            # try/except so a write error also triggers a clean rollback.
             try:
+                strat_path.write_text(edit.strategy_code, encoding="utf-8")
+                cfg_path.write_text(edit.config_yaml, encoding="utf-8")
                 new_config_obj = StrategyConfig.from_yaml(cfg_path)
                 new_config = new_config_obj.model_dump()
                 candidate_fn = _load_signals(strat_path)
@@ -326,7 +327,10 @@ def _load_signals(path: Path) -> Any:
     try:
         spec.loader.exec_module(module)
     finally:
-        sys.modules.pop(module_name, None)
+        # Only evict if the module registered itself — avoids clobbering a
+        # legitimate stdlib/third-party module that shares the same name.
+        if sys.modules.get(module_name) is module:
+            sys.modules.pop(module_name)
     if not hasattr(module, "generate_signals"):
         raise AttributeError(f"Strategy module {path} has no generate_signals function")
     return module.generate_signals
