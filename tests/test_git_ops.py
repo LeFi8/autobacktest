@@ -3,13 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-import git  # type: ignore[import-untyped]
+import git
 
 from autobacktest.ledger.git_ops import GitLedger
 
 
 @pytest.fixture
-def repo_setup(tmp_path: Path) -> tuple[git.Repo, Path]:  # type: ignore[import-untyped]
+def repo_setup(tmp_path: Path) -> tuple[git.Repo, Path]:
     # Create strategies/ and configs/ dirs
     strat_dir = tmp_path / "strategies"
     cfg_dir = tmp_path / "configs"
