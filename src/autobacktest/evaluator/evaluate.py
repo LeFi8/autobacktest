@@ -1,5 +1,7 @@
 """Orchestration of walk-forward and holdout backtest evaluations."""
 
+from __future__ import annotations
+
 import hashlib
 from typing import Any
 
@@ -112,14 +114,17 @@ def generate_window_report(
     )
 
 
-def evaluate_strategy(
+def evaluate_strategy_detailed(
     strategy_name: str,
     generate_signals_fn: Any,
     config: dict[str, Any] | StrategyConfig,
     start_date: str = "2015-01-01",
     end_date: str = "2026-01-01",
-) -> EvaluationReport:
-    """Run full deterministic walk-forward & holdout evaluation lifecycle."""
+) -> tuple[EvaluationReport, pd.Series[Any]]:
+    """Run full deterministic walk-forward & holdout evaluation lifecycle.
+
+    Returns a tuple of (EvaluationReport, holdout_net_returns Series).
+    """
     if isinstance(config, StrategyConfig):
         flat_config = config.to_flat_dict()
     else:
@@ -203,8 +208,9 @@ def evaluate_strategy(
     effective_trials = int(flat_config.get("effective_trials", 1))
     historical_sharpes = flat_config.get("historical_sharpes")
 
+    holdout_net_returns = net_returns.loc[holdout_start:holdout_end]
     dsr = calculate_psr_dsr(
-        net_returns.loc[holdout_start:holdout_end],
+        holdout_net_returns,
         historical_sharpes=historical_sharpes,
         effective_trials=effective_trials,
     )
@@ -237,4 +243,21 @@ def evaluate_strategy(
 
     gate_accept(report, baseline=None, config=flat_config)
 
+    return report, holdout_net_returns
+
+
+def evaluate_strategy(
+    strategy_name: str,
+    generate_signals_fn: Any,
+    config: dict[str, Any] | StrategyConfig,
+    start_date: str = "2015-01-01",
+    end_date: str = "2026-01-01",
+) -> EvaluationReport:
+    """Run full deterministic walk-forward & holdout evaluation lifecycle.
+
+    Thin wrapper around evaluate_strategy_detailed that returns only the report.
+    """
+    report, _ = evaluate_strategy_detailed(
+        strategy_name, generate_signals_fn, config, start_date, end_date
+    )
     return report
