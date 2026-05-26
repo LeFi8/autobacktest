@@ -46,10 +46,24 @@ class MockProvider(LLMProvider):
         if self.response is not None:
             return self.response
 
-        # Identity default: return strategy code and config unchanged
+        # Identity default: return strategy code with a mock comment to
+        # represent the prompt edit and keep it valid python code,
+        # unless program_text is "none" or empty.
+        edited_code = context.strategy_code
+        prompt_comment = (
+            context.program_text.strip().replace("\n", " ")
+            if context.program_text
+            else ""
+        )
+        if prompt_comment and prompt_comment != "none":
+            edited_code += f"\n# Mock edit for: {prompt_comment}\n"
+            reasoning = f"Mock transformation reflecting prompt: {prompt_comment}"
+        else:
+            reasoning = "Identity transformation: no edits made."
+
         return AgentEdit(
-            strategy_code=context.strategy_code,
+            strategy_code=edited_code,
             config_yaml=context.config_yaml,
-            reasoning="Identity transformation: no edits made.",
+            reasoning=reasoning,
             raw_response="{}",
         )

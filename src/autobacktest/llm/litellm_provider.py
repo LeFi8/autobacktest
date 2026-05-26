@@ -74,8 +74,26 @@ class LiteLLMProvider(LLMProvider):
             if not content:
                 raise ValueError("LLM returned an empty or invalid content response.")
 
+            # Extract clean JSON block if prose-wrapped
+            clean_content = content.strip()
+            if clean_content.startswith("```json"):
+                clean_content = clean_content[7:]
+                if clean_content.endswith("```"):
+                    clean_content = clean_content[:-3]
+            elif clean_content.startswith("```"):
+                clean_content = clean_content[3:]
+                if clean_content.endswith("```"):
+                    clean_content = clean_content[:-3]
+            clean_content = clean_content.strip()
+
+            if not (clean_content.startswith("{") and clean_content.endswith("}")):
+                start_idx = clean_content.find("{")
+                end_idx = clean_content.rfind("}")
+                if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+                    clean_content = clean_content[start_idx : end_idx + 1]
+
             # Parse using Pydantic validation
-            parsed_response = AgentEditResponse.model_validate_json(content)
+            parsed_response = AgentEditResponse.model_validate_json(clean_content)
 
             return AgentEdit(
                 strategy_code=parsed_response.strategy_code,

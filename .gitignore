@@ -31,3 +31,9 @@ Thumbs.db
 .env.*
 
 tmp/
+
+# Candidate files from LLM driver
+*.candidate
+*.py.candidate
+*.yaml.candidate
+

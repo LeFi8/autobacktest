@@ -248,20 +248,18 @@ def llm_test(
 
     typer.echo(f"Reasoning:\n{edit.reasoning}\n")
 
-    # 4. Write Candidates
+    # 4. Write Temporary Files for Validation
     candidate_py_path = strategies_dir / f"{strategy}.py.candidate"
     candidate_yaml_path = configs_dir / f"{strategy}.yaml.candidate"
     temp_py_path = strategies_dir / f"{strategy}_candidate.py"
     temp_yaml_path = configs_dir / f"{strategy}_candidate.yaml"
 
     try:
-        candidate_py_path.write_text(edit.strategy_code, encoding="utf-8")
-        candidate_yaml_path.write_text(edit.config_yaml, encoding="utf-8")
         # Temporary files for validator preflight
         temp_py_path.write_text(edit.strategy_code, encoding="utf-8")
         temp_yaml_path.write_text(edit.config_yaml, encoding="utf-8")
     except Exception as e:
-        typer.echo(f"Error writing candidate/temp files: {e}")
+        typer.echo(f"Error writing temporary files for validation: {e}")
         raise typer.Exit(code=1) from e
 
     # 5. Run Preflight
@@ -277,8 +275,14 @@ def llm_test(
         if temp_yaml_path.exists():
             temp_yaml_path.unlink()
 
-    # 6. Print Results
+    # 6. Print Results and Persist Candidate on Success
     if res.passed:
+        try:
+            candidate_py_path.write_text(edit.strategy_code, encoding="utf-8")
+            candidate_yaml_path.write_text(edit.config_yaml, encoding="utf-8")
+        except Exception as e:
+            typer.echo(f"Error writing candidate files: {e}")
+            raise typer.Exit(code=1) from e
         typer.echo("SUCCESS: Candidate passed all preflight validation checks!")
         typer.echo(f"Candidate Python: {candidate_py_path}")
         typer.echo(f"Candidate Config: {candidate_yaml_path}")

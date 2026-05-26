@@ -267,26 +267,29 @@ def preflight(
 
     module = import_res.detail
 
-    # 4. Signature check
-    sig_ok, sig_err = validate_signature(module)
-    if not sig_ok:
-        return ValidationResult(
-            passed=False,
-            error_code=ValidationError.SIGNATURE_MISMATCH,
-            detail=sig_err,
-        )
+    try:
+        # 4. Signature check
+        sig_ok, sig_err = validate_signature(module)
+        if not sig_ok:
+            return ValidationResult(
+                passed=False,
+                error_code=ValidationError.SIGNATURE_MISMATCH,
+                detail=sig_err,
+            )
 
-    # 5. Smoke test with 756d synthetic prices
-    smoke_res = _check_smoke(module, config_model)
-    if not smoke_res.passed:
-        return smoke_res
+        # 5. Smoke test with 756d synthetic prices
+        smoke_res = _check_smoke(module, config_model)
+        if not smoke_res.passed:
+            return smoke_res
 
-    # 6. Lookahead sniff test
-    lookahead_res = _check_lookahead(module, config_model)
-    if not lookahead_res.passed:
-        return lookahead_res
+        # 6. Lookahead sniff test
+        lookahead_res = _check_lookahead(module, config_model)
+        if not lookahead_res.passed:
+            return lookahead_res
 
-    return ValidationResult(passed=True)
+        return ValidationResult(passed=True)
+    finally:
+        sys.modules.pop(strategy_name, None)
 
 
 def _get_attribute_chain(node: ast.AST) -> str | None:
