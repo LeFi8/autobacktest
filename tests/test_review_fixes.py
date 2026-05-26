@@ -231,3 +231,28 @@ def test_gate_nan_error_message_formatting() -> None:
     res_nan = gate_accept(report, baseline=None, dd_limit=0.15)
     assert not res_nan.accepted
     assert "drawdown is NaN" in res_nan.reason
+
+
+def test_memory_limit_sandbox(mock_dirs: tuple[Path, Path]) -> None:
+    """Verifies that strategy allocating too much memory gets blocked."""
+    strat_dir, conf_dir = mock_dirs
+    strat_file = strat_dir / "oom_strat.py"
+    strat_file.write_text(
+        """
+import pandas as pd
+def generate_signals(prices: pd.DataFrame, config: dict) -> pd.DataFrame:
+    # Attempt to allocate ~2GB of memory (over 1GB limit)
+    # 250,000,000 floats * 8 bytes = 2GB
+    x = [0.0] * 250000000
+    return pd.DataFrame()
+""",
+        encoding="utf-8",
+    )
+    conf_file = conf_dir / "oom_strat.yaml"
+    conf_file.write_text("universe: [SPY]\n", encoding="utf-8")
+
+    res = preflight("oom_strat", strat_dir, conf_dir)
+    assert not res.passed
+    assert res.error_code == ValidationError.SMOKE_TEST_FAILED
+    allowed_terms = ("memory limit", "timed out", "exception", "failed")
+    assert any(term in res.detail for term in allowed_terms)

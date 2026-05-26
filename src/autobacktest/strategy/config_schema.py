@@ -76,3 +76,13 @@ class StrategyConfig(BaseModel):
         with path.open("r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
         return cls.model_validate(data)
+
+    def to_flat_dict(self) -> dict[str, Any]:
+        """Return a flat dictionary representing the configuration."""
+        res = self.model_dump()
+        params = res.get("params", {})
+        if isinstance(params, dict):
+            for k, v in params.items():
+                if k not in res:
+                    res[k] = v
+        return res

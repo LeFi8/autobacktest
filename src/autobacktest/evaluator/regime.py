@@ -67,7 +67,8 @@ def evaluate_stress_regimes(net_returns: pd.Series) -> tuple[dict[str, float], b
     if not any_overlap:
         logger.warning(
             "Strategy backtest period does not overlap with ANY crash regimes. "
-            "Regimes verdict is trivially True."
+            "Regimes verdict is marked as failed."
         )
+        passed = False
 
     return drawdowns, passed

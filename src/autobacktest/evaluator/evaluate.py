@@ -119,8 +119,22 @@ def evaluate_strategy(
     end_date: str = "2026-01-01",
 ) -> EvaluationReport:
     """Run full deterministic walk-forward & holdout evaluation lifecycle."""
-    tickers = config.get("universe", [])
-    benchmark_ticker = config.get("benchmark", "SPY")
+    from autobacktest.strategy.config_schema import StrategyConfig
+
+    if isinstance(config, StrategyConfig):
+        flat_config = config.to_flat_dict()
+    elif isinstance(config, dict):
+        flat_config = dict(config)
+        params = flat_config.get("params", {})
+        if isinstance(params, dict):
+            for k, v in params.items():
+                if k not in flat_config:
+                    flat_config[k] = v
+    else:
+        flat_config = config
+
+    tickers = flat_config.get("universe", [])
+    benchmark_ticker = flat_config.get("benchmark", "SPY")
 
     # Fetch daily price series
     raw_provider = YFinanceProvider()
@@ -140,15 +154,7 @@ def evaluate_strategy(
     bench_returns = benchmark_prices[benchmark_ticker].pct_change().fillna(0.0)
 
     # Dynamic dynamic weights generation from custom strategy function
-    # Normalize config to match preflight flattening (Finding 1)
-    normalized_config = dict(config)
-    params = normalized_config.get("params", {})
-    if isinstance(params, dict):
-        for k, v in params.items():
-            if k not in normalized_config:
-                normalized_config[k] = v
-
-    weights = generate_signals_fn(prices, normalized_config)
+    weights = generate_signals_fn(prices, flat_config)
 
     # Sanity validate output weights contract (Finding 14)
     from autobacktest.strategy.contract import validate_output
@@ -192,8 +198,8 @@ def evaluate_strategy(
 
     # Sharpe ratio DSR
     observed_sharpe = holdout_report.sharpe_ratio
-    effective_trials = int(config.get("effective_trials", 1))
-    historical_sharpes = config.get("historical_sharpes")
+    effective_trials = int(flat_config.get("effective_trials", 1))
+    historical_sharpes = flat_config.get("historical_sharpes")
 
     dsr = calculate_psr_dsr(
         net_returns.loc[holdout_start:holdout_end],
@@ -227,6 +233,6 @@ def evaluate_strategy(
     # Delegate gate checks to unified gate.accept (Finding 7)
     from autobacktest.gate import accept as gate_accept
 
-    gate_accept(report, baseline=None, config=config)
+    gate_accept(report, baseline=None, config=flat_config)
 
     return report

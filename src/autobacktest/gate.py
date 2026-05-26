@@ -25,6 +25,21 @@ class GateResult:
     failed_gate: str | None = None
 
 
+def _get_config_val(config: Any, key: str, default: Any) -> Any:
+    """Safely retrieve configuration key from Pydantic model or dict."""
+    if config is None:
+        return default
+    if hasattr(config, key):
+        return getattr(config, key)
+    if isinstance(config, dict):
+        if key in config:
+            return config[key]
+        params = config.get("params", {})
+        if isinstance(params, dict) and key in params:
+            return params[key]
+    return default
+
+
 def accept(
     report: EvaluationReport,
     baseline: EvaluationReport | None,
@@ -61,49 +76,26 @@ def accept(
         GateResult: Decision outcome.
     """
     # Resolve limits and parameters from config if not explicitly passed (Finding 10)
-    if dd_limit is None:
-        if config is not None:
-            if hasattr(config, "max_drawdown_limit"):
-                dd_limit = config.max_drawdown_limit
-            elif isinstance(config, dict) and "max_drawdown_limit" in config:
-                dd_limit = config["max_drawdown_limit"]
-            else:
-                dd_limit = 0.15
-        else:
-            dd_limit = 0.15
-
-    if turnover_limit is None:
-        if config is not None:
-            if hasattr(config, "turnover_limit"):
-                turnover_limit = config.turnover_limit
-            elif isinstance(config, dict) and "turnover_limit" in config:
-                turnover_limit = config["turnover_limit"]
-            else:
-                turnover_limit = 1.0
-        else:
-            turnover_limit = 1.0
-
-    if dsr_threshold is None:
-        if config is not None:
-            if hasattr(config, "dsr_threshold"):
-                dsr_threshold = config.dsr_threshold
-            elif isinstance(config, dict) and "dsr_threshold" in config:
-                dsr_threshold = config["dsr_threshold"]
-            else:
-                dsr_threshold = 0.95
-        else:
-            dsr_threshold = 0.95
-
-    if min_improvement is None:
-        if config is not None:
-            if hasattr(config, "min_improvement"):
-                min_improvement = config.min_improvement
-            elif isinstance(config, dict) and "min_improvement" in config:
-                min_improvement = config["min_improvement"]
-            else:
-                min_improvement = 0.0
-        else:
-            min_improvement = 0.0
+    dd_limit = (
+        dd_limit
+        if dd_limit is not None
+        else _get_config_val(config, "max_drawdown_limit", 0.15)
+    )
+    turnover_limit = (
+        turnover_limit
+        if turnover_limit is not None
+        else _get_config_val(config, "turnover_limit", 1.0)
+    )
+    dsr_threshold = (
+        dsr_threshold
+        if dsr_threshold is not None
+        else _get_config_val(config, "dsr_threshold", 0.95)
+    )
+    min_improvement = (
+        min_improvement
+        if min_improvement is not None
+        else _get_config_val(config, "min_improvement", 0.0)
+    )
 
     # Evaluate gates individually and populate gates_passed
     max_dd = report.holdout_metrics.max_drawdown

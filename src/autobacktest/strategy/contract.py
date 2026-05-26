@@ -130,6 +130,12 @@ def validate_output(
         )
 
     # 6. Index validation (Finding 14)
+    if not isinstance(weights.index, pd.DatetimeIndex):
+        return (
+            False,
+            f"Expected DatetimeIndex for weights DataFrame, got {type(weights.index)}.",
+        )
+
     if expected_index is not None:
         invalid_dates = weights.index.difference(expected_index)
         if not invalid_dates.empty:
