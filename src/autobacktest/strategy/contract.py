@@ -96,6 +96,20 @@ def validate_output(
     if weights.empty:
         return False, "Weights DataFrame is empty."
 
+    # Check for duplicate columns
+    if weights.columns.duplicated().any():
+        duplicated_cols = list(set(weights.columns[weights.columns.duplicated()]))
+        return False, f"Strategy weights contain duplicate columns: {duplicated_cols}"
+
+    # Check that all columns are numeric
+    for col in weights.columns:
+        if not pd.api.types.is_numeric_dtype(weights[col]):
+            return (
+                False,
+                f"Strategy weights column '{col}' must be numeric, "
+                f"got {weights[col].dtype}.",
+            )
+
     # 1. No NaNs allowed
     if weights.isna().any().any():
         return False, "Strategy weights must not contain NaN values."

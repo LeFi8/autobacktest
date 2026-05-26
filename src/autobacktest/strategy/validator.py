@@ -2,6 +2,7 @@ import ast
 import importlib.util
 import signal
 import sys
+from collections.abc import Generator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from enum import StrEnum
@@ -132,19 +133,30 @@ class SandboxTimeoutError(Exception):
 def timeout_sandbox(
     seconds: int = 15,
     memory_limit_bytes: int = 1 * 1024 * 1024 * 1024,
-):
+) -> Generator[None, None, None]:
     """Lightweight execution timeout and memory sandbox context manager."""
-    try:
-        import resource
-    except ImportError:
-        resource = None
+    import threading
 
-    def signal_handler(_signum, _frame):
+    resource: Any = None
+    try:
+        import resource as _resource
+
+        resource = _resource
+    except ImportError:
+        pass
+
+    def signal_handler(_signum: int, _frame: Any) -> None:
         raise SandboxTimeoutError("Strategy execution timed out (exceeded limit).")
 
-    # Register the signal handler
-    original_handler = signal.signal(signal.SIGALRM, signal_handler)
-    signal.alarm(seconds)
+    # Register the signal handler only if on the main thread
+    use_signals = threading.current_thread() is threading.main_thread()
+    original_handler = None
+    if use_signals:
+        try:
+            original_handler = signal.signal(signal.SIGALRM, signal_handler)
+            signal.alarm(seconds)
+        except ValueError:
+            use_signals = False
 
     # Set virtual memory limit (soft limit) to protect against memory OOM attacks
     old_limits = None
@@ -158,8 +170,11 @@ def timeout_sandbox(
         yield
     finally:
         # Cancel the alarm and restore the original handler
-        signal.alarm(0)
-        signal.signal(signal.SIGALRM, original_handler)
+        if use_signals:
+            with suppress(Exception):
+                signal.alarm(0)
+                if original_handler is not None:
+                    signal.signal(signal.SIGALRM, original_handler)
         if resource is not None and old_limits is not None:
             with suppress(Exception):
                 resource.setrlimit(resource.RLIMIT_AS, old_limits)
@@ -433,6 +448,7 @@ def _check_import(strategy_name: str, path: Path, content: str) -> ValidationRes
         exec(code_obj, module.__dict__)
         return ValidationResult(passed=True, detail=module)
     except Exception as e:
+        sys.modules.pop(strategy_name, None)
         return ValidationResult(
             passed=False,
             error_code=ValidationError.IMPORT_FAILED,
@@ -571,7 +587,7 @@ def _check_lookahead(module: Any, config: StrategyConfig) -> ValidationResult:
             diff = np.abs(w_base - w_fut)
             bad_row = diff.max(axis=1) > 1e-7
             if bad_row.any():
-                first_bad_date = common_idx[bad_row][0].strftime("%Y-%m-%d")
+                first_bad_date = common_idx[bad_row.values][0].strftime("%Y-%m-%d")
                 msg = (
                     f"Lookahead bias sniff test failed. Rebalance signals at "
                     f"'{first_bad_date}' changed when future data was "

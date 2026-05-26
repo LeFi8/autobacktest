@@ -256,3 +256,120 @@ def generate_signals(prices: pd.DataFrame, config: dict) -> pd.DataFrame:
     assert res.error_code == ValidationError.SMOKE_TEST_FAILED
     allowed_terms = ("memory limit", "timed out", "exception", "failed")
     assert any(term in res.detail for term in allowed_terms)
+
+
+def test_timeout_sandbox_non_main_thread() -> None:
+    """Verifies timeout_sandbox runs cleanly on a background thread without crashing."""
+    import threading
+
+    from autobacktest.strategy.validator import timeout_sandbox
+
+    errors = []
+
+    def run_in_thread():
+        try:
+            with timeout_sandbox(seconds=2):
+                pass
+        except Exception as e:
+            errors.append(e)
+
+    t = threading.Thread(target=run_in_thread)
+    t.start()
+    t.join()
+    assert len(errors) == 0
+
+
+def test_check_import_modules_cleanup(mock_dirs: tuple[Path, Path]) -> None:
+    """Verifies that sys.modules is cleared on dynamic import failure."""
+    import sys
+
+    from autobacktest.strategy.validator import _check_import
+
+    strat_dir, _ = mock_dirs
+    strat_file = strat_dir / "broken_strat.py"
+    strat_file.write_text(
+        "raise RuntimeError('Compilation/execution failure')", encoding="utf-8"
+    )
+
+    strategy_name = "broken_strat"
+    res = _check_import(
+        strategy_name, strat_file, strat_file.read_text(encoding="utf-8")
+    )
+    assert not res.passed
+    assert strategy_name not in sys.modules
+
+
+def test_validate_output_duplicate_columns() -> None:
+    """Verifies that weights with duplicate columns are rejected."""
+    dates = pd.date_range("2023-01-01", periods=3)
+    weights = pd.DataFrame([[0.5, 0.5]], index=[dates[0]], columns=["SPY", "SPY"])
+    ok, err = validate_output(weights, ["SPY"])
+    assert not ok
+    assert "duplicate columns" in err
+
+
+def test_validate_output_non_numeric() -> None:
+    """Verifies that weights with non-numeric types are rejected."""
+    dates = pd.date_range("2023-01-01", periods=3)
+    weights = pd.DataFrame([["0.5", 0.5]], index=[dates[0]], columns=["SPY", "QQQ"])
+    ok, err = validate_output(weights, ["SPY", "QQQ"])
+    assert not ok
+    assert "must be numeric" in err
+
+
+def test_evaluate_strategy_too_short_period() -> None:
+    """Verifies that evaluate_strategy raises ValueError if the
+    backtest period is too short.
+    """
+    from autobacktest.evaluator.evaluate import evaluate_strategy
+
+    def dummy_generate_signals(prices, _config):
+        return pd.DataFrame(0.5, index=prices.index, columns=prices.columns)
+
+    config = {"universe": ["SPY"], "benchmark": "SPY"}
+    # Passing a very short period will fail the 3-year holdout partition
+    with pytest.raises(ValueError) as exc:
+        evaluate_strategy(
+            "dummy",
+            dummy_generate_signals,
+            config,
+            start_date="2023-01-01",
+            end_date="2023-01-15",
+        )
+    assert "In-sample or holdout period is empty" in str(exc.value)
+
+
+def test_gate_dsr_none_handling() -> None:
+    """Verifies that gate.accept handles None deflated_sharpe gracefully."""
+    window = WindowReport(
+        start_date="2023-01-01",
+        end_date="2025-12-31",
+        annualized_return=0.15,
+        annualized_volatility=0.10,
+        sharpe_ratio=1.5,
+        sortino_ratio=2.0,
+        max_drawdown=0.05,
+        turnover=0.5,
+        information_ratio=1.0,
+    )
+    report = EvaluationReport(
+        strategy_name="mock",
+        dataset_hash="abc",
+        gates_passed={},
+        is_accepted=True,
+        rejection_reason=None,
+        holdout_metrics=window,
+        walk_forward_metrics=[window],
+        regime_drawdowns={},
+        regime_passed=True,
+        mc_sharpe_5th=0.5,
+        mc_sharpe_50th=1.2,
+        mc_sharpe_95th=2.0,
+        observed_sharpe=1.5,
+        effective_trials=1,
+        deflated_sharpe=None,  # type: ignore
+    )
+
+    res = gate_accept(report, baseline=None, dsr_threshold=0.95)
+    assert not res.accepted
+    assert "Deflated Sharpe Ratio is missing or NaN" in res.reason

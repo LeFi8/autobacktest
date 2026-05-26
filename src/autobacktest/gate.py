@@ -107,7 +107,7 @@ def accept(
     turnover_passed = not (math.isnan(turnover) or turnover > turnover_limit)
 
     dsr = report.deflated_sharpe
-    dsr_passed = not (math.isnan(dsr) or dsr < dsr_threshold)
+    dsr_passed = not (dsr is None or math.isnan(dsr) or dsr < dsr_threshold)
 
     # Let gate.accept write back outcomes to the report (Finding 7)
     report.gates_passed = {
@@ -162,8 +162,8 @@ def accept(
 
     # 4. Deflated Sharpe Ratio threshold
     if not dsr_passed:
-        if math.isnan(dsr):
-            msg = "Deflated Sharpe Ratio is NaN."
+        if dsr is None or math.isnan(dsr):
+            msg = "Deflated Sharpe Ratio is missing or NaN."
         else:
             msg = (
                 f"Deflated Sharpe Ratio {dsr:.4f} "

@@ -16,6 +16,7 @@ from autobacktest.evaluator.monte_carlo import run_block_bootstrap
 from autobacktest.evaluator.regime import evaluate_stress_regimes
 from autobacktest.evaluator.report import EvaluationReport, WindowReport
 from autobacktest.evaluator.walk_forward import generate_walk_forward_windows
+from autobacktest.strategy.config_schema import StrategyConfig
 
 
 def calculate_sortino_ratio(net_returns: pd.Series) -> float:
@@ -114,24 +115,20 @@ def generate_window_report(
 def evaluate_strategy(
     strategy_name: str,
     generate_signals_fn: Any,
-    config: dict[str, Any],
+    config: dict[str, Any] | StrategyConfig,
     start_date: str = "2015-01-01",
     end_date: str = "2026-01-01",
 ) -> EvaluationReport:
     """Run full deterministic walk-forward & holdout evaluation lifecycle."""
-    from autobacktest.strategy.config_schema import StrategyConfig
-
     if isinstance(config, StrategyConfig):
         flat_config = config.to_flat_dict()
-    elif isinstance(config, dict):
+    else:
         flat_config = dict(config)
         params = flat_config.get("params", {})
         if isinstance(params, dict):
             for k, v in params.items():
                 if k not in flat_config:
                     flat_config[k] = v
-    else:
-        flat_config = config
 
     tickers = flat_config.get("universe", [])
     benchmark_ticker = flat_config.get("benchmark", "SPY")
@@ -165,6 +162,11 @@ def evaluate_strategy(
 
     # Partition holdout data (default last 3 years)
     in_sample_idx, holdout_idx = partition_holdout_data(prices.index, holdout_years=3)
+    if in_sample_idx.empty or holdout_idx.empty:
+        raise ValueError(
+            "In-sample or holdout period is empty. "
+            "Ensure the backtest period is sufficiently long."
+        )
 
     # Walk-forward on In-Sample index
     wf_windows = generate_walk_forward_windows(
