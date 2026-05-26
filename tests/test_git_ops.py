@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 import git
+import pytest
 
 from autobacktest.ledger.git_ops import GitLedger
 
@@ -17,7 +17,9 @@ def repo_setup(tmp_path: Path) -> tuple[git.Repo, Path]:
     cfg_dir.mkdir()
 
     # Write initial strategy and config
-    (strat_dir / "toy.py").write_text("def generate_signals(p, c):\n    return p.head(1)\n")
+    (strat_dir / "toy.py").write_text(
+        "def generate_signals(p, c):\n    return p.head(1)\n"
+    )
     (cfg_dir / "toy.yaml").write_text("universe: [SPY]\n")
 
     # Init repo, configure user, add files, make initial commit
@@ -40,13 +42,17 @@ def test_create_run_branch(repo_setup: tuple[git.Repo, Path]) -> None:
     assert "autobacktest/test-123" in branch_names
 
 
-def test_commit_strategy_stages_only_two_files(repo_setup: tuple[git.Repo, Path]) -> None:
+def test_commit_strategy_stages_only_two_files(
+    repo_setup: tuple[git.Repo, Path],
+) -> None:
     repo, tmp_path = repo_setup
     ledger = GitLedger(tmp_path)
     ledger.create_run_branch("run-001")
 
     # Modify strategy and config
-    (tmp_path / "strategies" / "toy.py").write_text("def generate_signals(p, c):\n    return p.tail(1)\n")
+    (tmp_path / "strategies" / "toy.py").write_text(
+        "def generate_signals(p, c):\n    return p.tail(1)\n"
+    )
     (tmp_path / "configs" / "toy.yaml").write_text("universe: [QQQ]\n")
 
     # Create unrelated file that must NOT appear in the commit
@@ -61,11 +67,13 @@ def test_commit_strategy_stages_only_two_files(repo_setup: tuple[git.Repo, Path]
 
 
 def test_commit_strategy_returns_hexsha(repo_setup: tuple[git.Repo, Path]) -> None:
-    repo, tmp_path = repo_setup
+    _, tmp_path = repo_setup
     ledger = GitLedger(tmp_path)
     ledger.create_run_branch("run-002")
 
-    (tmp_path / "strategies" / "toy.py").write_text("def generate_signals(p, c):\n    return p.tail(2)\n")
+    (tmp_path / "strategies" / "toy.py").write_text(
+        "def generate_signals(p, c):\n    return p.tail(2)\n"
+    )
     (tmp_path / "configs" / "toy.yaml").write_text("universe: [IWM]\n")
 
     hexsha = ledger.commit_strategy("toy", "hexsha test")

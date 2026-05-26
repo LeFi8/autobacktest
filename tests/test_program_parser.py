@@ -1,6 +1,8 @@
-import pytest
 from pathlib import Path
-from autobacktest.program import parse_program, ProgramSpec
+
+import pytest
+
+from autobacktest.program import ProgramSpec, parse_program
 
 
 def test_parse_valid_program(tmp_path: Path) -> None:
