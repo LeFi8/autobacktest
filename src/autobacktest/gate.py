@@ -31,8 +31,8 @@ def accept(
     target_metric: TargetMetric = TargetMetric.SHARPE,
     dd_limit: float | None = None,
     turnover_limit: float | None = None,
-    dsr_threshold: float = 0.95,
-    min_improvement: float = 0.0,
+    dsr_threshold: float | None = None,
+    min_improvement: float | None = None,
     config: Any = None,
 ) -> GateResult:
     """Evaluate candidate EvaluationReport against lexicographic gates.
@@ -60,7 +60,7 @@ def accept(
     Returns:
         GateResult: Decision outcome.
     """
-    # Resolve limits from config if not explicitly passed
+    # Resolve limits and parameters from config if not explicitly passed (Finding 10)
     if dd_limit is None:
         if config is not None:
             if hasattr(config, "max_drawdown_limit"):
@@ -83,15 +83,57 @@ def accept(
         else:
             turnover_limit = 1.0
 
-    # 1. Max Drawdown Limit
+    if dsr_threshold is None:
+        if config is not None:
+            if hasattr(config, "dsr_threshold"):
+                dsr_threshold = config.dsr_threshold
+            elif isinstance(config, dict) and "dsr_threshold" in config:
+                dsr_threshold = config["dsr_threshold"]
+            else:
+                dsr_threshold = 0.95
+        else:
+            dsr_threshold = 0.95
+
+    if min_improvement is None:
+        if config is not None:
+            if hasattr(config, "min_improvement"):
+                min_improvement = config.min_improvement
+            elif isinstance(config, dict) and "min_improvement" in config:
+                min_improvement = config["min_improvement"]
+            else:
+                min_improvement = 0.0
+        else:
+            min_improvement = 0.0
+
+    # Evaluate gates individually and populate gates_passed
     max_dd = report.holdout_metrics.max_drawdown
-    if math.isnan(max_dd) or max_dd > dd_limit:
-        msg = (
-            f"Holdout max drawdown {max_dd:.4f} is NaN or "
-            f"exceeds limit of {dd_limit:.4f}."
-            if not math.isnan(max_dd)
-            else "Holdout max drawdown is NaN."
-        )
+    max_dd_passed = not (math.isnan(max_dd) or max_dd > dd_limit)
+
+    regime_passed = bool(report.regime_passed)
+
+    turnover = report.holdout_metrics.turnover
+    turnover_passed = not (math.isnan(turnover) or turnover > turnover_limit)
+
+    dsr = report.deflated_sharpe
+    dsr_passed = not (math.isnan(dsr) or dsr < dsr_threshold)
+
+    # Let gate.accept write back outcomes to the report (Finding 7)
+    report.gates_passed = {
+        "max_drawdown": max_dd_passed,
+        "turnover": turnover_passed,
+        "regimes": regime_passed,
+        "deflated_sharpe": dsr_passed,
+    }
+
+    # 1. Max Drawdown Limit
+    if not max_dd_passed:
+        # Differentiate NaN vs float limit breach messages (Finding 15)
+        if math.isnan(max_dd):
+            msg = "Holdout max drawdown is NaN."
+        else:
+            msg = f"Holdout max drawdown {max_dd:.4f} exceeds limit of {dd_limit:.4f}."
+        report.is_accepted = False
+        report.rejection_reason = msg
         return GateResult(
             accepted=False,
             reason=msg,
@@ -99,8 +141,10 @@ def accept(
         )
 
     # 2. Regimes stress tests
-    if not report.regime_passed:
+    if not regime_passed:
         msg = "Strategy failed to pass historical crisis regime drawdown stress test."
+        report.is_accepted = False
+        report.rejection_reason = msg
         return GateResult(
             accepted=False,
             reason=msg,
@@ -108,14 +152,16 @@ def accept(
         )
 
     # 3. Turnover limit
-    turnover = report.holdout_metrics.turnover
-    if math.isnan(turnover) or turnover > turnover_limit:
-        msg = (
-            f"Holdout turnover {turnover:.4f} is NaN or "
-            f"exceeds limit of {turnover_limit:.4f}."
-            if not math.isnan(turnover)
-            else "Holdout turnover is NaN."
-        )
+    if not turnover_passed:
+        if math.isnan(turnover):
+            msg = "Holdout turnover is NaN."
+        else:
+            msg = (
+                f"Holdout turnover {turnover:.4f} "
+                f"exceeds limit of {turnover_limit:.4f}."
+            )
+        report.is_accepted = False
+        report.rejection_reason = msg
         return GateResult(
             accepted=False,
             reason=msg,
@@ -123,14 +169,16 @@ def accept(
         )
 
     # 4. Deflated Sharpe Ratio threshold
-    dsr = report.deflated_sharpe
-    if math.isnan(dsr) or dsr < dsr_threshold:
-        msg = (
-            f"Deflated Sharpe Ratio {dsr:.4f} is NaN or "
-            f"below threshold of {dsr_threshold:.4f}."
-            if not math.isnan(dsr)
-            else "Deflated Sharpe Ratio is NaN."
-        )
+    if not dsr_passed:
+        if math.isnan(dsr):
+            msg = "Deflated Sharpe Ratio is NaN."
+        else:
+            msg = (
+                f"Deflated Sharpe Ratio {dsr:.4f} "
+                f"is below threshold of {dsr_threshold:.4f}."
+            )
+        report.is_accepted = False
+        report.rejection_reason = msg
         return GateResult(
             accepted=False,
             reason=msg,
@@ -157,14 +205,19 @@ def accept(
             or math.isnan(baseline_val)
             or candidate_val <= baseline_val + min_improvement
         ):
+            msg = (
+                f"Candidate {target_metric.value} ({candidate_val:.4f}) does not "
+                f"improve upon baseline {target_metric.value} ({baseline_val:.4f}) "
+                f"by at least {min_improvement:.4f}."
+            )
+            report.is_accepted = False
+            report.rejection_reason = msg
             return GateResult(
                 accepted=False,
-                reason=(
-                    f"Candidate {target_metric.value} ({candidate_val:.4f}) does not "
-                    f"improve upon baseline {target_metric.value} ({baseline_val:.4f}) "
-                    f"by at least {min_improvement:.4f}."
-                ),
+                reason=msg,
                 failed_gate="target_metric_improvement",
             )
 
+    report.is_accepted = True
+    report.rejection_reason = None
     return GateResult(accepted=True)

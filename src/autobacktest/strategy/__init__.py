@@ -2,10 +2,11 @@
 
 from autobacktest.strategy.config_schema import StrategyConfig
 from autobacktest.strategy.contract import validate_output, validate_signature
-from autobacktest.strategy.validator import ValidationResult, preflight
+from autobacktest.strategy.validator import ValidationError, ValidationResult, preflight
 
 __all__ = [
     "StrategyConfig",
+    "ValidationError",
     "ValidationResult",
     "preflight",
     "validate_output",

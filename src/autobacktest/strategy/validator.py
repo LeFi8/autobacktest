@@ -1,8 +1,12 @@
 import ast
 import importlib.util
+import signal
+import sys
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import numpy as np
@@ -46,10 +50,18 @@ FORBIDDEN_NAMES = {
     # numpy / pandas sandboxing escapes
     "load",
     "save",
+    "savez",
+    "savez_compressed",
     "memmap",
     "fromfile",
     "tofile",
+    "loadtxt",
+    "genfromtxt",
+    "fromregex",
+    "DataSource",
     "read_csv",
+    "read_table",
+    "read_fwf",
     "to_csv",
     "read_json",
     "to_json",
@@ -73,6 +85,13 @@ FORBIDDEN_NAMES = {
     "to_sql",
     "read_clipboard",
     "to_clipboard",
+    "io",
+    "get_handle",
+    "lib",
+    "npyio",
+    "HDFStore",
+    "ExcelWriter",
+    "ExcelFile",
 }
 
 
@@ -96,6 +115,30 @@ class ValidationResult:
     detail: Any = None
 
 
+class SandboxTimeoutError(Exception):
+    """Exception raised when strategy execution times out."""
+
+    pass
+
+
+@contextmanager
+def timeout_sandbox(seconds: int = 15):
+    """Lightweight UNIX signal-based execution timeout context manager."""
+
+    def signal_handler(_signum, _frame):
+        raise SandboxTimeoutError("Strategy execution timed out (exceeded limit).")
+
+    # Register the signal handler
+    original_handler = signal.signal(signal.SIGALRM, signal_handler)
+    signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        # Cancel the alarm and restore the original handler
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, original_handler)
+
+
 def preflight(
     strategy_name: str,
     strategies_dir: Path,
@@ -111,6 +154,17 @@ def preflight(
     Returns:
         ValidationResult: The status of the validation suite.
     """
+    # 1. Path traversal check (Finding 2)
+    if not strategy_name or any(c in strategy_name for c in ("/", "\\", "..")):
+        return ValidationResult(
+            passed=False,
+            error_code=ValidationError.IMPORT_FAILED,
+            detail=(
+                f"Invalid strategy name '{strategy_name}': "
+                "path traversal is prohibited."
+            ),
+        )
+
     strategy_path = strategies_dir / f"{strategy_name}.py"
     config_path = configs_dir / f"{strategy_name}.yaml"
 
@@ -121,8 +175,26 @@ def preflight(
             detail=f"Strategy file not found at: {strategy_path}",
         )
 
+    # File existence check for config (Finding 13)
+    if not config_path.exists():
+        return ValidationResult(
+            passed=False,
+            error_code=ValidationError.IMPORT_FAILED,
+            detail=f"Strategy config file not found at: {config_path}",
+        )
+
+    # AST TOCTOU Protection: Read once (Finding 8)
+    try:
+        content = strategy_path.read_text(encoding="utf-8")
+    except Exception as e:
+        return ValidationResult(
+            passed=False,
+            error_code=ValidationError.IMPORT_FAILED,
+            detail=f"Failed to read strategy file: {e}",
+        )
+
     # 1. AST Static Whitelist check
-    ast_res = _check_ast(strategy_path)
+    ast_res = _check_ast(content)
     if not ast_res.passed:
         return ast_res
 
@@ -135,8 +207,8 @@ def preflight(
     # Parse config dictionary from Pydantic StrategyConfig
     config_model = cfg_res.detail  # Holds StrategyConfig instance
 
-    # 3. Dynamic Import
-    import_res = _check_import(strategy_name, strategy_path)
+    # 3. Dynamic Import using pre-read content
+    import_res = _check_import(strategy_name, strategy_path, content)
     if not import_res.passed:
         return import_res
     assert import_res.detail is not None
@@ -152,7 +224,7 @@ def preflight(
             detail=sig_err,
         )
 
-    # 5. Smoke test with 60d synthetic prices
+    # 5. Smoke test with 756d synthetic prices
     smoke_res = _check_smoke(module, config_model)
     if not smoke_res.passed:
         return smoke_res
@@ -165,10 +237,9 @@ def preflight(
     return ValidationResult(passed=True)
 
 
-def _check_ast(path: Path) -> ValidationResult:
+def _check_ast(content: str) -> ValidationResult:
     """Parse strategy code via AST and block non-whitelisted imports or unsafe calls."""
     try:
-        content = path.read_text(encoding="utf-8")
         tree = ast.parse(content)
     except Exception as e:
         return ValidationResult(
@@ -192,6 +263,13 @@ def _check_ast(path: Path) -> ValidationResult:
                         error_code=ValidationError.AST_BLOCKED_IMPORT,
                         detail=msg,
                     )
+                # Inspect imported alias names (Finding 4)
+                if alias.asname and alias.asname in FORBIDDEN_NAMES:
+                    return ValidationResult(
+                        passed=False,
+                        error_code=ValidationError.AST_BLOCKED_IMPORT,
+                        detail=f"Import alias '{alias.asname}' is strictly blocked.",
+                    )
         elif isinstance(node, ast.ImportFrom):
             if node.module:
                 root_module = node.module.split(".")[0]
@@ -205,6 +283,21 @@ def _check_ast(path: Path) -> ValidationResult:
                         error_code=ValidationError.AST_BLOCKED_IMPORT,
                         detail=msg,
                     )
+                # Inspect imported names and aliases (Finding 4)
+                for alias in node.names:
+                    imported_name = alias.name.split(".")[0]
+                    if imported_name in FORBIDDEN_NAMES:
+                        return ValidationResult(
+                            passed=False,
+                            error_code=ValidationError.AST_BLOCKED_IMPORT,
+                            detail=f"Forbidden import '{alias.name}' is blocked.",
+                        )
+                    if alias.asname and alias.asname in FORBIDDEN_NAMES:
+                        return ValidationResult(
+                            passed=False,
+                            error_code=ValidationError.AST_BLOCKED_IMPORT,
+                            detail=f"Import alias '{alias.asname}' is blocked.",
+                        )
 
         # Inspect forbidden variables, functions, and builtin names
         elif isinstance(node, ast.Name) and node.id in FORBIDDEN_NAMES:
@@ -215,7 +308,7 @@ def _check_ast(path: Path) -> ValidationResult:
                 detail=msg,
             )
 
-        # Inspect forbidden attributes (prevents dunder sandbox escapes)
+        # Inspect forbidden attributes (prevents dunder escapes & chained - Finding 5)
         elif isinstance(node, ast.Attribute) and (
             node.attr in FORBIDDEN_NAMES or node.attr.startswith("__")
         ):
@@ -243,6 +336,12 @@ def _check_config(path: Path) -> ValidationResult:
             error_code=ValidationError.CONFIG_SCHEMA_INVALID,
             detail=f"Config validation error: {e}",
         )
+    except FileNotFoundError as e:
+        return ValidationResult(
+            passed=False,
+            error_code=ValidationError.IMPORT_FAILED,
+            detail=f"Config load error: {e}",
+        )
     except Exception as e:
         return ValidationResult(
             passed=False,
@@ -251,18 +350,21 @@ def _check_config(path: Path) -> ValidationResult:
         )
 
 
-def _check_import(strategy_name: str, path: Path) -> ValidationResult:
-    """Dynamically construct module loader and exec the strategy module."""
+def _check_import(strategy_name: str, path: Path, content: str) -> ValidationResult:
+    """Dynamically construct module and compile/exec checked content (Finding 8)."""
     try:
+        module = ModuleType(strategy_name)
+        module.__file__ = str(path)
+
         spec = importlib.util.spec_from_file_location(strategy_name, path)
-        if spec is None or spec.loader is None:
-            return ValidationResult(
-                passed=False,
-                error_code=ValidationError.IMPORT_FAILED,
-                detail=f"Failed to resolve loader spec for strategy: {strategy_name}",
-            )
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        if spec is not None:
+            module.__spec__ = spec
+            module.__loader__ = spec.loader
+
+        sys.modules[strategy_name] = module
+
+        code_obj = compile(content, str(path), "exec")
+        exec(code_obj, module.__dict__)
         return ValidationResult(passed=True, detail=module)
     except Exception as e:
         return ValidationResult(
@@ -291,13 +393,18 @@ def _check_smoke(module: Any, config: StrategyConfig) -> ValidationResult:
         tickers = config.universe
         prices = _generate_synthetic_prices(tickers, n_days=756)
 
-        # Merge core params and custom params to match CLI's dictionary passing
+        # Merge core and custom params to match CLI dictionary (Finding 1)
         config_dict = config.model_dump()
-        params = config_dict.pop("params", {})
-        config_dict.update(params)
+        params = config_dict.get("params", {})
+        for k, v in params.items():
+            if k not in config_dict:
+                config_dict[k] = v
 
-        weights = module.generate_signals(prices, config_dict)
-        ok, err = validate_output(weights, tickers)
+        # Runtime Sandbox Execution (Finding 9)
+        with timeout_sandbox(seconds=15):
+            weights = module.generate_signals(prices, config_dict)
+
+        ok, err = validate_output(weights, tickers, expected_index=prices.index)
         if not ok:
             return ValidationResult(
                 passed=False,
@@ -305,6 +412,12 @@ def _check_smoke(module: Any, config: StrategyConfig) -> ValidationResult:
                 detail=f"Smoke test output constraints failed: {err}",
             )
         return ValidationResult(passed=True)
+    except SandboxTimeoutError as e:
+        return ValidationResult(
+            passed=False,
+            error_code=ValidationError.SMOKE_TEST_FAILED,
+            detail=str(e),
+        )
     except Exception as e:
         return ValidationResult(
             passed=False,
@@ -318,12 +431,15 @@ def _check_lookahead(module: Any, config: StrategyConfig) -> ValidationResult:
     try:
         tickers = config.universe
         config_dict = config.model_dump()
-        params = config_dict.pop("params", {})
-        config_dict.update(params)
+        params = config_dict.get("params", {})
+        for k, v in params.items():
+            if k not in config_dict:
+                config_dict[k] = v
 
         # 1. Base run on 756 days
         prices_base = _generate_synthetic_prices(tickers, n_days=756, seed=123)
-        weights_base = module.generate_signals(prices_base, config_dict)
+        with timeout_sandbox(seconds=15):
+            weights_base = module.generate_signals(prices_base, config_dict)
 
         # 2. Append continuous future pricing data
         # (additional 10 days of different random noise)
@@ -338,7 +454,8 @@ def _check_lookahead(module: Any, config: StrategyConfig) -> ValidationResult:
             prices_future_ext[ticker] = base_last * np.exp(np.cumsum(steps))
 
         prices_future = pd.concat([prices_base, prices_future_ext])
-        weights_future = module.generate_signals(prices_future, config_dict)
+        with timeout_sandbox(seconds=15):
+            weights_future = module.generate_signals(prices_future, config_dict)
 
         # Compare weights returned for the original 756-day sub-window
         common_idx = weights_base.index.intersection(weights_future.index)
@@ -364,21 +481,24 @@ def _check_lookahead(module: Any, config: StrategyConfig) -> ValidationResult:
                 ),
             )
 
-        # Use float tolerance for numerical precision differences (e.g. 1e-7)
-        if not np.allclose(
-            w_base.values, w_fut.values, rtol=0.0, atol=1e-7, equal_nan=True
-        ):
-            # Locate first discrepancy date
+        # Use float tolerance (e.g. 1e-7 - Finding 17)
+        if not np.allclose(w_base.values, w_fut.values, rtol=0.0, atol=1e-7):
+            # Locate first discrepancy date (Finding 6)
             diff = np.abs(w_base - w_fut)
             bad_row = diff.max(axis=1) > 1e-7
-            if not bad_row.any():
-                return ValidationResult(passed=True)
-            first_bad_date = common_idx[bad_row][0].strftime("%Y-%m-%d")
-            msg = (
-                f"Lookahead bias sniff test failed. Rebalance signals at "
-                f"'{first_bad_date}' changed when future data was "
-                f"appended to the price history."
-            )
+            if bad_row.any():
+                first_bad_date = common_idx[bad_row][0].strftime("%Y-%m-%d")
+                msg = (
+                    f"Lookahead bias sniff test failed. Rebalance signals at "
+                    f"'{first_bad_date}' changed when future data was "
+                    f"appended to the price history."
+                )
+            else:
+                msg = (
+                    "Lookahead bias sniff test failed: strategy weights shape, "
+                    "columns, or values diverged when future data was "
+                    "appended to the price history."
+                )
             return ValidationResult(
                 passed=False,
                 error_code=ValidationError.LOOKAHEAD_DETECTED,
@@ -386,6 +506,12 @@ def _check_lookahead(module: Any, config: StrategyConfig) -> ValidationResult:
             )
 
         return ValidationResult(passed=True)
+    except SandboxTimeoutError as e:
+        return ValidationResult(
+            passed=False,
+            error_code=ValidationError.SMOKE_TEST_FAILED,
+            detail=str(e),
+        )
     except Exception as e:
         return ValidationResult(
             passed=False,

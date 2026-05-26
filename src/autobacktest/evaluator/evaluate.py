@@ -140,7 +140,22 @@ def evaluate_strategy(
     bench_returns = benchmark_prices[benchmark_ticker].pct_change().fillna(0.0)
 
     # Dynamic dynamic weights generation from custom strategy function
-    weights = generate_signals_fn(prices, config)
+    # Normalize config to match preflight flattening (Finding 1)
+    normalized_config = dict(config)
+    params = normalized_config.get("params", {})
+    if isinstance(params, dict):
+        for k, v in params.items():
+            if k not in normalized_config:
+                normalized_config[k] = v
+
+    weights = generate_signals_fn(prices, normalized_config)
+
+    # Sanity validate output weights contract (Finding 14)
+    from autobacktest.strategy.contract import validate_output
+
+    ok, err = validate_output(weights, tickers, expected_index=prices.index)
+    if not ok:
+        raise ValueError(f"Strategy weights validation failed: {err}")
 
     # Partition holdout data (default last 3 years)
     in_sample_idx, holdout_idx = partition_holdout_data(prices.index, holdout_years=3)
@@ -186,32 +201,17 @@ def evaluate_strategy(
         effective_trials=effective_trials,
     )
 
-    # Improvement gate thresholds checklist evaluation
-    max_dd_limit = config.get("max_drawdown_limit", 0.15)
-    gates_passed = {
-        "max_drawdown": holdout_report.max_drawdown <= max_dd_limit,
-        "turnover": holdout_report.turnover <= config.get("turnover_limit", 1.0),
-        "regimes": regime_passed,
-        "deflated_sharpe": dsr >= 0.95,  # 95% confidence true Sharpe > 0
-    }
-
-    is_accepted = all(gates_passed.values())
-    rejection_reason = None
-    if not is_accepted:
-        failed_gates = [k for k, v in gates_passed.items() if not v]
-        rejection_reason = f"Failed gates: {', '.join(failed_gates)}"
-
     # Generate complete stable dataset hash using hashlib
     tickers_str = ",".join(sorted(tickers))
     dataset_hash = hashlib.sha256(tickers_str.encode()).hexdigest()[:16]
 
-    # Generate complete report
-    return EvaluationReport(
+    # Generate complete report (Finding 7)
+    report = EvaluationReport(
         strategy_name=strategy_name,
         dataset_hash=dataset_hash,
-        gates_passed=gates_passed,
-        is_accepted=is_accepted,
-        rejection_reason=rejection_reason,
+        gates_passed={},
+        is_accepted=False,
+        rejection_reason=None,
         holdout_metrics=holdout_report,
         walk_forward_metrics=wf_reports,
         regime_drawdowns=regime_drawdowns,
@@ -223,3 +223,10 @@ def evaluate_strategy(
         effective_trials=effective_trials,
         deflated_sharpe=dsr,
     )
+
+    # Delegate gate checks to unified gate.accept (Finding 7)
+    from autobacktest.gate import accept as gate_accept
+
+    gate_accept(report, baseline=None, config=config)
+
+    return report

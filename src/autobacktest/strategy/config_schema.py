@@ -36,14 +36,13 @@ class StrategyConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_no_collisions(self) -> "StrategyConfig":
-        standard_fields = {
-            "universe",
-            "benchmark",
-            "momentum_lookback",
-            "max_drawdown_limit",
-            "turnover_limit",
-        }
-        colliding = standard_fields.intersection(self.params.keys())
+        # Get all top-level keys dynamically except 'params' (Finding 11)
+        top_level_keys = set(self.__class__.model_fields.keys())
+        if self.model_extra:
+            top_level_keys.update(self.model_extra.keys())
+        top_level_keys.discard("params")
+
+        colliding = top_level_keys.intersection(self.params.keys())
         if colliding:
             raise ValueError(
                 f"Keys in 'params' collide with top-level schema fields: {colliding}"

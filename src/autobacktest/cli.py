@@ -4,7 +4,6 @@ import importlib.util
 from pathlib import Path
 
 import typer
-import yaml
 
 from autobacktest.evaluator.evaluate import evaluate_strategy
 
@@ -121,9 +120,15 @@ def evaluate(
         typer.echo(f"Error: Strategy config file not found at {config_path}")
         raise typer.Exit(code=1)
 
-    # Load YAML config
-    with config_path.open() as f:
-        config = yaml.safe_load(f) or {}
+    # Load and validate YAML config via Pydantic StrategyConfig
+    from autobacktest.strategy.config_schema import StrategyConfig
+
+    try:
+        strategy_config = StrategyConfig.from_yaml(config_path)
+        config = strategy_config.model_dump()
+    except Exception as e:
+        typer.echo(f"Error: Strategy config file is invalid: {e}")
+        raise typer.Exit(code=1) from e
 
     # Dynamically import strategy signals generator
     spec = importlib.util.spec_from_file_location(strategy_name, strategy_path)

@@ -39,11 +39,13 @@ def evaluate_stress_regimes(net_returns: pd.Series) -> tuple[dict[str, float], b
     # Calculate equity curve of the sub-window
     drawdowns = {}
     passed = True
+    any_overlap = False
 
     for name, (start, end, limit) in REGIMES.items():
         regime_ret = net_returns.loc[start:end]
 
         if not regime_ret.empty:
+            any_overlap = True
             # Reconstruct sub-equity curve
             sub_equity = (1.0 + regime_ret).cumprod()
             max_dd = calculate_max_drawdown(sub_equity)
@@ -61,5 +63,11 @@ def evaluate_stress_regimes(net_returns: pd.Series) -> tuple[dict[str, float], b
             )
 
             drawdowns[name] = 0.0
+
+    if not any_overlap:
+        logger.warning(
+            "Strategy backtest period does not overlap with ANY crash regimes. "
+            "Regimes verdict is trivially True."
+        )
 
     return drawdowns, passed

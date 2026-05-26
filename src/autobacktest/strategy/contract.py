@@ -39,13 +39,17 @@ def validate_signature(module: ModuleType) -> tuple[bool, str | None]:
         )
 
     # First two parameters must not be positional-only keyword mismatch or
-    # strictly keyword-only
+    # strictly keyword-only / vararg / kwarg (Finding 12)
     p1 = params[0]
     p2 = params[1]
 
-    if p1.kind in (inspect.Parameter.KEYWORD_ONLY, inspect.Parameter.VAR_KEYWORD):
+    allowed_kinds = (
+        inspect.Parameter.POSITIONAL_ONLY,
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+    )
+    if p1.kind not in allowed_kinds:
         return False, "First parameter must be positional (prices)."
-    if p2.kind in (inspect.Parameter.KEYWORD_ONLY, inspect.Parameter.VAR_KEYWORD):
+    if p2.kind not in allowed_kinds:
         return False, "Second parameter must be positional (config)."
 
     for param in params[2:]:
@@ -63,7 +67,7 @@ def validate_signature(module: ModuleType) -> tuple[bool, str | None]:
 
 
 def validate_output(
-    weights: pd.DataFrame, tickers: list[str]
+    weights: pd.DataFrame, tickers: list[str], expected_index: pd.Index | None = None
 ) -> tuple[bool, str | None]:
     """Verify the validity of a strategy's generated weights DataFrame.
 
@@ -73,10 +77,12 @@ def validate_output(
     3. Long-only constraint: no negative weights.
     4. Leverage constraint: row sums must be <= 1.0 (with absolute tolerance).
     5. Columns are a subset of the permitted universe.
+    6. Index dates are a subset of expected price history dates.
 
     Args:
         weights: Strategy signal weights DataFrame.
         tickers: Permitted asset tickers in the config universe.
+        expected_index: Optional pandas Index representing daily trading dates.
 
     Returns:
         tuple[bool, str | None]: (True, None) if valid, (False, error_msg) otherwise.
@@ -122,5 +128,17 @@ def validate_output(
             "Strategy weights must not be all zeros "
             "(must have at least one non-zero weight)."
         )
+
+    # 6. Index validation (Finding 14)
+    if expected_index is not None:
+        invalid_dates = weights.index.difference(expected_index)
+        if not invalid_dates.empty:
+            return (
+                False,
+                (
+                    "Strategy weights index contains dates not in the "
+                    f"price history: {list(invalid_dates[:5])}"
+                ),
+            )
 
     return True, None
