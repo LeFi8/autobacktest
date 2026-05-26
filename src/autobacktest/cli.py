@@ -49,13 +49,66 @@ def run(
         "--run-dir",
         help="Directory to store runs and SQLite ledger.",
     ),
+    target_metric: str = typer.Option(
+        "sharpe",
+        "--target-metric",
+        help="Target metric for optimization: sharpe, sortino, or information_ratio.",
+    ),
 ) -> None:
     """Run the optimization loop on a strategy."""
-    typer.echo(
-        f"TODO: run subcommand (program={program}, strategy={strategy}, "
-        f"iterations={iterations}, provider={provider}, model={model}, "
-        f"run_dir={run_dir})"
-    )
+    from autobacktest.gate import TargetMetric
+    from autobacktest.llm.base import LLMProvider as _LLMProvider
+    from autobacktest.llm.litellm_provider import LiteLLMProvider
+    from autobacktest.llm.mock_provider import MockProvider
+    from autobacktest.orchestrator import OrchestratorResult, run_optimization
+
+    # Resolve target metric
+    try:
+        metric = TargetMetric(target_metric)
+    except ValueError as err:
+        error_msg = (
+            f"Error: Unknown target metric '{target_metric}'. "
+            "Use: sharpe, sortino, information_ratio."
+        )
+        typer.echo(error_msg)
+        raise typer.Exit(code=1) from err
+
+    # Resolve provider
+    provider_impl: _LLMProvider
+    if provider == "mock":
+        provider_impl = MockProvider()
+    else:
+        # Build model string: prefix with provider if given
+        model_str = model or "gpt-4o"
+        if provider and provider != "litellm":
+            model_str = f"{provider}/{model_str}"
+        provider_impl = LiteLLMProvider(model=model_str)
+
+    # Resolve paths
+    program_path = Path(program)
+    run_dir_path = Path(run_dir) if run_dir else Path("runs")
+
+    # Run optimization
+    try:
+        result: OrchestratorResult = run_optimization(
+            program_path=program_path,
+            strategy_name=strategy,
+            iterations=iterations,
+            provider=provider_impl,
+            run_dir=run_dir_path,
+            target_metric=metric,
+        )
+    except Exception as e:
+        typer.echo(f"Error: {e}")
+        raise typer.Exit(code=1) from e
+
+    # Print results
+    typer.echo("\nRun complete!")
+    typer.echo(f"  Branch:    {result.branch}")
+    typer.echo(f"  Committed: {result.n_committed} / {iterations}")
+    typer.echo(f"  Run ID:    {result.run_id}")
+    typer.echo("\n--- Final Report ---")
+    typer.echo(result.final_report.to_json())
 
 
 @app.command()
