@@ -48,6 +48,17 @@ def validate_signature(module: ModuleType) -> tuple[bool, str | None]:
     if p2.kind in (inspect.Parameter.KEYWORD_ONLY, inspect.Parameter.VAR_KEYWORD):
         return False, "Second parameter must be positional (config)."
 
+    for param in params[2:]:
+        if param.default is inspect.Parameter.empty and param.kind not in (
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD,
+        ):
+            return False, (
+                f"'{REQUIRED_FUNCTION}' has an invalid signature. "
+                f"Parameter '{param.name}' is required but has no default value. "
+                f"Only the first two parameters (prices, config) can be required."
+            )
+
     return True, None
 
 
@@ -103,6 +114,13 @@ def validate_output(
         return False, (
             f"Strategy weights row sums exceed 1.0. "
             f"Max sum found: {offending_rows.max()} on {offending_rows.idxmax()}"
+        )
+
+    # 5. Must have at least one non-zero weight (not all zeros)
+    if weights.abs().max().max() < 1e-7:
+        return False, (
+            "Strategy weights must not be all zeros "
+            "(must have at least one non-zero weight)."
         )
 
     return True, None

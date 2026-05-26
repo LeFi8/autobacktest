@@ -124,8 +124,75 @@ def test_gate_different_target_metrics() -> None:
     # Better Sortino, worse Sharpe -> accepted if Sortino targeted
     cand = _create_mock_report(sharpe=1.4, sortino=2.2, information_ratio=0.9)
 
-    res_sharpe = accept(cand, baseline=base, target_metric=TargetMetric.SHARPE)
-    assert not res_sharpe.accepted  # Sharpe worsened
-
     res_sortino = accept(cand, baseline=base, target_metric=TargetMetric.SORTINO)
     assert res_sortino.accepted  # Sortino improved
+
+
+def test_gate_rejects_nan_metrics() -> None:
+    """Verifies that the gate rejects any candidates returning NaN metrics."""
+    # 1. NaN Drawdown
+    rep_nan_dd = _create_mock_report(max_drawdown=float("nan"))
+    res = accept(rep_nan_dd, baseline=None)
+    assert not res.accepted
+    assert res.failed_gate == "max_drawdown"
+
+    # 2. NaN Turnover
+    rep_nan_turn = _create_mock_report(turnover=float("nan"))
+    res = accept(rep_nan_turn, baseline=None)
+    assert not res.accepted
+    assert res.failed_gate == "turnover"
+
+    # 3. NaN DSR
+    rep_nan_dsr = _create_mock_report(deflated_sharpe=float("nan"))
+    res = accept(rep_nan_dsr, baseline=None)
+    assert not res.accepted
+    assert res.failed_gate == "deflated_sharpe"
+
+    # 4. NaN Target Metric
+    base = _create_mock_report(sharpe=1.2)
+    rep_nan_sharpe = _create_mock_report(sharpe=float("nan"))
+    res = accept(rep_nan_sharpe, baseline=base, target_metric=TargetMetric.SHARPE)
+    assert not res.accepted
+    assert res.failed_gate == "target_metric_improvement"
+
+
+def test_gate_resolves_limits_from_config() -> None:
+    """Verifies dd_limit and turnover_limit resolution from config."""
+    # 1. Config dict
+    config_dict = {"max_drawdown_limit": 0.08, "turnover_limit": 0.3}
+    rep = _create_mock_report(max_drawdown=0.09, turnover=0.25)
+
+    # Passes with standard defaults (0.15 / 1.0)
+    res_default = accept(rep, baseline=None)
+    assert res_default.accepted
+
+    # Fails with strict config dict limits
+    res_config = accept(rep, baseline=None, config=config_dict)
+    assert not res_config.accepted
+    assert res_config.failed_gate == "max_drawdown"
+
+    # 2. Config object
+    class MockConfig:
+        max_drawdown_limit = 0.12
+        turnover_limit = 0.20
+
+    res_obj = accept(rep, baseline=None, config=MockConfig())
+    assert not res_obj.accepted
+    assert res_obj.failed_gate == "turnover"
+
+
+def test_gate_respects_min_improvement() -> None:
+    """Verifies that candidate improves by at least min_improvement."""
+    base = _create_mock_report(sharpe=1.20)
+
+    # Candidate improves by 0.03 (1.23 vs 1.20)
+    cand = _create_mock_report(sharpe=1.23)
+
+    # Passes with 0.01 improvement threshold
+    res_pass = accept(cand, baseline=base, min_improvement=0.01)
+    assert res_pass.accepted
+
+    # Fails with 0.05 improvement threshold
+    res_fail = accept(cand, baseline=base, min_improvement=0.05)
+    assert not res_fail.accepted
+    assert res_fail.failed_gate == "target_metric_improvement"

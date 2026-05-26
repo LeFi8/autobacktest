@@ -4,17 +4,18 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class StrategyConfig(BaseModel):
     """Pydantic v2 strategy configuration model.
 
-    Enforces strict schemas with no extra fields at root, redirecting strategy-specific
-    custom parameters to the `params` dictionary.
+    Enforces schemas with extra fields at root allowed (for custom strategy usage),
+    redirecting strategy-specific custom parameters to the `params` dictionary,
+    while preventing collisions with standard schema fields.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="allow")
 
     universe: list[str] = Field(
         ..., min_length=1, description="List of asset tickers in strategy universe"
@@ -32,6 +33,22 @@ class StrategyConfig(BaseModel):
     params: dict[str, Any] = Field(
         default_factory=dict, description="Strategy-specific parameters"
     )
+
+    @model_validator(mode="after")
+    def validate_no_collisions(self) -> "StrategyConfig":
+        standard_fields = {
+            "universe",
+            "benchmark",
+            "momentum_lookback",
+            "max_drawdown_limit",
+            "turnover_limit",
+        }
+        colliding = standard_fields.intersection(self.params.keys())
+        if colliding:
+            raise ValueError(
+                f"Keys in 'params' collide with top-level schema fields: {colliding}"
+            )
+        return self
 
     @field_validator("universe")
     @classmethod

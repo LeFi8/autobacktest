@@ -67,16 +67,30 @@ def test_negative_values_raises_error() -> None:
         StrategyConfig.model_validate({"universe": ["SPY"], "turnover_limit": -0.1})
 
 
-def test_extra_fields_forbidden() -> None:
-    """Verifies that extra fields at the root are strictly forbidden by ConfigDict."""
+def test_extra_fields_allowed() -> None:
+    """Verifies that extra fields at the root are allowed by ConfigDict."""
+    cfg = StrategyConfig.model_validate(
+        {
+            "universe": ["SPY"],
+            "some_extra_field": "allowed",
+        }
+    )
+    assert cfg.some_extra_field == "allowed"
+
+
+def test_params_collision_raises_error() -> None:
+    """Verifies that key collisions between params and top-level fields are rejected."""
     with pytest.raises(ValidationError) as exc_info:
         StrategyConfig.model_validate(
             {
                 "universe": ["SPY"],
-                "some_extra_field": "not_allowed",
+                "params": {
+                    "universe": ["QQQ"],
+                },
             }
         )
-    assert "Extra inputs are not permitted" in str(exc_info.value)
+    exc_str = str(exc_info.value)
+    assert "Keys in 'params' collide with top-level schema fields" in exc_str
 
 
 def test_from_yaml_loader(tmp_path: Path) -> None:

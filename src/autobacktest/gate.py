@@ -1,7 +1,9 @@
 """Improvement gate rules checks and comparison of strategy metrics."""
 
+import math
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Any
 
 from autobacktest.evaluator.report import EvaluationReport
 
@@ -27,9 +29,11 @@ def accept(
     report: EvaluationReport,
     baseline: EvaluationReport | None,
     target_metric: TargetMetric = TargetMetric.SHARPE,
-    dd_limit: float = 0.15,
-    turnover_limit: float = 1.0,
+    dd_limit: float | None = None,
+    turnover_limit: float | None = None,
     dsr_threshold: float = 0.95,
+    min_improvement: float = 0.0,
+    config: Any = None,
 ) -> GateResult:
     """Evaluate candidate EvaluationReport against lexicographic gates.
 
@@ -40,7 +44,7 @@ def accept(
     4. DSR: deflated_sharpe >= dsr_threshold (e.g. 0.95 probability)
 
     If all pass, tie-breaker:
-    5. Improvement: target metric value > baseline target metric value
+    5. Improvement: target metric value > baseline target metric value + min_improvement
        (if baseline is present)
 
     Args:
@@ -50,15 +54,43 @@ def accept(
         dd_limit: Maximum allowed drawdown in holdout.
         turnover_limit: Maximum allowed annualized turnover rate in holdout.
         dsr_threshold: Minimum required Deflated Sharpe Ratio.
+        min_improvement: Minimum required improvement epsilon.
+        config: Optional strategy configuration to resolve limits.
 
     Returns:
         GateResult: Decision outcome.
     """
+    # Resolve limits from config if not explicitly passed
+    if dd_limit is None:
+        if config is not None:
+            if hasattr(config, "max_drawdown_limit"):
+                dd_limit = config.max_drawdown_limit
+            elif isinstance(config, dict) and "max_drawdown_limit" in config:
+                dd_limit = config["max_drawdown_limit"]
+            else:
+                dd_limit = 0.15
+        else:
+            dd_limit = 0.15
+
+    if turnover_limit is None:
+        if config is not None:
+            if hasattr(config, "turnover_limit"):
+                turnover_limit = config.turnover_limit
+            elif isinstance(config, dict) and "turnover_limit" in config:
+                turnover_limit = config["turnover_limit"]
+            else:
+                turnover_limit = 1.0
+        else:
+            turnover_limit = 1.0
+
     # 1. Max Drawdown Limit
-    if report.holdout_metrics.max_drawdown > dd_limit:
+    max_dd = report.holdout_metrics.max_drawdown
+    if math.isnan(max_dd) or max_dd > dd_limit:
         msg = (
-            f"Holdout max drawdown {report.holdout_metrics.max_drawdown:.4f} "
+            f"Holdout max drawdown {max_dd:.4f} is NaN or "
             f"exceeds limit of {dd_limit:.4f}."
+            if not math.isnan(max_dd)
+            else "Holdout max drawdown is NaN."
         )
         return GateResult(
             accepted=False,
@@ -76,10 +108,13 @@ def accept(
         )
 
     # 3. Turnover limit
-    if report.holdout_metrics.turnover > turnover_limit:
+    turnover = report.holdout_metrics.turnover
+    if math.isnan(turnover) or turnover > turnover_limit:
         msg = (
-            f"Holdout turnover {report.holdout_metrics.turnover:.4f} "
+            f"Holdout turnover {turnover:.4f} is NaN or "
             f"exceeds limit of {turnover_limit:.4f}."
+            if not math.isnan(turnover)
+            else "Holdout turnover is NaN."
         )
         return GateResult(
             accepted=False,
@@ -88,10 +123,13 @@ def accept(
         )
 
     # 4. Deflated Sharpe Ratio threshold
-    if report.deflated_sharpe < dsr_threshold:
+    dsr = report.deflated_sharpe
+    if math.isnan(dsr) or dsr < dsr_threshold:
         msg = (
-            f"Deflated Sharpe Ratio {report.deflated_sharpe:.4f} "
-            f"is below threshold of {dsr_threshold:.4f}."
+            f"Deflated Sharpe Ratio {dsr:.4f} is NaN or "
+            f"below threshold of {dsr_threshold:.4f}."
+            if not math.isnan(dsr)
+            else "Deflated Sharpe Ratio is NaN."
         )
         return GateResult(
             accepted=False,
@@ -114,12 +152,17 @@ def accept(
         candidate_val = _get_metric_val(report)
         baseline_val = _get_metric_val(baseline)
 
-        if candidate_val <= baseline_val:
+        if (
+            math.isnan(candidate_val)
+            or math.isnan(baseline_val)
+            or candidate_val <= baseline_val + min_improvement
+        ):
             return GateResult(
                 accepted=False,
                 reason=(
                     f"Candidate {target_metric.value} ({candidate_val:.4f}) does not "
-                    f"improve upon baseline {target_metric.value} ({baseline_val:.4f})."
+                    f"improve upon baseline {target_metric.value} ({baseline_val:.4f}) "
+                    f"by at least {min_improvement:.4f}."
                 ),
                 failed_gate="target_metric_improvement",
             )

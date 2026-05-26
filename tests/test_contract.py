@@ -77,6 +77,41 @@ def test_validate_signature_keyword_only() -> None:
     assert "must be positional" in err
 
 
+def test_validate_signature_too_many_required_args() -> None:
+    """Verifies signature fails if 3+ parameters are required with no defaults."""
+    mod = DummyModule("test_mod")
+
+    def generate_signals(
+        _prices: pd.DataFrame, _config: dict[str, Any], _required_extra: int
+    ) -> pd.DataFrame:
+        return pd.DataFrame()
+
+    mod.generate_signals = generate_signals  # type: ignore
+    ok, err = validate_signature(mod)
+    assert not ok
+    assert err is not None
+    assert "is required but has no default value" in err
+
+
+def test_validate_signature_with_optional_extra_args() -> None:
+    """Verifies signature passes if extra parameters have default values."""
+    mod = DummyModule("test_mod")
+
+    def generate_signals(
+        _prices: pd.DataFrame,
+        _config: dict[str, Any],
+        _optional_extra: int = 5,
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> pd.DataFrame:
+        return pd.DataFrame()
+
+    mod.generate_signals = generate_signals  # type: ignore
+    ok, err = validate_signature(mod)
+    assert ok
+    assert err is None
+
+
 def test_validate_output_valid() -> None:
     """Verifies valid signal weights DataFrame."""
     dates = pd.date_range("2023-01-01", periods=3)
@@ -146,3 +181,13 @@ def test_validate_output_excessive_leverage() -> None:
     assert not ok
     assert err is not None
     assert "row sums exceed 1.0" in err
+
+
+def test_validate_output_all_zeros() -> None:
+    """Verifies that all-zero weights are rejected."""
+    dates = pd.date_range("2023-01-01", periods=2)
+    df = pd.DataFrame({"SPY": [0.0, 0.0], "BIL": [0.0, 0.0]}, index=dates)
+    ok, err = validate_output(df, ["SPY", "BIL"])
+    assert not ok
+    assert err is not None
+    assert "must not be all zeros" in err

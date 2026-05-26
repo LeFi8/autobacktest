@@ -41,6 +41,38 @@ FORBIDDEN_NAMES = {
     "setattr",
     "delattr",
     "__builtins__",
+    "vars",
+    "breakpoint",
+    # numpy / pandas sandboxing escapes
+    "load",
+    "save",
+    "memmap",
+    "fromfile",
+    "tofile",
+    "read_csv",
+    "to_csv",
+    "read_json",
+    "to_json",
+    "read_excel",
+    "to_excel",
+    "read_pickle",
+    "to_pickle",
+    "read_parquet",
+    "to_parquet",
+    "read_hdf",
+    "to_hdf",
+    "read_feather",
+    "to_feather",
+    "read_xml",
+    "to_xml",
+    "read_html",
+    "to_html",
+    "read_sql",
+    "read_sql_table",
+    "read_sql_query",
+    "to_sql",
+    "read_clipboard",
+    "to_clipboard",
 }
 
 
@@ -96,16 +128,18 @@ def preflight(
 
     # 2. Pydantic Config Validation
     cfg_res = _check_config(config_path)
-    if not cfg_res.passed or cfg_res.detail is None:
+    if not cfg_res.passed:
         return cfg_res
+    assert cfg_res.detail is not None
 
     # Parse config dictionary from Pydantic StrategyConfig
     config_model = cfg_res.detail  # Holds StrategyConfig instance
 
     # 3. Dynamic Import
     import_res = _check_import(strategy_name, strategy_path)
-    if not import_res.passed or import_res.detail is None:
+    if not import_res.passed:
         return import_res
+    assert import_res.detail is not None
 
     module = import_res.detail
 
@@ -242,11 +276,11 @@ def _generate_synthetic_prices(
     tickers: list[str], n_days: int, seed: int = 42
 ) -> pd.DataFrame:
     """Helper to generate geometric random walk price DataFrame."""
-    np.random.seed(seed)
+    rng = np.random.default_rng(seed)
     dates = pd.date_range("2023-01-01", periods=n_days, freq="B")
     prices = pd.DataFrame(index=dates)
     for ticker in tickers:
-        steps = np.random.normal(0.0002, 0.01, n_days)
+        steps = rng.normal(0.0002, 0.01, n_days)
         prices[ticker] = 100.0 * np.exp(np.cumsum(steps))
     return prices
 
@@ -291,28 +325,54 @@ def _check_lookahead(module: Any, config: StrategyConfig) -> ValidationResult:
         prices_base = _generate_synthetic_prices(tickers, n_days=756, seed=123)
         weights_base = module.generate_signals(prices_base, config_dict)
 
-        # 2. Append future pricing data (additional 10 days of different random noise)
-        prices_future = _generate_synthetic_prices(tickers, n_days=766, seed=456)
-        # Re-align original 756 days to match base prices exactly to prevent drift
-        prices_future.iloc[:756] = prices_base.iloc[:756]
+        # 2. Append continuous future pricing data
+        # (additional 10 days of different random noise)
+        rng_future = np.random.default_rng(456)
+        future_dates = pd.date_range(
+            prices_base.index[-1] + pd.offsets.BDay(), periods=10, freq="B"
+        )
+        prices_future_ext = pd.DataFrame(index=future_dates, columns=tickers)
+        for ticker in tickers:
+            steps = rng_future.normal(0.0002, 0.01, 10)
+            base_last = prices_base[ticker].iloc[-1]
+            prices_future_ext[ticker] = base_last * np.exp(np.cumsum(steps))
 
+        prices_future = pd.concat([prices_base, prices_future_ext])
         weights_future = module.generate_signals(prices_future, config_dict)
 
         # Compare weights returned for the original 756-day sub-window
         common_idx = weights_base.index.intersection(weights_future.index)
         if common_idx.empty:
             return ValidationResult(
-                passed=True
-            )  # sparse rebalance dates might not overlap
+                passed=False,
+                error_code=ValidationError.LOOKAHEAD_DETECTED,
+                detail=(
+                    "Lookahead bias detected: no overlapping rebalance dates "
+                    "between the base run and the future-extended run."
+                ),
+            )
 
         w_base = weights_base.loc[common_idx]
         w_fut = weights_future.loc[common_idx]
 
+        if w_base.isna().any().any() or w_fut.isna().any().any():
+            return ValidationResult(
+                passed=False,
+                error_code=ValidationError.SMOKE_TEST_FAILED,
+                detail=(
+                    "Lookahead bias sniff test failed: strategy weights contain NaNs."
+                ),
+            )
+
         # Use float tolerance for numerical precision differences (e.g. 1e-7)
-        if not np.allclose(w_base.values, w_fut.values, atol=1e-7):
+        if not np.allclose(
+            w_base.values, w_fut.values, rtol=0.0, atol=1e-7, equal_nan=True
+        ):
             # Locate first discrepancy date
             diff = np.abs(w_base - w_fut)
             bad_row = diff.max(axis=1) > 1e-7
+            if not bad_row.any():
+                return ValidationResult(passed=True)
             first_bad_date = common_idx[bad_row][0].strftime("%Y-%m-%d")
             msg = (
                 f"Lookahead bias sniff test failed. Rebalance signals at "
@@ -329,6 +389,6 @@ def _check_lookahead(module: Any, config: StrategyConfig) -> ValidationResult:
     except Exception as e:
         return ValidationResult(
             passed=False,
-            error_code=ValidationError.LOOKAHEAD_DETECTED,
-            detail=f"Lookahead bias sniff test threw exception: {e}",
+            error_code=ValidationError.SMOKE_TEST_FAILED,
+            detail=f"Lookahead bias sniff test execution failed: {e}",
         )
