@@ -36,4 +36,6 @@ tmp/
 *.candidate
 *.py.candidate
 *.yaml.candidate
+*_candidate_*.py
+*_candidate_*.yaml
 

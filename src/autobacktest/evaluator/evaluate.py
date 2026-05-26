@@ -1,5 +1,7 @@
 """Orchestration of walk-forward and holdout backtest evaluations."""
 
+from __future__ import annotations
+
 import hashlib
 from typing import Any
 
@@ -112,14 +114,17 @@ def generate_window_report(
     )
 
 
-def evaluate_strategy(
+def evaluate_strategy_detailed(
     strategy_name: str,
     generate_signals_fn: Any,
     config: dict[str, Any] | StrategyConfig,
     start_date: str = "2015-01-01",
     end_date: str = "2026-01-01",
-) -> EvaluationReport:
-    """Run full deterministic walk-forward & holdout evaluation lifecycle."""
+) -> tuple[EvaluationReport, pd.Series[Any]]:
+    """Run full deterministic walk-forward & holdout evaluation lifecycle.
+
+    Returns a tuple of (EvaluationReport, holdout_net_returns Series).
+    """
     if isinstance(config, StrategyConfig):
         flat_config = config.to_flat_dict()
     else:
@@ -186,7 +191,18 @@ def evaluate_strategy(
         prices, weights, holdout_start, holdout_end, bench_returns
     )
 
-    # Evaluate full period net returns for Monte Carlo, DSR, and Regime tests
+    # Compute holdout net returns from the same window backtest used for holdout_report
+    # (consistent source for both observed_sharpe and the DSR test statistic)
+    holdout_prices = prices.loc[holdout_start:holdout_end]
+    holdout_weights = weights.loc[holdout_start:holdout_end]
+    h_portfolio_returns, _, h_daily_weights = run_vectorized_backtest(
+        holdout_prices, holdout_weights
+    )
+    holdout_net_returns, _, _ = calculate_turnover_and_costs(
+        h_portfolio_returns, h_daily_weights, holdout_prices
+    )
+
+    # Evaluate full period net returns for Monte Carlo and Regime tests
     full_returns, _, daily_weights = run_vectorized_backtest(prices, weights)
     net_returns, _, _ = calculate_turnover_and_costs(
         full_returns, daily_weights, prices
@@ -204,7 +220,7 @@ def evaluate_strategy(
     historical_sharpes = flat_config.get("historical_sharpes")
 
     dsr = calculate_psr_dsr(
-        net_returns.loc[holdout_start:holdout_end],
+        holdout_net_returns,
         historical_sharpes=historical_sharpes,
         effective_trials=effective_trials,
     )
@@ -237,4 +253,21 @@ def evaluate_strategy(
 
     gate_accept(report, baseline=None, config=flat_config)
 
+    return report, holdout_net_returns
+
+
+def evaluate_strategy(
+    strategy_name: str,
+    generate_signals_fn: Any,
+    config: dict[str, Any] | StrategyConfig,
+    start_date: str = "2015-01-01",
+    end_date: str = "2026-01-01",
+) -> EvaluationReport:
+    """Run full deterministic walk-forward & holdout evaluation lifecycle.
+
+    Thin wrapper around evaluate_strategy_detailed that returns only the report.
+    """
+    report, _ = evaluate_strategy_detailed(
+        strategy_name, generate_signals_fn, config, start_date, end_date
+    )
     return report
