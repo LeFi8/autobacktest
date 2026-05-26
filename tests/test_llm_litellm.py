@@ -16,50 +16,24 @@ def test_litellm_provider_properties() -> None:
 
 @patch("litellm.completion")
 def test_litellm_provider_success(mock_completion: MagicMock) -> None:
-    # Setup mock return value matching LiteLLM format
-    mock_choice = MagicMock()
-    mock_choice.message.content = """{
-        "strategy_code": "def generate_signals(): return None",
-        "config_yaml": "universe: [SPY]",
-        "reasoning": "Conservative change"
-    }"""
-    mock_response = MagicMock()
-    mock_response.choices = [mock_choice]
-    mock_completion.return_value = mock_response
-
+    mock_completion.return_value = _mock_response(_CLEAN_JSON)
     provider = LiteLLMProvider(model="gpt-4o")
-    context = AgentContext(
-        strategy_name="haa",
-        strategy_code="def generate_signals(): pass",
-        config_yaml="universe: []",
-        program_text="make it conservative",
-        evaluation_report=None,
-        iteration=1,
-    )
 
-    edit = provider.generate_edit(context)
+    edit = provider.generate_edit(_make_context())
 
-    # Verify LiteLLM called correctly
     mock_completion.assert_called_once()
     _, kwargs = mock_completion.call_args
     assert kwargs["model"] == "gpt-4o"
     assert kwargs["temperature"] == 0.7
     assert kwargs["max_tokens"] == 4096
-
-    # Verify structured parsing
-    assert edit.strategy_code == "def generate_signals(): return None"
-    assert edit.config_yaml == "universe: [SPY]"
-    assert edit.reasoning == "Conservative change"
+    assert edit.strategy_code == _EXPECTED_PAYLOAD["strategy_code"]
+    assert edit.config_yaml == _EXPECTED_PAYLOAD["config_yaml"]
+    assert edit.reasoning == _EXPECTED_PAYLOAD["reasoning"]
     assert "Conservative change" in edit.raw_response
 
 
-@patch("litellm.completion")
-def test_litellm_provider_error_handling(mock_completion: MagicMock) -> None:
-    # Setup mock to raise API exception
-    mock_completion.side_effect = Exception("API connection failure")
-
-    provider = LiteLLMProvider(model="gpt-4o")
-    context = AgentContext(
+def _make_context() -> AgentContext:
+    return AgentContext(
         strategy_name="haa",
         strategy_code="def generate_signals(): pass",
         config_yaml="universe: []",
@@ -68,8 +42,67 @@ def test_litellm_provider_error_handling(mock_completion: MagicMock) -> None:
         iteration=1,
     )
 
+
+def _mock_response(content: str) -> MagicMock:
+    mock_choice = MagicMock()
+    mock_choice.message.content = content
+    mock_response = MagicMock()
+    mock_response.choices = [mock_choice]
+    return mock_response
+
+
+_EXPECTED_PAYLOAD = {
+    "strategy_code": "def generate_signals(): return None",
+    "config_yaml": "universe: [SPY]",
+    "reasoning": "Conservative change",
+}
+
+_CLEAN_JSON = """{
+    "strategy_code": "def generate_signals(): return None",
+    "config_yaml": "universe: [SPY]",
+    "reasoning": "Conservative change"
+}"""
+
+
+@patch("litellm.completion")
+def test_litellm_provider_json_fenced(mock_completion: MagicMock) -> None:
+    mock_completion.return_value = _mock_response(f"```json\n{_CLEAN_JSON}\n```")
+    provider = LiteLLMProvider(model="gpt-4o")
+    edit = provider.generate_edit(_make_context())
+    assert edit.strategy_code == _EXPECTED_PAYLOAD["strategy_code"]
+    assert edit.config_yaml == _EXPECTED_PAYLOAD["config_yaml"]
+    assert edit.reasoning == _EXPECTED_PAYLOAD["reasoning"]
+
+
+@patch("litellm.completion")
+def test_litellm_provider_plain_fenced(mock_completion: MagicMock) -> None:
+    mock_completion.return_value = _mock_response(f"```\n{_CLEAN_JSON}\n```")
+    provider = LiteLLMProvider(model="gpt-4o")
+    edit = provider.generate_edit(_make_context())
+    assert edit.strategy_code == _EXPECTED_PAYLOAD["strategy_code"]
+    assert edit.config_yaml == _EXPECTED_PAYLOAD["config_yaml"]
+    assert edit.reasoning == _EXPECTED_PAYLOAD["reasoning"]
+
+
+@patch("litellm.completion")
+def test_litellm_provider_prose_wrapped(mock_completion: MagicMock) -> None:
+    prose = f"Here is the edit:\n{_CLEAN_JSON}\nLet me know if needed."
+    mock_completion.return_value = _mock_response(prose)
+    provider = LiteLLMProvider(model="gpt-4o")
+    edit = provider.generate_edit(_make_context())
+    assert edit.strategy_code == _EXPECTED_PAYLOAD["strategy_code"]
+    assert edit.config_yaml == _EXPECTED_PAYLOAD["config_yaml"]
+    assert edit.reasoning == _EXPECTED_PAYLOAD["reasoning"]
+
+
+@patch("litellm.completion")
+def test_litellm_provider_error_handling(mock_completion: MagicMock) -> None:
+    mock_completion.side_effect = Exception("API connection failure")
+
+    provider = LiteLLMProvider(model="gpt-4o")
+
     with pytest.raises(LLMError) as exc_info:
-        provider.generate_edit(context)
+        provider.generate_edit(_make_context())
 
     assert exc_info.value.provider == "litellm"
     assert exc_info.value.model == "gpt-4o"
