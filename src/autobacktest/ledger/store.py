@@ -216,15 +216,19 @@ class LedgerStore:
                 a.created_at
             FROM attempts a
             INNER JOIN (
-                SELECT strategy_name, MAX(observed_sharpe) AS best_sharpe
-                FROM attempts
-                WHERE accepted = 1
-                {where}
-                GROUP BY strategy_name
-            ) best
-            ON a.strategy_name = best.strategy_name
-               AND a.observed_sharpe = best.best_sharpe
-               AND a.accepted = 1
+                SELECT s.strategy_name, MIN(s.id) AS best_id
+                FROM attempts s
+                INNER JOIN (
+                    SELECT strategy_name, MAX(observed_sharpe) AS best_sharpe
+                    FROM attempts
+                    WHERE accepted = 1
+                    {where}
+                    GROUP BY strategy_name
+                ) m ON s.strategy_name = m.strategy_name
+                     AND s.observed_sharpe = m.best_sharpe
+                     AND s.accepted = 1
+                GROUP BY s.strategy_name
+            ) best ON a.id = best.best_id
             ORDER BY a.observed_sharpe DESC
         """
         if strategy_name is not None:

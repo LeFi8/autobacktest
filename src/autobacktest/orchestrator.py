@@ -99,6 +99,8 @@ def run_optimization(
     )
     _deflate(baseline_report, baseline_returns, ledger)
     incumbent = baseline_report
+    incumbent_returns = baseline_returns
+    baseline_sha: str | None = git_ledger._repo.head.commit.hexsha
     ledger.record_attempt(
         run_id=run_id,
         iteration=0,
@@ -114,7 +116,7 @@ def run_optimization(
         regime_passed=baseline_report.regime_passed,
         accepted=True,
         committed=True,
-        commit_sha=None,
+        commit_sha=baseline_sha,
         rejection_reason=None,
         report_json=baseline_report.to_json(),
         holdout_returns=baseline_returns,
@@ -122,161 +124,178 @@ def run_optimization(
 
     # 8. Optimization loop
     n_committed = 0
-    for k in range(1, iterations + 1):
-        event: dict[str, object] = {
-            "iteration": k,
-            "strategy": strategy_name,
-        }
-
-        # 8a. Build context
-        current_code = strat_path.read_text(encoding="utf-8")
-        current_yaml = cfg_path.read_text(encoding="utf-8")
-        ctx = AgentContext(
-            strategy_name=strategy_name,
-            strategy_code=current_code,
-            config_yaml=current_yaml,
-            program_text=spec.raw_text,
-            evaluation_report=incumbent,
-            iteration=k,
-        )
-
-        # 8b. Get LLM edit
-        try:
-            edit = provider.generate_edit(ctx)
-        except LLMError as e:
-            event["llm_error"] = str(e)
-            event["validation"] = None
-            event["evaluation"] = None
-            event["gate"] = None
-            event["commit"] = None
-            event_log.write(event)
-            continue
-
-        event["edit"] = {"reasoning": edit.reasoning}
-
-        # 8c. Validate candidate via temp files (same pattern as llm-test command)
-        ok, error_code, detail = _validate_candidate(
-            strategy_name, edit, strategies_dir, configs_dir
-        )
-        if not ok:
-            event["validation"] = {
-                "passed": False,
-                "error_code": error_code,
-                "detail": detail,
+    try:
+        for k in range(1, iterations + 1):
+            event: dict[str, object] = {
+                "iteration": k,
+                "strategy": strategy_name,
             }
-            event["evaluation"] = None
-            event["gate"] = None
-            event["commit"] = None
+
+            # 8a. Build context
+            current_code = strat_path.read_text(encoding="utf-8")
+            current_yaml = cfg_path.read_text(encoding="utf-8")
+            ctx = AgentContext(
+                strategy_name=strategy_name,
+                strategy_code=current_code,
+                config_yaml=current_yaml,
+                program_text=spec.raw_text,
+                evaluation_report=incumbent,
+                iteration=k,
+            )
+
+            # 8b. Get LLM edit
+            try:
+                edit = provider.generate_edit(ctx)
+            except LLMError as e:
+                event["llm_error"] = str(e)
+                event["validation"] = None
+                event["evaluation"] = None
+                event["gate"] = None
+                event["commit"] = None
+                event_log.write(event)
+                continue
+
+            event["edit"] = {"reasoning": edit.reasoning}
+
+            # 8c. Validate candidate via temp files (same pattern as llm-test command)
+            ok, error_code, detail = _validate_candidate(
+                strategy_name, edit, strategies_dir, configs_dir
+            )
+            if not ok:
+                event["validation"] = {
+                    "passed": False,
+                    "error_code": error_code,
+                    "detail": detail,
+                }
+                event["evaluation"] = None
+                event["gate"] = None
+                event["commit"] = None
+                event_log.write(event)
+                continue
+
+            event["validation"] = {"passed": True}
+
+            # 8d. Apply to real files
+            strat_path.write_text(edit.strategy_code, encoding="utf-8")
+            cfg_path.write_text(edit.config_yaml, encoding="utf-8")
+
+            # 8e. Evaluate
+            try:
+                new_config_obj = StrategyConfig.from_yaml(cfg_path)
+                new_config = new_config_obj.model_dump()
+                candidate_fn = _load_signals(strat_path)
+                report_k, returns_k = evaluate_strategy_detailed(
+                    strategy_name,
+                    candidate_fn,
+                    new_config,
+                    start_date=start_date,
+                    end_date=end_date,
+                )
+            except Exception as e:
+                # Rollback and skip
+                git_ledger.rollback_strategy(strategy_name)
+                event["evaluation"] = {"error": str(e)}
+                event["gate"] = None
+                event["commit"] = None
+                event_log.write(event)
+                continue
+
+            # 8f. DSR deflation
+            _deflate(report_k, returns_k, ledger)
+
+            # 8g. Gate against incumbent
+            gate_res = accept(
+                report_k,
+                baseline=incumbent,
+                target_metric=target_metric,
+                config=new_config,
+            )
+
+            event["evaluation"] = {
+                "observed_sharpe": report_k.observed_sharpe,
+                "deflated_sharpe": report_k.deflated_sharpe,
+                "effective_trials": report_k.effective_trials,
+                "holdout_max_drawdown": report_k.holdout_metrics.max_drawdown,
+                "holdout_turnover": report_k.holdout_metrics.turnover,
+                "regime_passed": report_k.regime_passed,
+            }
+
+            # 8h. Commit or rollback
+            if gate_res.accepted:
+                sha = git_ledger.commit_strategy(
+                    strategy_name,
+                    f"iter {k}: {edit.reasoning[:72]}",
+                )
+                incumbent = report_k
+                incumbent_returns = returns_k
+                n_committed += 1
+                ledger.record_attempt(
+                    run_id=run_id,
+                    iteration=k,
+                    strategy_name=strategy_name,
+                    dataset_hash=dataset_hash,
+                    config_yaml=edit.config_yaml,
+                    observed_sharpe=report_k.observed_sharpe,
+                    deflated_sharpe=report_k.deflated_sharpe,
+                    target_metric=target_metric.value,
+                    target_metric_value=_get_metric_value(report_k, target_metric),
+                    holdout_max_drawdown=report_k.holdout_metrics.max_drawdown,
+                    holdout_turnover=report_k.holdout_metrics.turnover,
+                    regime_passed=report_k.regime_passed,
+                    accepted=True,
+                    committed=True,
+                    commit_sha=sha,
+                    rejection_reason=None,
+                    report_json=report_k.to_json(),
+                    holdout_returns=returns_k,
+                )
+                event["gate"] = {"accepted": True, "reason": None}
+                event["commit"] = {"sha": sha}
+            else:
+                git_ledger.rollback_strategy(strategy_name)
+                ledger.record_attempt(
+                    run_id=run_id,
+                    iteration=k,
+                    strategy_name=strategy_name,
+                    dataset_hash=dataset_hash,
+                    config_yaml=edit.config_yaml,
+                    observed_sharpe=report_k.observed_sharpe,
+                    deflated_sharpe=report_k.deflated_sharpe,
+                    target_metric=target_metric.value,
+                    target_metric_value=_get_metric_value(report_k, target_metric),
+                    holdout_max_drawdown=report_k.holdout_metrics.max_drawdown,
+                    holdout_turnover=report_k.holdout_metrics.turnover,
+                    regime_passed=report_k.regime_passed,
+                    accepted=False,
+                    committed=False,
+                    commit_sha=None,
+                    rejection_reason=gate_res.reason,
+                    report_json=report_k.to_json(),
+                    holdout_returns=returns_k,
+                )
+                event["gate"] = {"accepted": False, "reason": gate_res.reason}
+                event["commit"] = None
+
             event_log.write(event)
-            continue
 
-        event["validation"] = {"passed": True}
-
-        # 8d. Apply to real files
-        strat_path.write_text(edit.strategy_code, encoding="utf-8")
-        cfg_path.write_text(edit.config_yaml, encoding="utf-8")
-
-        # 8e. Evaluate
+    finally:
+        # Refresh final report's DSR using complete session history so the
+        # returned incumbent reflects the true multiple-testing penalty.
         try:
-            new_config_obj = StrategyConfig.from_yaml(cfg_path)
-            new_config = new_config_obj.model_dump()
-            candidate_fn = _load_signals(strat_path)
-            report_k, returns_k = evaluate_strategy_detailed(
-                strategy_name,
-                candidate_fn,
-                new_config,
-                start_date=start_date,
-                end_date=end_date,
+            hist_matrix, hist_sharpes = ledger.fetch_historical_returns(
+                incumbent.dataset_hash
             )
-        except Exception as e:
-            # Rollback and skip
-            git_ledger.rollback_strategy(strategy_name)
-            event["evaluation"] = {"error": str(e)}
-            event["gate"] = None
-            event["commit"] = None
-            event_log.write(event)
-            continue
-
-        # 8f. DSR deflation
-        _deflate(report_k, returns_k, ledger)
-
-        # 8g. Gate against incumbent
-        gate_res = accept(
-            report_k,
-            baseline=incumbent,
-            target_metric=target_metric,
-            config=new_config,
-        )
-
-        event["evaluation"] = {
-            "observed_sharpe": report_k.observed_sharpe,
-            "deflated_sharpe": report_k.deflated_sharpe,
-            "effective_trials": report_k.effective_trials,
-            "holdout_max_drawdown": report_k.holdout_metrics.max_drawdown,
-            "holdout_turnover": report_k.holdout_metrics.turnover,
-            "regime_passed": report_k.regime_passed,
-        }
-
-        # 8h. Commit or rollback
-        if gate_res.accepted:
-            sha = git_ledger.commit_strategy(
-                strategy_name,
-                f"iter {k}: {edit.reasoning[:72]}",
-            )
-            incumbent = report_k
-            n_committed += 1
-            ledger.record_attempt(
-                run_id=run_id,
-                iteration=k,
-                strategy_name=strategy_name,
-                dataset_hash=dataset_hash,
-                config_yaml=edit.config_yaml,
-                observed_sharpe=report_k.observed_sharpe,
-                deflated_sharpe=report_k.deflated_sharpe,
-                target_metric=target_metric.value,
-                target_metric_value=_get_metric_value(report_k, target_metric),
-                holdout_max_drawdown=report_k.holdout_metrics.max_drawdown,
-                holdout_turnover=report_k.holdout_metrics.turnover,
-                regime_passed=report_k.regime_passed,
-                accepted=True,
-                committed=True,
-                commit_sha=sha,
-                rejection_reason=None,
-                report_json=report_k.to_json(),
-                holdout_returns=returns_k,
-            )
-            event["gate"] = {"accepted": True, "reason": None}
-            event["commit"] = {"sha": sha}
-        else:
-            git_ledger.rollback_strategy(strategy_name)
-            ledger.record_attempt(
-                run_id=run_id,
-                iteration=k,
-                strategy_name=strategy_name,
-                dataset_hash=dataset_hash,
-                config_yaml=edit.config_yaml,
-                observed_sharpe=report_k.observed_sharpe,
-                deflated_sharpe=report_k.deflated_sharpe,
-                target_metric=target_metric.value,
-                target_metric_value=_get_metric_value(report_k, target_metric),
-                holdout_max_drawdown=report_k.holdout_metrics.max_drawdown,
-                holdout_turnover=report_k.holdout_metrics.turnover,
-                regime_passed=report_k.regime_passed,
-                accepted=False,
-                committed=False,
-                commit_sha=None,
-                rejection_reason=gate_res.reason,
-                report_json=report_k.to_json(),
-                holdout_returns=returns_k,
-            )
-            event["gate"] = {"accepted": False, "reason": gate_res.reason}
-            event["commit"] = None
-
-        event_log.write(event)
-
-    # 9. Cleanup
-    event_log.close()
-    ledger.close()
+            if not hist_matrix.empty and len(hist_sharpes) > 1:
+                n = max(1, calculate_effective_trials(hist_matrix))
+                incumbent.effective_trials = n
+                incumbent.deflated_sharpe = calculate_psr_dsr(
+                    incumbent_returns, hist_sharpes, n
+                )
+        except Exception:
+            pass  # best-effort; do not mask the loop exception
+        # 9. Cleanup
+        event_log.close()
+        ledger.close()
 
     return OrchestratorResult(
         run_id=run_id,

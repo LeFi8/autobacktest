@@ -191,7 +191,18 @@ def evaluate_strategy_detailed(
         prices, weights, holdout_start, holdout_end, bench_returns
     )
 
-    # Evaluate full period net returns for Monte Carlo, DSR, and Regime tests
+    # Compute holdout net returns from the same window backtest used for holdout_report
+    # (consistent source for both observed_sharpe and the DSR test statistic)
+    holdout_prices = prices.loc[holdout_start:holdout_end]
+    holdout_weights = weights.loc[holdout_start:holdout_end]
+    h_portfolio_returns, _, h_daily_weights = run_vectorized_backtest(
+        holdout_prices, holdout_weights
+    )
+    holdout_net_returns, _, _ = calculate_turnover_and_costs(
+        h_portfolio_returns, h_daily_weights, holdout_prices
+    )
+
+    # Evaluate full period net returns for Monte Carlo and Regime tests
     full_returns, _, daily_weights = run_vectorized_backtest(prices, weights)
     net_returns, _, _ = calculate_turnover_and_costs(
         full_returns, daily_weights, prices
@@ -208,7 +219,6 @@ def evaluate_strategy_detailed(
     effective_trials = int(flat_config.get("effective_trials", 1))
     historical_sharpes = flat_config.get("historical_sharpes")
 
-    holdout_net_returns = net_returns.loc[holdout_start:holdout_end]
     dsr = calculate_psr_dsr(
         holdout_net_returns,
         historical_sharpes=historical_sharpes,

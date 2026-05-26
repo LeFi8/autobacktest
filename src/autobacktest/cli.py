@@ -78,9 +78,9 @@ def run(
     if provider == "mock":
         provider_impl = MockProvider()
     else:
-        # Build model string: prefix with provider if given
+        # Prefix with provider unless the model already contains a slash.
         model_str = model or "gpt-4o"
-        if provider and provider != "litellm":
+        if provider and provider != "litellm" and "/" not in model_str:
             model_str = f"{provider}/{model_str}"
         provider_impl = LiteLLMProvider(model=model_str)
 

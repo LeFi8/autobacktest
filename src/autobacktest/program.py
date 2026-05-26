@@ -19,16 +19,28 @@ def parse_program(path: Path) -> ProgramSpec:
     """
     raw_text = path.read_text(encoding="utf-8")
 
-    # Extract text under each H1 header (up to next H1 or EOF)
-    sections: dict[str, str] = {}
-    pattern = re.compile(r"^# (.+)$", re.MULTILINE)
-    matches = list(pattern.finditer(raw_text))
+    # Walk line by line to find H1 headers, skipping fenced code blocks so that
+    # lines like `# comment` inside ``` fences are not treated as headers.
+    header_re = re.compile(r"^# (.+)$")
+    in_fence = False
+    # Each entry: (name, line_start, body_start) where line_start is the offset
+    # of the `# Header` line and body_start is right after its trailing newline.
+    headers: list[tuple[str, int, int]] = []
+    pos = 0
+    for line in raw_text.splitlines(keepends=True):
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+        elif not in_fence:
+            m = header_re.match(line.rstrip("\r\n"))
+            if m:
+                headers.append((m.group(1).strip(), pos, pos + len(line)))
+        pos += len(line)
 
-    for i, match in enumerate(matches):
-        header = match.group(1).strip()
-        start = match.end()
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(raw_text)
-        sections[header] = raw_text[start:end].strip()
+    sections: dict[str, str] = {}
+    for i, (name, _line_start, body_start) in enumerate(headers):
+        next_line_start = headers[i + 1][1] if i + 1 < len(headers) else len(raw_text)
+        sections[name] = raw_text[body_start:next_line_start].strip()
 
     if "Objective" not in sections:
         raise ValueError(

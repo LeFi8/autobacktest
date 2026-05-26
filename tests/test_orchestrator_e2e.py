@@ -231,8 +231,16 @@ def test_e2e_full_run_commits_improved_strategy(project_root: Path) -> None:
     # At least iteration 1 should have been accepted (HIGH beats LOW on Sharpe)
     assert result.n_committed >= 1
 
-    # Final report Sharpe should be clearly positive (HIGH asset has strong drift)
-    assert result.final_report.observed_sharpe > 0
+    # Final report Sharpe should be clearly higher than LOW asset (~0.01%/day drift);
+    # HIGH asset has ~0.1%/day drift so its annualized Sharpe is >> 1.0.
+    assert result.final_report.observed_sharpe > 1.0
+
+    # Verify the committed file actually contains the IMPROVED (HIGH) strategy code.
+    repo = git.Repo(project_root)
+    committed_code = repo.git.show(f"{result.branch}:strategies/toy.py")
+    assert 'weights["HIGH"] = 1.0' in committed_code, (
+        f"Expected HIGH allocation in committed strategy, got:\n{committed_code}"
+    )
 
     # --- events.jsonl ---
     events_path = project_root / "runs" / result.run_id / "events.jsonl"
