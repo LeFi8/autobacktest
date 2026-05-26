@@ -70,6 +70,8 @@ class LiteLLMProvider(LLMProvider):
                 max_tokens=self.max_tokens,
             )
 
+            if not response.choices:
+                raise ValueError("LLM returned no choices.")
             content = response.choices[0].message.content
             if not content:
                 raise ValueError("LLM returned an empty or invalid content response.")

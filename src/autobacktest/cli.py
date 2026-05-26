@@ -249,10 +249,13 @@ def llm_test(
     typer.echo(f"Reasoning:\n{edit.reasoning}\n")
 
     # 4. Write Temporary Files for Validation
+    import uuid
+
     candidate_py_path = strategies_dir / f"{strategy}.py.candidate"
     candidate_yaml_path = configs_dir / f"{strategy}.yaml.candidate"
-    temp_py_path = strategies_dir / f"{strategy}_candidate.py"
-    temp_yaml_path = configs_dir / f"{strategy}_candidate.yaml"
+    temp_name = f"{strategy}_candidate_{uuid.uuid4().hex}"
+    temp_py_path = strategies_dir / f"{temp_name}.py"
+    temp_yaml_path = configs_dir / f"{temp_name}.yaml"
 
     try:
         # Temporary files for validator preflight
@@ -267,7 +270,7 @@ def llm_test(
 
     typer.echo("Running pre-flight validation on generated candidate...")
     try:
-        res = preflight(f"{strategy}_candidate", strategies_dir, configs_dir)
+        res = preflight(temp_name, strategies_dir, configs_dir)
     finally:
         # Clean up temporary validator files
         if temp_py_path.exists():
