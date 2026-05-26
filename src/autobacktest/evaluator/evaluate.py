@@ -16,6 +16,7 @@ from autobacktest.evaluator.monte_carlo import run_block_bootstrap
 from autobacktest.evaluator.regime import evaluate_stress_regimes
 from autobacktest.evaluator.report import EvaluationReport, WindowReport
 from autobacktest.evaluator.walk_forward import generate_walk_forward_windows
+from autobacktest.strategy.config_schema import StrategyConfig
 
 
 def calculate_sortino_ratio(net_returns: pd.Series) -> float:
@@ -114,13 +115,23 @@ def generate_window_report(
 def evaluate_strategy(
     strategy_name: str,
     generate_signals_fn: Any,
-    config: dict[str, Any],
+    config: dict[str, Any] | StrategyConfig,
     start_date: str = "2015-01-01",
     end_date: str = "2026-01-01",
 ) -> EvaluationReport:
     """Run full deterministic walk-forward & holdout evaluation lifecycle."""
-    tickers = config.get("universe", [])
-    benchmark_ticker = config.get("benchmark", "SPY")
+    if isinstance(config, StrategyConfig):
+        flat_config = config.to_flat_dict()
+    else:
+        flat_config = dict(config)
+        params = flat_config.get("params", {})
+        if isinstance(params, dict):
+            for k, v in params.items():
+                if k not in flat_config:
+                    flat_config[k] = v
+
+    tickers = flat_config.get("universe", [])
+    benchmark_ticker = flat_config.get("benchmark", "SPY")
 
     # Fetch daily price series
     raw_provider = YFinanceProvider()
@@ -140,10 +151,22 @@ def evaluate_strategy(
     bench_returns = benchmark_prices[benchmark_ticker].pct_change().fillna(0.0)
 
     # Dynamic dynamic weights generation from custom strategy function
-    weights = generate_signals_fn(prices, config)
+    weights = generate_signals_fn(prices, flat_config)
+
+    # Sanity validate output weights contract (Finding 14)
+    from autobacktest.strategy.contract import validate_output
+
+    ok, err = validate_output(weights, tickers, expected_index=prices.index)
+    if not ok:
+        raise ValueError(f"Strategy weights validation failed: {err}")
 
     # Partition holdout data (default last 3 years)
     in_sample_idx, holdout_idx = partition_holdout_data(prices.index, holdout_years=3)
+    if in_sample_idx.empty or holdout_idx.empty:
+        raise ValueError(
+            "In-sample or holdout period is empty. "
+            "Ensure the backtest period is sufficiently long."
+        )
 
     # Walk-forward on In-Sample index
     wf_windows = generate_walk_forward_windows(
@@ -177,8 +200,8 @@ def evaluate_strategy(
 
     # Sharpe ratio DSR
     observed_sharpe = holdout_report.sharpe_ratio
-    effective_trials = int(config.get("effective_trials", 1))
-    historical_sharpes = config.get("historical_sharpes")
+    effective_trials = int(flat_config.get("effective_trials", 1))
+    historical_sharpes = flat_config.get("historical_sharpes")
 
     dsr = calculate_psr_dsr(
         net_returns.loc[holdout_start:holdout_end],
@@ -186,32 +209,17 @@ def evaluate_strategy(
         effective_trials=effective_trials,
     )
 
-    # Improvement gate thresholds checklist evaluation
-    max_dd_limit = config.get("max_drawdown_limit", 0.15)
-    gates_passed = {
-        "max_drawdown": holdout_report.max_drawdown <= max_dd_limit,
-        "turnover": holdout_report.turnover <= config.get("turnover_limit", 1.0),
-        "regimes": regime_passed,
-        "deflated_sharpe": dsr >= 0.95,  # 95% confidence true Sharpe > 0
-    }
-
-    is_accepted = all(gates_passed.values())
-    rejection_reason = None
-    if not is_accepted:
-        failed_gates = [k for k, v in gates_passed.items() if not v]
-        rejection_reason = f"Failed gates: {', '.join(failed_gates)}"
-
     # Generate complete stable dataset hash using hashlib
     tickers_str = ",".join(sorted(tickers))
     dataset_hash = hashlib.sha256(tickers_str.encode()).hexdigest()[:16]
 
-    # Generate complete report
-    return EvaluationReport(
+    # Generate complete report (Finding 7)
+    report = EvaluationReport(
         strategy_name=strategy_name,
         dataset_hash=dataset_hash,
-        gates_passed=gates_passed,
-        is_accepted=is_accepted,
-        rejection_reason=rejection_reason,
+        gates_passed={},
+        is_accepted=False,
+        rejection_reason=None,
         holdout_metrics=holdout_report,
         walk_forward_metrics=wf_reports,
         regime_drawdowns=regime_drawdowns,
@@ -223,3 +231,10 @@ def evaluate_strategy(
         effective_trials=effective_trials,
         deflated_sharpe=dsr,
     )
+
+    # Delegate gate checks to unified gate.accept (Finding 7)
+    from autobacktest.gate import accept as gate_accept
+
+    gate_accept(report, baseline=None, config=flat_config)
+
+    return report
