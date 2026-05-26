@@ -1,0 +1,55 @@
+"""Mock provider implementation for local unit and integration tests."""
+
+from autobacktest.llm.base import AgentContext, AgentEdit, LLMProvider
+
+
+class MockProvider(LLMProvider):
+    """Local mock implementation of LLMProvider for local unit tests."""
+
+    def __init__(
+        self,
+        response: AgentEdit | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        """Initialize the mock provider with optional custom behaviors.
+
+        Args:
+            response: Pre-configured AgentEdit to return.
+            error: Pre-configured Exception to raise.
+        """
+        self.response = response
+        self.error = error
+        self.calls: list[AgentContext] = []
+
+    @property
+    def provider_name(self) -> str:
+        """Return the unique string identification of the provider."""
+        return "mock"
+
+    def generate_edit(self, context: AgentContext) -> AgentEdit:
+        """Process the context using predefined mock rules and record call history.
+
+        Args:
+            context: The AgentContext to mutate.
+
+        Returns:
+            AgentEdit matching mock configuration.
+
+        Raises:
+            Exception: If an error is configured on the provider.
+        """
+        self.calls.append(context)
+
+        if self.error is not None:
+            raise self.error
+
+        if self.response is not None:
+            return self.response
+
+        # Identity default: return strategy code and config unchanged
+        return AgentEdit(
+            strategy_code=context.strategy_code,
+            config_yaml=context.config_yaml,
+            reasoning="Identity transformation: no edits made.",
+            raw_response="{}",
+        )

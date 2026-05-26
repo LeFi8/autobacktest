@@ -165,6 +165,128 @@ def evaluate(
     typer.echo(report_data.to_json())
 
 
+@app.command("llm-test")
+def llm_test(
+    prompt: str = typer.Argument(
+        ...,
+        help="The prompt/instruction for strategy modification.",
+    ),
+    strategy: str = typer.Option(
+        "haa",
+        "--strategy",
+        "-s",
+        help="Strategy name in the registry.",
+    ),
+    model: str = typer.Option(
+        "gpt-4o",
+        "--model",
+        "-m",
+        help="LLM model name to run.",
+    ),
+    provider: str = typer.Option(
+        "litellm",
+        "--provider",
+        "-p",
+        help="LLM provider: 'litellm' or 'mock'.",
+    ),
+) -> None:
+    """Test LLM-driven strategy edits against validation preflight checks."""
+    strategies_dir = Path("strategies")
+    configs_dir = Path("configs")
+
+    strategy_path = strategies_dir / f"{strategy}.py"
+    config_path = configs_dir / f"{strategy}.yaml"
+
+    if not strategy_path.exists():
+        typer.echo(f"Error: Strategy file not found at {strategy_path}")
+        raise typer.Exit(code=1)
+
+    if not config_path.exists():
+        typer.echo(f"Error: Config file not found at {config_path}")
+        raise typer.Exit(code=1)
+
+    try:
+        strategy_code = strategy_path.read_text(encoding="utf-8")
+        config_yaml = config_path.read_text(encoding="utf-8")
+    except Exception as e:
+        typer.echo(f"Error reading files: {e}")
+        raise typer.Exit(code=1) from e
+
+    # 1. Construct AgentContext
+    from autobacktest.llm.base import AgentContext
+
+    context = AgentContext(
+        strategy_name=strategy,
+        strategy_code=strategy_code,
+        config_yaml=config_yaml,
+        program_text=prompt,
+        evaluation_report=None,
+        iteration=1,
+    )
+
+    # 2. Instantiate LLM Provider
+    from autobacktest.llm.base import LLMProvider
+    from autobacktest.llm.litellm_provider import LiteLLMProvider
+    from autobacktest.llm.mock_provider import MockProvider
+
+    provider_impl: LLMProvider
+    if provider == "litellm":
+        provider_impl = LiteLLMProvider(model=model)
+    elif provider == "mock":
+        provider_impl = MockProvider()
+    else:
+        typer.echo(f"Error: Unknown provider '{provider}'")
+        raise typer.Exit(code=1)
+
+    # 3. Call Provider
+    typer.echo(f"Calling LLM provider '{provider}' with model '{model}'...")
+    try:
+        edit = provider_impl.generate_edit(context)
+    except Exception as e:
+        typer.echo(f"Error generating LLM edit: {e}")
+        raise typer.Exit(code=1) from e
+
+    typer.echo(f"Reasoning:\n{edit.reasoning}\n")
+
+    # 4. Write Candidates
+    candidate_py_path = strategies_dir / f"{strategy}.py.candidate"
+    candidate_yaml_path = configs_dir / f"{strategy}.yaml.candidate"
+    temp_py_path = strategies_dir / f"{strategy}_candidate.py"
+    temp_yaml_path = configs_dir / f"{strategy}_candidate.yaml"
+
+    try:
+        candidate_py_path.write_text(edit.strategy_code, encoding="utf-8")
+        candidate_yaml_path.write_text(edit.config_yaml, encoding="utf-8")
+        # Temporary files for validator preflight
+        temp_py_path.write_text(edit.strategy_code, encoding="utf-8")
+        temp_yaml_path.write_text(edit.config_yaml, encoding="utf-8")
+    except Exception as e:
+        typer.echo(f"Error writing candidate/temp files: {e}")
+        raise typer.Exit(code=1) from e
+
+    # 5. Run Preflight
+    from autobacktest.strategy.validator import preflight
+
+    typer.echo("Running pre-flight validation on generated candidate...")
+    try:
+        res = preflight(f"{strategy}_candidate", strategies_dir, configs_dir)
+    finally:
+        # Clean up temporary validator files
+        if temp_py_path.exists():
+            temp_py_path.unlink()
+        if temp_yaml_path.exists():
+            temp_yaml_path.unlink()
+
+    # 6. Print Results
+    if res.passed:
+        typer.echo("SUCCESS: Candidate passed all preflight validation checks!")
+        typer.echo(f"Candidate Python: {candidate_py_path}")
+        typer.echo(f"Candidate Config: {candidate_yaml_path}")
+    else:
+        typer.echo(f"FAILED: Validation failed with error code: {res.error_code}")
+        typer.echo(f"Detail: {res.detail}")
+
+
 def main() -> None:
     """Entry point for the console script."""
     app()
