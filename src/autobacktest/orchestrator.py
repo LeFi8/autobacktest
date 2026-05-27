@@ -95,6 +95,12 @@ def run_optimization(
             started_at=datetime.now(tz=UTC).isoformat(),
         )
 
+        # Initialize lessons
+        lessons_path = repo_path / "lessons.md"
+        lessons_text = ""
+        if lessons_path.exists():
+            lessons_text = lessons_path.read_text(encoding="utf-8")
+
         # 7. Baseline evaluation (iteration 0 — not written to events.jsonl)
         baseline_fn = _load_signals(strat_path)
         baseline_report, baseline_returns = evaluate_strategy_detailed(
@@ -143,6 +149,7 @@ def run_optimization(
                 program_text=spec.raw_text,
                 evaluation_report=incumbent,
                 iteration=k,
+                lessons_text=lessons_text,
             )
 
             # 8b. Get LLM edit
@@ -195,6 +202,8 @@ def run_optimization(
             except Exception as e:
                 # Rollback and skip
                 git_ledger.rollback_strategy(strategy_name)
+                if lessons_path.exists():
+                    lessons_text = lessons_path.read_text(encoding="utf-8")
                 event["evaluation"] = {"error": str(e)}
                 event["gate"] = None
                 event["commit"] = None
@@ -223,6 +232,10 @@ def run_optimization(
 
             # 8h. Commit or rollback
             if gate_res.accepted:
+                if edit.lessons_text:
+                    lessons_text = edit.lessons_text
+                    lessons_path.write_text(lessons_text, encoding="utf-8")
+
                 sha = git_ledger.commit_strategy(
                     strategy_name,
                     f"iter {k}: {edit.reasoning[:72]}",
@@ -254,6 +267,8 @@ def run_optimization(
                 event["commit"] = {"sha": sha}
             else:
                 git_ledger.rollback_strategy(strategy_name)
+                if lessons_path.exists():
+                    lessons_text = lessons_path.read_text(encoding="utf-8")
                 ledger.record_attempt(
                     run_id=run_id,
                     iteration=k,

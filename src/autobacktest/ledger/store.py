@@ -213,7 +213,9 @@ class LedgerStore:
                 a.deflated_sharpe,
                 a.holdout_max_drawdown,
                 a.holdout_turnover,
-                a.created_at
+                a.created_at,
+                a.target_metric,
+                a.target_metric_value
             FROM attempts a
             INNER JOIN (
                 SELECT s.strategy_name, MIN(s.id) AS best_id
@@ -250,6 +252,35 @@ class LedgerStore:
                     "holdout_max_drawdown": row[5],
                     "holdout_turnover": row[6],
                     "created_at": row[7],
+                    "target_metric": row[8],
+                    "target_metric_value": row[9],
+                }
+            )
+        return results
+
+    def list_runs(self) -> list[dict[str, object]]:
+        """Return metadata for all recorded runs."""
+        query = """
+            SELECT
+                run_id, strategy_name, program_path, provider, model,
+                branch, dataset_hash, iterations, started_at
+            FROM runs
+            ORDER BY started_at DESC
+        """
+        rows = self._conn.execute(query).fetchall()
+        results: list[dict[str, object]] = []
+        for row in rows:
+            results.append(
+                {
+                    "run_id": row[0],
+                    "strategy_name": row[1],
+                    "program_path": row[2],
+                    "provider": row[3],
+                    "model": row[4],
+                    "branch": row[5],
+                    "dataset_hash": row[6],
+                    "iterations": row[7],
+                    "started_at": row[8],
                 }
             )
         return results

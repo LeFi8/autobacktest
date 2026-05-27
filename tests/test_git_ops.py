@@ -108,3 +108,25 @@ def test_ensure_clean_passes_on_clean(repo_setup: tuple[git.Repo, Path]) -> None
     ledger = GitLedger(tmp_path)
     # Should not raise
     ledger.ensure_clean("toy")
+
+
+def test_reset_to_main(repo_setup: tuple[git.Repo, Path]) -> None:
+    _repo, tmp_path = repo_setup
+    ledger = GitLedger(tmp_path)
+
+    # Move to a run branch and modify the files
+    ledger.create_run_branch("run-xyz")
+    (tmp_path / "strategies" / "toy.py").write_text("# candidate changes\n")
+    (tmp_path / "configs" / "toy.yaml").write_text("universe: [FAIL]\n")
+    ledger.commit_strategy("toy", "modified strategy")
+
+    # Verify modified state
+    assert "# candidate changes" in (tmp_path / "strategies" / "toy.py").read_text()
+
+    # Reset
+    ledger.reset_to_main("toy")
+
+    # Verify we are back on main and files are restored
+    assert ledger.current_branch == "main"
+    assert "generate_signals" in (tmp_path / "strategies" / "toy.py").read_text()
+    assert "universe: [SPY]" in (tmp_path / "configs" / "toy.yaml").read_text()

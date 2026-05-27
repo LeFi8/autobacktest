@@ -19,6 +19,9 @@ class AgentEditResponse(BaseModel):
     reasoning: str = Field(
         description="Quantitative reasoning and explanation for changes."
     )
+    lessons_text: str = Field(
+        description="Complete updated lessons learned markdown text."
+    )
 
 
 class LiteLLMProvider(LLMProvider):
@@ -102,6 +105,7 @@ class LiteLLMProvider(LLMProvider):
                 config_yaml=parsed_response.config_yaml,
                 reasoning=parsed_response.reasoning,
                 raw_response=content,
+                lessons_text=parsed_response.lessons_text,
             )
 
         except Exception as e:

@@ -25,6 +25,7 @@ def test_mock_provider_identity_default() -> None:
     assert edit.strategy_code == "def signals(): pass"
     assert edit.config_yaml == "universe: []"
     assert "Identity" in edit.reasoning
+    assert "Mock lesson recorded" in edit.lessons_text
 
 
 def test_mock_provider_configured_response() -> None:
@@ -33,6 +34,7 @@ def test_mock_provider_configured_response() -> None:
         config_yaml="universe: [SPY]",
         reasoning="Changed signals",
         raw_response="{}",
+        lessons_text="Custom mock lessons",
     )
     provider = MockProvider(response=expected_edit)
     context = AgentContext(

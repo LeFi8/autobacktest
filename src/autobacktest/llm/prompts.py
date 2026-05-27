@@ -17,8 +17,16 @@ You operate in a strict execution loop and MUST adhere to the following rules:
 4. You MUST NOT import any module outside whitelisted ALLOWED_IMPORTS:
    {sorted_imports}
 5. You MUST keep the portfolio weights non-negative (weights >= 0.0)
-   and summing to at most 1.0 (sum <= 1.0) for every rebalance day.
 6. The output strategy code and config YAML MUST be complete file contents, NOT diffs.
+7. You MUST maintain a running markdown document of "lessons learned"
+   in the lessons_text field. In every response, you will output an updated
+   "lessons_text" field to record what worked, what failed, and general
+   principles discovered.
+   - Summarize findings of the previous iteration (e.g. if the previous
+     edit failed AST checks, execution, or the gate, analyze why and record it).
+   - Keep lessons structured, concise, and action-oriented.
+   - If the current lessons exceed the 4096 token limit (~16k characters),
+     you MUST prune, compress, and consolidate older or less useful lessons to fit.
 """
 
 
@@ -46,12 +54,27 @@ def build_messages(context: AgentContext) -> list[dict[str, str]]:
     else:
         eval_report_str = "First iteration (no prior evaluation report exists)."
 
+    # Calculate character-based token proxy for lessons limit warning
+    lessons_tokens = len(context.lessons_text) // 4
+    warning_str = ""
+    if lessons_tokens > 4096:
+        warning_str = (
+            f"\n> [!WARNING]\n"
+            f"> The lessons document size (approx. {lessons_tokens} tokens) "
+            f"exceeds the cap of 4096 tokens.\n"
+            f"> You MUST compress, consolidate, or prune the lessons in lessons_text "
+            f"to keep them under the cap.\n"
+        )
+
     user_content = f"""## Iteration
 Current Loop Iteration: {context.iteration}
 
 ## Objective
 {context.program_text}
 
+## Lessons
+{context.lessons_text or "No lessons recorded yet."}
+{warning_str}
 ## Current Strategy Code
 ```python
 {context.strategy_code}
@@ -72,6 +95,8 @@ Your response must be returned as a JSON object containing the keys:
 - "strategy_code": Complete, updated Python source code for the strategy.
 - "config_yaml": Complete, updated YAML parameters content.
 - "reasoning": Concise explanation of the quantitative logic and changes.
+- "lessons_text": Complete, updated lessons markdown text incorporating learnings
+  from the previous and current iterations, pruning if needed.
 """
 
     user_message = {

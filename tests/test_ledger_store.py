@@ -196,3 +196,34 @@ def test_exclude_id(tmp_path: Path) -> None:
     assert df.shape[1] == 1
     assert len(sharpes) == 1
     assert sharpes[0] == pytest.approx(1.5)
+
+
+def test_list_runs_and_leaderboard_keys(tmp_path: Path) -> None:
+    db = tmp_path / "ledger.db"
+    store = LedgerStore(db)
+
+    store.create_run(
+        run_id="run-1",
+        strategy_name="strat_a",
+        program_path="/tmp/strat.py",
+        provider="openai",
+        model="gpt-4o",
+        branch="main",
+        dataset_hash="hash-abc",
+        iterations=10,
+        started_at="2024-01-01T00:00:00",
+    )
+
+    _record(store, iteration=1, observed_sharpe=1.2, accepted=True)
+
+    runs = store.list_runs()
+    board = store.leaderboard()
+    store.close()
+
+    assert len(runs) == 1
+    assert runs[0]["run_id"] == "run-1"
+    assert runs[0]["provider"] == "openai"
+
+    assert len(board) == 1
+    assert board[0]["target_metric"] == "sharpe"
+    assert board[0]["target_metric_value"] == pytest.approx(1.2)

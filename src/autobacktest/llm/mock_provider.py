@@ -61,9 +61,17 @@ class MockProvider(LLMProvider):
         else:
             reasoning = "Identity transformation: no edits made."
 
+        lessons_suffix = "\n- Mock lesson recorded."
+        lessons_text = (
+            context.lessons_text + lessons_suffix
+            if context.lessons_text
+            else "- Mock lesson recorded."
+        )
+
         return AgentEdit(
             strategy_code=edited_code,
             config_yaml=context.config_yaml,
             reasoning=reasoning,
             raw_response="{}",
+            lessons_text=lessons_text,
         )

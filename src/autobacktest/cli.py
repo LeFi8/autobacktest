@@ -113,6 +113,17 @@ def run(
 
 @app.command()
 def report(
+    run_dir: str = typer.Option(
+        "runs",
+        "--run-dir",
+        help="Path to runs directory containing ledger.db.",
+    ),
+    strategy: str | None = typer.Option(
+        None,
+        "--strategy",
+        "-s",
+        help="Strategy name to filter by.",
+    ),
     compare_all: bool = typer.Option(
         False,
         "--compare-all",
@@ -120,7 +131,72 @@ def report(
     ),
 ) -> None:
     """Print the run leaderboard from the SQLite ledger."""
-    typer.echo(f"TODO: report subcommand (compare_all={compare_all})")
+    db_path = Path(run_dir) / "ledger.db"
+    if not db_path.exists():
+        typer.echo("No runs found (no ledger.db exists).")
+        raise typer.Exit()
+
+    from rich.console import Console
+    from rich.table import Table
+
+    from autobacktest.ledger.store import LedgerStore
+
+    store = LedgerStore(db_path)
+    try:
+        if compare_all:
+            rows = store.leaderboard(strategy_name=None)
+        else:
+            rows = store.leaderboard(strategy_name=strategy)
+
+        if not rows:
+            typer.echo("No runs found in ledger.")
+            return
+
+        console = Console()
+        table = Table(title="AutoBacktest Optimization Leaderboard")
+        table.add_column("Strategy", style="cyan", justify="left")
+        table.add_column("Run ID", style="magenta", justify="left")
+        table.add_column("Iter", style="blue", justify="center")
+        table.add_column("Observed Sharpe", justify="right")
+        table.add_column("Deflated Sharpe", style="yellow", justify="right")
+        table.add_column("Max DD", style="red", justify="right")
+        table.add_column("Turnover", style="cyan", justify="right")
+        table.add_column("Date", style="dim", justify="center")
+
+        from typing import cast
+
+        for r in rows:
+            sharpe_val = float(cast(float, r["observed_sharpe"]))
+            sharpe_style = "green" if sharpe_val > 0 else "red"
+            sharpe_str = f"[bold {sharpe_style}]{sharpe_val:.3f}[/]"
+
+            deflated_val = float(cast(float, r["deflated_sharpe"]))
+            deflated_str = f"{deflated_val:.3f}"
+
+            max_dd_val = float(cast(float, r["holdout_max_drawdown"]))
+            max_dd_str = f"{max_dd_val * 100:.2f}%"
+
+            turnover_val = float(cast(float, r["holdout_turnover"]))
+            turnover_str = f"{turnover_val:.2f}x"
+
+            date_str = r["created_at"]
+            if isinstance(date_str, str) and "T" in date_str:
+                date_str = date_str.split("T")[0]
+
+            table.add_row(
+                str(r["strategy_name"]),
+                str(r["run_id"]),
+                str(r["iteration"]),
+                sharpe_str,
+                deflated_str,
+                max_dd_str,
+                turnover_str,
+                str(date_str),
+            )
+
+        console.print(table)
+    finally:
+        store.close()
 
 
 @app.command()
@@ -131,9 +207,50 @@ def reset(
         "-s",
         help="Strategy name to reset. Resets all if not specified.",
     ),
+    run_dir: str = typer.Option(
+        "runs",
+        "--run-dir",
+        help="Path to runs directory to be deleted.",
+    ),
 ) -> None:
-    """Clean the run directory and reset target strategies to baseline."""
-    typer.echo(f"TODO: reset subcommand (strategy={strategy})")
+    """Restore strategy baseline files, clear lessons, and delete the runs directory."""
+    import shutil
+
+    from autobacktest.ledger.git_ops import GitLedger
+
+    # 1. Reset strategy files to main baseline
+    try:
+        git_ledger = GitLedger(Path())
+        git_ledger.reset_to_main(strategy)
+        typer.echo("Baseline strategy files restored successfully.")
+    except Exception as e:
+        typer.echo(f"Error resetting strategy files via git: {e}")
+
+    # 2. Restore lessons.md to empty template
+    lessons_path = Path("lessons.md")
+    template_content = """# Lessons
+
+<!-- Agent-curated memory. Updated by the LLM after each iteration. -->
+<!-- Size cap: 4096 tokens (~16k characters). Prune when exceeded. -->
+"""
+    try:
+        lessons_path.write_text(template_content, encoding="utf-8")
+        typer.echo("lessons.md cleared back to default template.")
+    except Exception as e:
+        typer.echo(f"Error clearing lessons.md: {e}")
+
+    # 3. Delete the run directory entirely
+    run_path = Path(run_dir)
+    if run_path.exists():
+        try:
+            shutil.rmtree(run_path)
+            typer.echo(f"Run directory '{run_dir}' deleted entirely.")
+        except Exception as e:
+            typer.echo(f"Error deleting run directory '{run_dir}': {e}")
+    else:
+        typer.echo(f"Run directory '{run_dir}' does not exist, skipping deletion.")
+
+    typer.echo("Reset completed.")
 
 
 @app.command()
