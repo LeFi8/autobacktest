@@ -1,11 +1,12 @@
-"""Hybrid Asset Allocation (HAA) quant strategy.
+"""Hybrid Asset Allocation (HAA) Trend strategy with composite canary.
 
-Reference: Keller & Keuning (2023) — "Dual and Canary Momentum with Rising
-Yields/Inflation", SSRN 4346906.
+Reference: Keller & Keuning (2023) — "Dual and Canary Momentum with Rising Yields/Inflation", SSRN 4346906.
 
-Variants:
-  - HAA-Balanced (default): Top-4 offensive selection from 8-asset universe.
-  - HAA-Simple: Single-asset SPY with TIPS canary gate.
+Enhancements:
+- Removes IEF from offensive universe to avoid dual role.
+- Composite canary (TIP + DBC) smoothed with SMA(12) and hysteresis to reduce whipsaw.
+- Rebalances only on canary state change, with optional periodic offensive refresh.
+- Monthly rebalancing on last trading day, output aligned to daily index.
 """
 
 from typing import Any
@@ -15,138 +16,139 @@ import pandas as pd
 
 
 def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFrame:
-    """Generate Hybrid Asset Allocation strategy weights.
+    """Generate HAA Trend weights with composite canary and state-change rebalancing.
 
     Args:
         prices: Daily prices DataFrame (DatetimeIndex).
-        config: Strategy configuration dictionary.
+        config: Configuration dictionary.
 
     Returns:
-        pd.DataFrame: Strategy weights DataFrame indexed by rebalance dates.
+        Daily weights DataFrame matching the input index.
     """
+    # --- Parameters from config ---
     variant = config.get("variant", "balanced")
-    lookback = int(config.get("momentum_lookback", 12))
+    mom_lookback = int(config.get("momentum_lookback", 12))
     top_x = int(config.get("top_x", 4))
 
-    offensive_universe = config.get(
-        "offensive_universe",
-        ["SPY", "IWM", "VEA", "VWO", "VNQ", "DBC", "IEF", "TLT"],
-    )
-    defensive_universe = config.get(
-        "defensive_universe",
-        ["BIL", "IEF"],
-    )
-    filter_ticker = config.get("filter_ticker", "TIP")
+    offensive_universe = config.get("offensive_universe")
+    defensive_universe = config.get("defensive_universe")
+    canary_assets = config.get("canary_assets", ["TIP"])
+    canary_smoothing_window = int(config.get("canary_smoothing_window", 12))
+    canary_hysteresis = float(config.get("canary_hysteresis", 0.02))
+    min_canary_period = int(config.get("min_canary_period", 12))
+    offensive_rebalance_months = int(config.get("offensive_rebalance_months", 3))
 
-    # Extract daily prices of last trading days for each month
-    last_trading_days = prices.groupby(prices.index.to_period("M")).apply(lambda x: x.index[-1])
-    monthly_prices = prices.loc[last_trading_days]
+    # Validate required assets are present in price data
+    all_assets = canary_assets + offensive_universe + defensive_universe
+    missing = [a for a in all_assets if a not in prices.columns]
+    if missing:
+        raise ValueError(f"Missing assets in price data: {missing}")
 
-    # Calculate HAA momentum score (13612U):
-    #   Momentum = (r1m + r3m + r6m + r12m) / 4
-    # Unweighted average of 1, 3, 6, and 12-month total returns.
-    mom_scores = pd.DataFrame(index=monthly_prices.index, columns=prices.columns)
+    # --- Extract last trading day of each month ---
+    monthly_mask = prices.groupby(prices.index.to_period("M")).apply(lambda x: x.index[-1])
+    monthly_prices = prices.loc[monthly_mask]
 
-    start_idx = max(12, lookback)
-    for i in range(start_idx, len(monthly_prices)):
-        date = monthly_prices.index[i]
-        p0 = monthly_prices.iloc[i]
-        p1 = monthly_prices.iloc[i - 1]
-        p3 = monthly_prices.iloc[i - 3]
-        p6 = monthly_prices.iloc[i - 6]
-        p12 = monthly_prices.iloc[i - lookback]
+    # --- Monthly momentum scores (13612U) ---
+    # r1m, r3m, r6m, r12m
+    def calc_momentum(p: pd.DataFrame) -> pd.DataFrame:
+        # Return momentum as average of 1,3,6,12-month total returns
+        p0 = p
+        p1 = p.shift(1)
+        p3 = p.shift(3)
+        p6 = p.shift(6)
+        p12 = p.shift(mom_lookback)
 
-        r1m = p0.div(p1.replace(0.0, np.nan)).fillna(1.0) - 1.0
-        r3m = p0.div(p3.replace(0.0, np.nan)).fillna(1.0) - 1.0
-        r6m = p0.div(p6.replace(0.0, np.nan)).fillna(1.0) - 1.0
-        r12m = p0.div(p12.replace(0.0, np.nan)).fillna(1.0) - 1.0
+        # Avoid division by zero; replace 0 with np.nan and fill after division
+        r1 = (p0.div(p1.replace(0.0, np.nan)).fillna(1.0) - 1.0)
+        r3 = (p0.div(p3.replace(0.0, np.nan)).fillna(1.0) - 1.0)
+        r6 = (p0.div(p6.replace(0.0, np.nan)).fillna(1.0) - 1.0)
+        r12 = (p0.div(p12.replace(0.0, np.nan)).fillna(1.0) - 1.0)
+        return (r1 + r3 + r6 + r12) / 4.0
 
-        score = (r1m + r3m + r6m + r12m) / 4.0
-        mom_scores.loc[date] = score
+    mom_scores = calc_momentum(monthly_prices)
+    # Start after enough history for longest lookback
+    mom_scores = mom_scores.iloc[mom_lookback:]
 
-    smoothing_factor = float(config.get("smoothing_factor", 1.0))
-    hysteresis_threshold = float(config.get("hysteresis_threshold", 0.0))
-    momentum_buffer = float(config.get("momentum_buffer", 0.0))
+    # --- Composite canary: average momentum of canary assets ---
+    comp_canary = mom_scores[canary_assets].mean(axis=1)
 
-    # Drop the first lookback months since we need lookback to calculate scores
-    mom_scores = mom_scores.dropna(how="all")
+    # --- Smooth canary with SMA ---
+    smoothed = comp_canary.rolling(window=canary_smoothing_window,
+                                   min_periods=min_canary_period).mean()
+    # Drop periods where smoothed is NaN (insufficient history)
+    smoothed = smoothed.dropna()
 
-    # Generate weights DataFrame aligned with monthly dates
-    weights = pd.DataFrame(0.0, index=mom_scores.index, columns=prices.columns)
-
-    for idx, date in enumerate(mom_scores.index):
-        prev_date = mom_scores.index[idx - 1] if idx > 0 else None
-        scores_t = mom_scores.loc[date].copy()
-
-        # Apply Momentum Buffer to boost scores of currently held assets
-        if prev_date is not None and momentum_buffer > 0.0:
-            prev_weights = weights.loc[prev_date]
-            held_assets = prev_weights[prev_weights > 0.0].index
-            for asset in held_assets:
-                if asset in scores_t.index:
-                    scores_t[asset] += momentum_buffer
-
-        tip_score = scores_t.get(filter_ticker, -1.0)
-        target_w = pd.Series(0.0, index=prices.columns)
-
-        if tip_score > 0.0:
-            # Canary clear — apply dual momentum
-            if variant == "simple":
-                # HAA-Simple: single-asset SPY with defensive fallback
-                spy_score = scores_t.get("SPY", -1.0)
-                if spy_score > 0.0:
-                    target_w["SPY"] = 1.0
-                else:
-                    valid_def = [t for t in defensive_universe if t in scores_t.index]
-                    def_scores = scores_t[valid_def].dropna()
-                    if not def_scores.empty:
-                        best_def = def_scores.idxmax()
-                        target_w[best_def] = 1.0
+    # --- Determine canary state with hysteresis ---
+    all_dates = mom_scores.index
+    states = pd.Series("defensive", index=all_dates)
+    prev_state = "defensive"
+    for i, date in enumerate(all_dates):
+        if date in smoothed.index:
+            val = smoothed.loc[date]
+            if val > canary_hysteresis:
+                curr = "offensive"
+            elif val < -canary_hysteresis:
+                curr = "defensive"
             else:
-                # HAA-Balanced (or default): top-X selection
-                valid_off = [t for t in offensive_universe if t in scores_t.index]
-                off_scores = scores_t[valid_off].dropna()
+                curr = prev_state  # keep previous if within band
+        else:
+            curr = "defensive"  # default before enough history
+        states[date] = curr
+        prev_state = curr
+
+    # --- Generate monthly weights (only on state changes or periodic offense rebalance) ---
+    w_monthly = pd.DataFrame(0.0, index=all_dates, columns=prices.columns)
+    last_weight = pd.Series(0.0, index=prices.columns)
+    last_off_rebalance_idx = -9999  # month index when last offensive rebalance occurred
+
+    for i, date in enumerate(all_dates):
+        state_now = states.loc[date]
+        rebalance = False
+        if i == 0:
+            rebalance = True
+        else:
+            prev_date = all_dates[i-1]
+            state_prev = states.loc[prev_date]
+            if state_now != state_prev:
+                rebalance = True
+            elif state_now == "offensive":
+                # Periodic rebalance inside offensive regime
+                if (i - last_off_rebalance_idx) >= offensive_rebalance_months:
+                    rebalance = True
+
+        if rebalance:
+            target_w = pd.Series(0.0, index=prices.columns)
+            if state_now == "defensive":
+                # Pick best defensive asset
+                def_scores = mom_scores.loc[date, defensive_universe].dropna()
+                best = def_scores.idxmax() if not def_scores.empty else defensive_universe[0]
+                target_w[best] = 1.0
+            else:  # offensive
+                # Top-X selection from offensive universe
+                off_scores = mom_scores.loc[date, offensive_universe].dropna()
                 ranked = off_scores.sort_values(ascending=False)
                 selected = ranked.head(top_x)
 
-                # Determine best defensive asset for replacements
-                valid_def = [t for t in defensive_universe if t in scores_t.index]
-                def_scores = scores_t[valid_def].dropna()
+                # Best defensive substitute
+                def_scores = mom_scores.loc[date, defensive_universe].dropna()
                 best_def = def_scores.idxmax() if not def_scores.empty else defensive_universe[0]
 
-                slot_weight = 1.0 / max(len(selected), 1)
+                slot_weight = 1.0 / top_x
                 for asset in selected.index:
                     if selected[asset] > 0.0:
                         target_w[asset] = slot_weight
                     else:
                         target_w[best_def] += slot_weight
+
+            w_monthly.loc[date] = target_w
+            last_weight = target_w
+            if state_now == "offensive":
+                last_off_rebalance_idx = i
         else:
-            # Canary triggered — full defensive
-            valid_def = [t for t in defensive_universe if t in scores_t.index]
-            def_scores = scores_t[valid_def].dropna()
-            if not def_scores.empty:
-                best_def = def_scores.idxmax()
-                target_w[best_def] = 1.0
+            w_monthly.loc[date] = last_weight
 
-        # Apply Turnover Hysteresis
-        if prev_date is not None and hysteresis_threshold > 0.0:
-            prev_w = weights.loc[prev_date]
-            adjusted_w = prev_w.copy()
-            for ticker in target_w.index:
-                diff = abs(target_w[ticker] - prev_w[ticker])
-                if diff >= hysteresis_threshold:
-                    adjusted_w[ticker] = target_w[ticker]
-            target_sum = target_w.sum()
-            adjusted_sum = adjusted_w.sum()
-            if adjusted_sum > 0.0:
-                adjusted_w = (adjusted_w / adjusted_sum) * target_sum
-            target_w = adjusted_w
+    # --- Forward‑fill to daily index ---
+    daily_weights = w_monthly.reindex(prices.index, method="ffill").fillna(0.0)
+    daily_weights = daily_weights.clip(lower=0.0)
 
-        # Apply Exponential Weight Smoothing
-        if prev_date is not None and smoothing_factor < 1.0:
-            prev_w = weights.loc[prev_date]
-            target_w = smoothing_factor * target_w + (1.0 - smoothing_factor) * prev_w
-
-        weights.loc[date] = target_w
-
-    return weights
+    return daily_weights
