@@ -231,6 +231,16 @@ def report(
             )
 
         console.print(table)
+
+        # Print cost reporting summary
+        total_prompt = sum(cast(int, r.get("prompt_tokens", 0)) for r in attempts_in_run)
+        total_completion = sum(cast(int, r.get("completion_tokens", 0)) for r in attempts_in_run)
+        total_tokens = sum(cast(int, r.get("total_tokens", 0)) for r in attempts_in_run)
+        total_cost = sum(cast(float, r.get("cost", 0.0)) for r in attempts_in_run)
+        console.print(
+            f"\n[bold]Total Run Optimization Cost:[/] [green]${total_cost:.4f}[/] "
+            f"(Prompt: {total_prompt:,} tokens, Completion: {total_completion:,} tokens, Total: {total_tokens:,} tokens)"
+        )
     finally:
         store.close()
 

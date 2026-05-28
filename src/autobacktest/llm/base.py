@@ -45,6 +45,10 @@ class AgentEdit:
     reasoning: str
     raw_response: str
     lessons_text: str | None = None
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    cost: float = 0.0
 
 
 class LLMError(Exception):

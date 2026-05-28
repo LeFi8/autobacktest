@@ -74,4 +74,8 @@ class MockProvider(LLMProvider):
             reasoning=reasoning,
             raw_response="{}",
             lessons_text=lessons_text,
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            cost=0.0,
         )

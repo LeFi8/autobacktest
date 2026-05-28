@@ -156,6 +156,10 @@ def run_optimization(
             rejection_reason=None,
             report_json=baseline_report.to_json(),
             holdout_returns=baseline_returns,
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            cost=0.0,
         )
 
         # 8. Optimization loop
@@ -191,7 +195,13 @@ def run_optimization(
                 event_log.write(event)
                 continue
 
-            event["edit"] = {"reasoning": edit.reasoning}
+            event["edit"] = {
+                "reasoning": edit.reasoning,
+                "prompt_tokens": edit.prompt_tokens,
+                "completion_tokens": edit.completion_tokens,
+                "total_tokens": edit.total_tokens,
+                "cost": edit.cost,
+            }
 
             # Immediately persist non-empty lessons_text from the edit to disk
             # and memory.
@@ -289,6 +299,10 @@ def run_optimization(
                     rejection_reason=None,
                     report_json=report_k.to_json(),
                     holdout_returns=returns_k,
+                    prompt_tokens=edit.prompt_tokens,
+                    completion_tokens=edit.completion_tokens,
+                    total_tokens=edit.total_tokens,
+                    cost=edit.cost,
                 )
                 event["gate"] = {"accepted": True, "reason": None}
                 event["commit"] = {"sha": sha}
@@ -313,6 +327,10 @@ def run_optimization(
                     rejection_reason=gate_res.reason,
                     report_json=report_k.to_json(),
                     holdout_returns=returns_k,
+                    prompt_tokens=edit.prompt_tokens,
+                    completion_tokens=edit.completion_tokens,
+                    total_tokens=edit.total_tokens,
+                    cost=edit.cost,
                 )
                 event["gate"] = {"accepted": False, "reason": gate_res.reason}
                 event["commit"] = None

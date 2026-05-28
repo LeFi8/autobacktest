@@ -55,6 +55,10 @@ CREATE TABLE IF NOT EXISTS attempts (
     rejection_reason TEXT,
     report_json TEXT NOT NULL,
     returns_blob BLOB NOT NULL,
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    total_tokens INTEGER NOT NULL DEFAULT 0,
+    cost REAL NOT NULL DEFAULT 0.0,
     created_at TEXT NOT NULL
 )
 """
@@ -85,6 +89,30 @@ class LedgerStore:
             if "target_metric_value" not in columns:
                 self._conn.execute(
                     "ALTER TABLE attempts ADD COLUMN target_metric_value REAL "
+                    "NOT NULL DEFAULT 0.0"
+                )
+                migrated = True
+            if "prompt_tokens" not in columns:
+                self._conn.execute(
+                    "ALTER TABLE attempts ADD COLUMN prompt_tokens INTEGER "
+                    "NOT NULL DEFAULT 0"
+                )
+                migrated = True
+            if "completion_tokens" not in columns:
+                self._conn.execute(
+                    "ALTER TABLE attempts ADD COLUMN completion_tokens INTEGER "
+                    "NOT NULL DEFAULT 0"
+                )
+                migrated = True
+            if "total_tokens" not in columns:
+                self._conn.execute(
+                    "ALTER TABLE attempts ADD COLUMN total_tokens INTEGER "
+                    "NOT NULL DEFAULT 0"
+                )
+                migrated = True
+            if "cost" not in columns:
+                self._conn.execute(
+                    "ALTER TABLE attempts ADD COLUMN cost REAL "
                     "NOT NULL DEFAULT 0.0"
                 )
                 migrated = True
@@ -150,6 +178,10 @@ class LedgerStore:
         rejection_reason: str | None,
         report_json: str,
         holdout_returns: pd.Series,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        total_tokens: int = 0,
+        cost: float = 0.0,
     ) -> None:
         """Serialize holdout returns and insert an attempt record."""
         blob = _serialize_returns(holdout_returns)
@@ -160,8 +192,9 @@ class LedgerStore:
                  observed_sharpe, deflated_sharpe, target_metric, target_metric_value,
                  holdout_max_drawdown, holdout_turnover, regime_passed, accepted,
                  committed, commit_sha, rejection_reason, report_json,
-                 returns_blob, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                 returns_blob, prompt_tokens, completion_tokens, total_tokens, cost,
+                 created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                     datetime('now'))
             """,
             (
@@ -183,6 +216,10 @@ class LedgerStore:
                 rejection_reason,
                 report_json,
                 blob,
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+                cost,
             ),
         )
         self._conn.commit()
@@ -290,7 +327,11 @@ class LedgerStore:
                 target_metric_value,
                 accepted,
                 committed,
-                rejection_reason
+                rejection_reason,
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+                cost
             FROM attempts
             WHERE {where_sql}
             ORDER BY strategy_name ASC, iteration ASC, id ASC
@@ -315,6 +356,10 @@ class LedgerStore:
                     "accepted": bool(row[10]),
                     "committed": bool(row[11]),
                     "rejection_reason": row[12],
+                    "prompt_tokens": int(row[13] or 0),
+                    "completion_tokens": int(row[14] or 0),
+                    "total_tokens": int(row[15] or 0),
+                    "cost": float(row[16] or 0.0),
                 }
             )
         return results
