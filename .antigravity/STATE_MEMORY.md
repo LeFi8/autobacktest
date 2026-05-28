@@ -8,10 +8,11 @@
 - **LLM Driver Wrapper** (Phase 3): LiteLLM structured tool calling implementation (`litellm_provider.py`) ensuring deterministic JSON code and parameter updates, offline mock provider (`mock_provider.py`), and prompt/instruction definitions (`prompts.py`).
 - **Orchestrator & CLI** (Phase 4): Git checkout branch/commit/rollback automation (`git_ops.py`), SQLite leaderboard store DAO (`store.py`), optimization event logging (`event_log.py`), main optimization orchestrator loop (`orchestrator.py`), and comprehensive console CLI app (`cli.py`).
 - **Lessons Memory Curation & Polish** (Phase 5): Autonomous character-proxy based lessons.md curation and pruning limits, rich report generation (`report` CLI subcommand), and robust workspace state cleanup (`reset` CLI subcommand).
-- **Test suite validation**: 138 passing pytest test cases checking Monte Carlo bounds, VCR integrations, validation checkers, DSR clustering correctness, multi-round loop e2e execution, and strict type constraints (100% green). MyPy strict mode and Ruff standard fully satisfied.
+- **Test suite validation**: 163 passing pytest test cases checking Monte Carlo bounds, VCR integrations, validation checkers, DSR clustering correctness, multi-round loop e2e execution, and strict type constraints (100% green). MyPy strict mode and Ruff standard fully satisfied.
+- **Initialization & Workspace Onboarding** (Phase 5): Fully audited the repository structure, dependency rules, and aligned all workspace config manifests under `.antigravity/`.
 
 ## In Progress
-- **Initialization & Workspace Onboarding**: Updating the `.antigravity/` environment config manifests to reflect the fully implemented, production-ready codebase.
+- None.
 
 ## Upcoming Milestones (Next Phases)
 1. **v1 Release (Phase 6)**: Final tag `v0.1.0` and package repository.

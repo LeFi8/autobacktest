@@ -27,6 +27,7 @@ autobacktest/
 ├── src/
 │   └── autobacktest/                   # Core system package
 │       ├── cli.py                      # Typer CLI application entry point
+│       ├── config.py                   # Central configuration management & Settings
 │       ├── orchestrator.py             # Optimization loop orchestrator
 │       ├── gate.py                     # Lexicographic optimization gate checking
 │       ├── program.py                  # Objective markdown parser
