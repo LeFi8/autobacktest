@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from autobacktest.llm.base import AgentContext, LLMError
-from autobacktest.llm.litellm_provider import LiteLLMProvider
+from autobacktest.llm.litellm_provider import AgentEditResponse, LiteLLMProvider
 
 
 def test_litellm_provider_properties() -> None:
@@ -134,3 +134,51 @@ def test_litellm_provider_error_handling(mock_completion: MagicMock) -> None:
     assert exc_info.value.provider == "litellm"
     assert exc_info.value.model == "gpt-4o"
     assert "API connection failure" in exc_info.value.detail
+
+
+@patch("litellm.completion")
+@patch("litellm.supports_response_schema")
+def test_litellm_provider_response_format_selection(
+    mock_supports_schema: MagicMock,
+    mock_completion: MagicMock,
+) -> None:
+    # 1. Test when model supports response schema
+    mock_supports_schema.return_value = True
+    mock_completion.return_value = _mock_response(_CLEAN_JSON)
+    provider_capable = LiteLLMProvider(model="gpt-4o")
+
+    provider_capable.generate_edit(_make_context())
+    _, kwargs_capable = mock_completion.call_args
+    assert kwargs_capable["response_format"] == AgentEditResponse
+
+    # 2. Test when model does not support response schema
+    mock_completion.reset_mock()
+    mock_supports_schema.return_value = False
+    provider_incapable = LiteLLMProvider(model="deepseek-v4-pro")
+
+    provider_incapable.generate_edit(_make_context())
+    _, kwargs_incapable = mock_completion.call_args
+    assert kwargs_incapable["response_format"] == {"type": "json_object"}
+
+
+@patch("litellm.completion")
+def test_litellm_provider_error_classification(mock_completion: MagicMock) -> None:
+    import litellm
+
+    # 1. Non-retryable (BadRequestError)
+    mock_completion.side_effect = litellm.BadRequestError(
+        message="Bad request",
+        model="gpt-4o",
+        response=MagicMock(),
+        llm_provider="openai",
+    )
+    provider = LiteLLMProvider(model="gpt-4o")
+    with pytest.raises(LLMError) as exc_info:
+        provider.generate_edit(_make_context())
+    assert exc_info.value.retryable is False
+
+    # 2. Retryable (generic Exception)
+    mock_completion.side_effect = Exception("Generic error")
+    with pytest.raises(LLMError) as exc_info:
+        provider.generate_edit(_make_context())
+    assert exc_info.value.retryable is True

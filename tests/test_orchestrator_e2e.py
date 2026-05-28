@@ -327,3 +327,53 @@ def test_e2e_validation_failure_continues(project_root: Path) -> None:
 
     # MockProvider was still called 2 times (edit was generated before validation)
     assert len(mock_provider.calls) == 2
+
+
+def test_orchestrator_fail_fast_on_non_retryable_error(project_root: Path) -> None:
+    """When a non-retryable LLMError is raised, the orchestrator immediately aborts."""
+    from autobacktest.llm.base import LLMError
+    from autobacktest.llm.mock_provider import MockProvider
+
+    class FailingProvider(MockProvider):
+        def generate_edit(self, _context):
+            raise LLMError(provider="mock", model="m", detail="Non-retryable config error", retryable=False)
+
+    provider = FailingProvider()
+    with pytest.raises(LLMError) as exc_info:
+        run_optimization(
+            program_path=project_root / "program.md",
+            strategy_name="toy",
+            iterations=5,
+            provider=provider,
+            run_dir=project_root / "runs",
+            strategies_dir=project_root / "strategies",
+            configs_dir=project_root / "configs",
+            repo_path=project_root,
+        )
+    assert "Non-retryable config error" in str(exc_info.value)
+
+
+def test_orchestrator_continues_on_retryable_error(project_root: Path) -> None:
+    """When a retryable LLMError is raised, the orchestrator logs and continues."""
+    from autobacktest.llm.base import LLMError
+    from autobacktest.llm.mock_provider import MockProvider
+
+    class RetryableProvider(MockProvider):
+        def generate_edit(self, _context):
+            raise LLMError(provider="mock", model="m", detail="Transient timeout", retryable=True)
+
+    provider = RetryableProvider()
+    # Since all iterations will fail with a retryable error, zero LLM calls will succeed.
+    # Therefore, it should eventually raise a RuntimeError at the end of the loop, not on the first iteration.
+    with pytest.raises(RuntimeError) as exc_info:
+        run_optimization(
+            program_path=project_root / "program.md",
+            strategy_name="toy",
+            iterations=3,
+            provider=provider,
+            run_dir=project_root / "runs",
+            strategies_dir=project_root / "strategies",
+            configs_dir=project_root / "configs",
+            repo_path=project_root,
+        )
+    assert "Zero successful LLM calls" in str(exc_info.value)

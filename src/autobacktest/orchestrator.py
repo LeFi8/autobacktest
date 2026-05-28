@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import logging
 import sys
 import uuid
 from dataclasses import dataclass
@@ -36,6 +37,8 @@ from autobacktest.llm.base import AgentContext, AgentEdit, LLMError, LLMProvider
 from autobacktest.program import parse_program
 from autobacktest.strategy.config_schema import StrategyConfig
 from autobacktest.strategy.validator import preflight
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -174,6 +177,7 @@ def run_optimization(
 
         # 8. Optimization loop
         n_committed = 0
+        n_llm_ok = 0
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -217,13 +221,21 @@ def run_optimization(
                     # 8b. Get LLM edit
                     try:
                         edit = provider.generate_edit(ctx)
+                        n_llm_ok += 1
                     except LLMError as e:
+                        logger.warning(f"LLMError: {e.detail}")
                         event["llm_error"] = str(e)
                         event["validation"] = None
                         event["evaluation"] = None
                         event["gate"] = None
                         event["commit"] = None
                         event_log.write(event)
+                        if not e.retryable:
+                            from rich.console import Console
+
+                            console = Console(stderr=True)
+                            console.print(f"[bold red]LLM is misconfigured (non-retryable error):[/] {e.detail}")
+                            raise e
                         continue
 
                     event["edit"] = {
@@ -360,6 +372,9 @@ def run_optimization(
                             f"[cyan]Optimizing {strategy_name}... (Incumbent Sharpe: {incumbent.observed_sharpe:.3f})"
                         ),
                     )
+
+        if n_llm_ok == 0:
+            raise RuntimeError("Zero successful LLM calls during optimization run. All iterations failed.")
 
     finally:
         if start_temp is not None:

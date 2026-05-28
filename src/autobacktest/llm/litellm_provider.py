@@ -1,5 +1,7 @@
 """LiteLLM integration provider implementing structured response outputs."""
 
+import logging
+
 import litellm
 from pydantic import BaseModel, Field
 
@@ -18,6 +20,9 @@ class AgentEditResponse(BaseModel):
         default=None,
         description="Complete updated lessons learned markdown text when changed.",
     )
+
+
+logger = logging.getLogger(__name__)
 
 
 class LiteLLMProvider(LLMProvider):
@@ -42,6 +47,11 @@ class LiteLLMProvider(LLMProvider):
         if settings.litellm_debug:
             litellm._turn_on_debug()  # type: ignore[attr-defined, no-untyped-call]
 
+        try:
+            self.supports_schema = litellm.supports_response_schema(model=self.model)
+        except Exception:
+            self.supports_schema = False
+
     @property
     def provider_name(self) -> str:
         """Return the unique string identification of the provider."""
@@ -62,11 +72,13 @@ class LiteLLMProvider(LLMProvider):
         messages = build_messages(context)
 
         try:
-            # We use litellm completion with response_format referencing BaseModel
+            # Pick json_schema if capable, or raw json_object otherwise
+            resp_format = AgentEditResponse if self.supports_schema else {"type": "json_object"}
+
             response = litellm.completion(
                 model=self.model,
                 messages=messages,
-                response_format=AgentEditResponse,
+                response_format=resp_format,
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
             )
@@ -121,8 +133,21 @@ class LiteLLMProvider(LLMProvider):
             )
 
         except Exception as e:
+            retryable = True
+            # Treat BadRequestError, AuthenticationError, NotFoundError as non-retryable config errors
+            if isinstance(
+                e,
+                (
+                    litellm.BadRequestError,  # type: ignore[attr-defined]
+                    litellm.AuthenticationError,  # type: ignore[attr-defined]
+                    litellm.NotFoundError,  # type: ignore[attr-defined]
+                ),
+            ) or getattr(e, "status_code", None) in (400, 401, 403, 404):
+                retryable = False
+
             raise LLMError(
                 provider="litellm",
                 model=self.model,
                 detail=str(e),
+                retryable=retryable,
             ) from e
