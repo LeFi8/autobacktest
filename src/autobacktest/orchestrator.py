@@ -218,24 +218,49 @@ def run_optimization(
                         lessons_text=lessons_text,
                     )
 
-                    # 8b. Get LLM edit
-                    try:
-                        edit = provider.generate_edit(ctx)
-                        n_llm_ok += 1
-                    except LLMError as e:
-                        logger.warning(f"LLMError: {e.detail}")
-                        event["llm_error"] = str(e)
-                        event["validation"] = None
-                        event["evaluation"] = None
-                        event["gate"] = None
-                        event["commit"] = None
-                        event_log.write(event)
-                        if not e.retryable:
-                            from rich.console import Console
+                    # 8b. Get LLM edit (with auto-retry on length limit cutoff)
+                    retry_count = 0
+                    max_retries = 1
+                    orig_max_tokens = getattr(provider, "max_tokens", None)
+                    edit = None
+                    while True:
+                        try:
+                            edit = provider.generate_edit(ctx)
+                            n_llm_ok += 1
+                            break
+                        except LLMError as e:
+                            if getattr(e, "finish_reason", None) == "length" and retry_count < max_retries:
+                                retry_count += 1
+                                if hasattr(provider, "max_tokens") and provider.max_tokens is not None:
+                                    old_tokens = provider.max_tokens
+                                    new_tokens = int(old_tokens * 1.5)
+                                    provider.max_tokens = new_tokens
+                                    logger.warning(
+                                        f"LLM cut off on length limit in iteration {k}. "
+                                        f"Retrying with max_tokens scaled from {old_tokens} to {new_tokens}."
+                                    )
+                                    continue
 
-                            console = Console(stderr=True)
-                            console.print(f"[bold red]LLM is misconfigured (non-retryable error):[/] {e.detail}")
-                            raise e
+                            logger.warning(f"LLMError: {e.detail}")
+                            event["llm_error"] = str(e)
+                            event["validation"] = None
+                            event["evaluation"] = None
+                            event["gate"] = None
+                            event["commit"] = None
+                            event_log.write(event)
+                            if not e.retryable:
+                                from rich.console import Console
+
+                                console = Console(stderr=True)
+                                console.print(f"[bold red]LLM is misconfigured (non-retryable error):[/] {e.detail}")
+                                raise e
+                            edit = None
+                            break
+
+                    if orig_max_tokens is not None and hasattr(provider, "max_tokens"):
+                        provider.max_tokens = orig_max_tokens
+
+                    if edit is None:
                         continue
 
                     event["edit"] = {
