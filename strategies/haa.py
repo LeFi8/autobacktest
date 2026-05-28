@@ -26,7 +26,6 @@ def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFra
         Daily weights DataFrame matching the input index.
     """
     # --- Parameters from config ---
-    variant = config.get("variant", "balanced")
     mom_lookback = int(config.get("momentum_lookback", 12))
     top_x = int(config.get("top_x", 4))
 
@@ -59,10 +58,10 @@ def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFra
         p12 = p.shift(mom_lookback)
 
         # Avoid division by zero; replace 0 with np.nan and fill after division
-        r1 = (p0.div(p1.replace(0.0, np.nan)).fillna(1.0) - 1.0)
-        r3 = (p0.div(p3.replace(0.0, np.nan)).fillna(1.0) - 1.0)
-        r6 = (p0.div(p6.replace(0.0, np.nan)).fillna(1.0) - 1.0)
-        r12 = (p0.div(p12.replace(0.0, np.nan)).fillna(1.0) - 1.0)
+        r1 = p0.div(p1.replace(0.0, np.nan)).fillna(1.0) - 1.0
+        r3 = p0.div(p3.replace(0.0, np.nan)).fillna(1.0) - 1.0
+        r6 = p0.div(p6.replace(0.0, np.nan)).fillna(1.0) - 1.0
+        r12 = p0.div(p12.replace(0.0, np.nan)).fillna(1.0) - 1.0
         return (r1 + r3 + r6 + r12) / 4.0
 
     mom_scores = calc_momentum(monthly_prices)
@@ -73,8 +72,7 @@ def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFra
     comp_canary = mom_scores[canary_assets].mean(axis=1)
 
     # --- Smooth canary with SMA ---
-    smoothed = comp_canary.rolling(window=canary_smoothing_window,
-                                   min_periods=min_canary_period).mean()
+    smoothed = comp_canary.rolling(window=canary_smoothing_window, min_periods=min_canary_period).mean()
     # Drop periods where smoothed is NaN (insufficient history)
     smoothed = smoothed.dropna()
 
@@ -82,7 +80,7 @@ def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFra
     all_dates = mom_scores.index
     states = pd.Series("defensive", index=all_dates)
     prev_state = "defensive"
-    for i, date in enumerate(all_dates):
+    for _i, date in enumerate(all_dates):
         if date in smoothed.index:
             val = smoothed.loc[date]
             if val > canary_hysteresis:
@@ -107,14 +105,12 @@ def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFra
         if i == 0:
             rebalance = True
         else:
-            prev_date = all_dates[i-1]
+            prev_date = all_dates[i - 1]
             state_prev = states.loc[prev_date]
-            if state_now != state_prev:
+            if state_now != state_prev or (
+                state_now == "offensive" and (i - last_off_rebalance_idx) >= offensive_rebalance_months
+            ):
                 rebalance = True
-            elif state_now == "offensive":
-                # Periodic rebalance inside offensive regime
-                if (i - last_off_rebalance_idx) >= offensive_rebalance_months:
-                    rebalance = True
 
         if rebalance:
             target_w = pd.Series(0.0, index=prices.columns)
@@ -147,7 +143,7 @@ def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFra
         else:
             w_monthly.loc[date] = last_weight
 
-    # --- Forward‑fill to daily index ---
+    # --- Forward-fill to daily index ---
     daily_weights = w_monthly.reindex(prices.index, method="ffill").fillna(0.0)
     daily_weights = daily_weights.clip(lower=0.0)
 
