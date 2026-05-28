@@ -1,5 +1,6 @@
 """Parquet-backed market data cache."""
 
+import json
 import logging
 from pathlib import Path
 
@@ -17,6 +18,35 @@ class CachedDataProvider(DataProvider):
         self.provider = provider
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+    def _load_metadata(
+        self, ticker: str, interval: str
+    ) -> tuple[pd.Timestamp | None, pd.Timestamp | None]:
+        meta_file = self.cache_dir / f"{ticker}_{interval}.json"
+        if meta_file.exists():
+            try:
+                with open(meta_file, "r") as f:
+                    data = json.load(f)
+                return pd.to_datetime(data["start"]), pd.to_datetime(data["end"])
+            except Exception:
+                pass
+        return None, None
+
+    def _save_metadata(
+        self, ticker: str, interval: str, start: pd.Timestamp, end: pd.Timestamp
+    ) -> None:
+        meta_file = self.cache_dir / f"{ticker}_{interval}.json"
+        try:
+            with open(meta_file, "w") as f:
+                json.dump(
+                    {
+                        "start": start.strftime("%Y-%m-%d"),
+                        "end": end.strftime("%Y-%m-%d"),
+                    },
+                    f,
+                )
+        except Exception as e:
+            logger.warning("Failed to save cache metadata for %s: %s", ticker, e)
 
     def get_prices(
         self,
@@ -48,49 +78,86 @@ class CachedDataProvider(DataProvider):
                         e,
                     )
 
+            meta_start, meta_end = self._load_metadata(ticker, interval)
+            if meta_start is None or meta_end is None:
+                if not cached_df.empty:
+                    meta_start = cached_df.index.min()
+                    meta_end = cached_df.index.max()
+
             needs_fetch = True
-            if not cached_df.empty:
-                cache_start = cached_df.index.min()
-                cache_end = cached_df.index.max()
+
+            if meta_start is not None and meta_end is not None:
+                cache_start = meta_start
+                cache_end = meta_end
 
                 # If cache covers the requested range
                 if cache_start <= start_dt and cache_end >= end_dt:
                     needs_fetch = False
-                    ticker_df = cached_df.loc[start_dt:end_dt]
+                    ticker_df = cached_df.loc[start_dt:end_dt] if not cached_df.empty else pd.DataFrame()
                 elif cache_start <= start_dt and cache_end < end_dt:
                     # Incremental update: fetch from cache_end + 1 day to end
                     next_day = cache_end + pd.Timedelta(days=1)
                     fetch_start = next_day.strftime("%Y-%m-%d")
-                    new_data = self.provider.get_prices(
-                        [ticker], fetch_start, end, interval
-                    )
+                    try:
+                        new_data = self.provider.get_prices(
+                            [ticker], fetch_start, end, interval
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "Failed incremental update for ticker %s from %s to %s: %s",
+                            ticker, fetch_start, end, e
+                        )
+                        new_data = pd.DataFrame()
+
                     if not new_data.empty:
                         cached_df = pd.concat([cached_df, new_data])
                         cached_df = cached_df[~cached_df.index.duplicated(keep="last")]
                         cached_df.sort_index(inplace=True)
                         cached_df.to_parquet(cache_file)
-                    ticker_df = cached_df.loc[start_dt:end_dt]
+
+                    # Update metadata boundary to include the successfully checked range
+                    self._save_metadata(ticker, interval, cache_start, end_dt)
+
+                    ticker_df = cached_df.loc[start_dt:end_dt] if not cached_df.empty else pd.DataFrame()
                     needs_fetch = False
                 elif cache_start > start_dt and cache_end >= end_dt:
-                    # Prepending incremental update:
-                    # fetch from start to cache_start - 1 day
-
+                    # Prepending incremental update: fetch from start to cache_start - 1 day
                     prev_day = cache_start - pd.Timedelta(days=1)
                     fetch_end = prev_day.strftime("%Y-%m-%d")
-                    new_data = self.provider.get_prices(
-                        [ticker], start, fetch_end, interval
-                    )
+                    try:
+                        new_data = self.provider.get_prices(
+                            [ticker], start, fetch_end, interval
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "Failed prepended update for ticker %s from %s to %s: %s",
+                            ticker, start, fetch_end, e
+                        )
+                        new_data = pd.DataFrame()
+
                     if not new_data.empty:
                         cached_df = pd.concat([new_data, cached_df])
                         cached_df = cached_df[~cached_df.index.duplicated(keep="last")]
                         cached_df.sort_index(inplace=True)
                         cached_df.to_parquet(cache_file)
-                    ticker_df = cached_df.loc[start_dt:end_dt]
+
+                    # Update metadata boundary to include the successfully checked range
+                    self._save_metadata(ticker, interval, start_dt, cache_end)
+
+                    ticker_df = cached_df.loc[start_dt:end_dt] if not cached_df.empty else pd.DataFrame()
                     needs_fetch = False
 
             if needs_fetch:
                 # Fetch full window
-                new_data = self.provider.get_prices([ticker], start, end, interval)
+                try:
+                    new_data = self.provider.get_prices([ticker], start, end, interval)
+                except Exception as e:
+                    logger.warning(
+                        "Failed full window fetch for ticker %s from %s to %s: %s",
+                        ticker, start, end, e
+                    )
+                    new_data = pd.DataFrame()
+
                 if not new_data.empty:
                     if not cached_df.empty:
                         cached_df = pd.concat([cached_df, new_data])
@@ -99,8 +166,13 @@ class CachedDataProvider(DataProvider):
                         cached_df = new_data
                     cached_df.sort_index(inplace=True)
                     cached_df.to_parquet(cache_file)
+                    
+                    # Update metadata boundaries
+                    self._save_metadata(ticker, interval, start_dt, end_dt)
                     ticker_df = cached_df.loc[start_dt:end_dt]
                 else:
+                    # Keep track of checked range even if no data returned
+                    self._save_metadata(ticker, interval, start_dt, end_dt)
                     ticker_df = (
                         cached_df.loc[start_dt:end_dt]
                         if not cached_df.empty

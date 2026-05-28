@@ -72,6 +72,15 @@ class LedgerStore:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute(_CREATE_RUNS)
         self._conn.execute(_CREATE_ATTEMPTS)
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_attempts_run_id ON attempts(run_id)"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_attempts_strategy_name ON attempts(strategy_name)"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_attempts_dataset_hash ON attempts(dataset_hash)"
+        )
         self._conn.commit()
 
         # Schema migration for older databases missing target_metric/value columns
