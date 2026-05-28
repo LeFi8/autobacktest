@@ -248,7 +248,7 @@ def run_optimization(
                             # 2. Bounded backoff retry for transient retryable errors
                             if e.retryable and transient_retry_count < max_transient_retries:
                                 transient_retry_count += 1
-                                backoff_sec = 2.0 ** transient_retry_count
+                                backoff_sec = 2.0**transient_retry_count
                                 logger.warning(
                                     f"LLM transient error in iteration {k}: {e.detail}. "
                                     f"Retrying in {backoff_sec}s "
