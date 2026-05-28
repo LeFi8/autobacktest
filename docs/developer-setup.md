@@ -76,4 +76,4 @@ Verify installation by executing the CLI helper command:
 uv run autobacktest --help
 ```
 
-Generated: 2026-05-25
+

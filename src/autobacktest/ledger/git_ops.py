@@ -78,6 +78,4 @@ class GitLedger:
             cfg_rel = f"{self._configs_dir}/{strategy_name}.yaml"
             self._repo.git.checkout("HEAD", "--", strat_rel, cfg_rel)
         else:
-            self._repo.git.checkout(
-                "HEAD", "--", self._strategies_dir, self._configs_dir
-            )
+            self._repo.git.checkout("HEAD", "--", self._strategies_dir, self._configs_dir)

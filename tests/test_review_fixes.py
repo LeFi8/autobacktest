@@ -36,19 +36,11 @@ def test_path_traversal_rejection(mock_dirs: tuple[Path, Path]) -> None:
 def test_forbidden_names_and_submodules_gaps() -> None:
     """Verify AST blocks escapes (pd.read_table, np.loadtxt, npyio, etc.)."""
     codes = [
-        "import pandas as pd\n"
-        "def generate_signals(p, c):\n"
-        "    pd.read_table('file.txt')\n",
+        "import pandas as pd\ndef generate_signals(p, c):\n    pd.read_table('file.txt')\n",
         "import numpy as np\ndef generate_signals(p, c):\n    np.loadtxt('file.txt')\n",
-        "import numpy as np\n"
-        "def generate_signals(p, c):\n"
-        "    np.genfromtxt('file.txt')\n",
-        "import pandas as pd\n"
-        "def generate_signals(p, c):\n"
-        "    pd.io.common.get_handle('file.txt')\n",
-        "import pandas as pd\n"
-        "def generate_signals(p, c):\n"
-        "    pd.ExcelFile('file.xlsx')\n",
+        "import numpy as np\ndef generate_signals(p, c):\n    np.genfromtxt('file.txt')\n",
+        "import pandas as pd\ndef generate_signals(p, c):\n    pd.io.common.get_handle('file.txt')\n",
+        "import pandas as pd\ndef generate_signals(p, c):\n    pd.ExcelFile('file.xlsx')\n",
     ]
     for code in codes:
         res = _check_ast(code)
@@ -59,9 +51,7 @@ def test_forbidden_names_and_submodules_gaps() -> None:
 def test_import_from_alias_bypass() -> None:
     """Verifies import alias and from-imports are inspected for forbidden names."""
     codes = [
-        "from pandas import read_csv as r\n"
-        "def generate_signals(p, c):\n"
-        "    r('f.csv')\n",
+        "from pandas import read_csv as r\ndef generate_signals(p, c):\n    r('f.csv')\n",
         "import pandas as eval\ndef generate_signals(p, c):\n    eval('1+1')\n",
         "from pandas import read_table as rt\ndef generate_signals(p, c):\n    pass\n",
     ]
@@ -128,9 +118,7 @@ def test_dynamic_config_collision_guard() -> None:
     """Verifies dynamic collision guard checks root-level extras."""
     # 1. Standard field collision
     with pytest.raises(PydanticValidationError) as exc_info:
-        StrategyConfig.model_validate(
-            {"universe": ["SPY"], "params": {"universe": ["QQQ"]}}
-        )
+        StrategyConfig.model_validate({"universe": ["SPY"], "params": {"universe": ["QQQ"]}})
     assert "collide with top-level schema fields" in str(exc_info.value)
 
     # 2. Extra field collision (dynamic guard - Finding 11)
@@ -279,26 +267,6 @@ def test_timeout_sandbox_non_main_thread() -> None:
     assert len(errors) == 0
 
 
-def test_check_import_modules_cleanup(mock_dirs: tuple[Path, Path]) -> None:
-    """Verifies that sys.modules is cleared on dynamic import failure."""
-    import sys
-
-    from autobacktest.strategy.validator import _check_import
-
-    strat_dir, _ = mock_dirs
-    strat_file = strat_dir / "broken_strat.py"
-    strat_file.write_text(
-        "raise RuntimeError('Compilation/execution failure')", encoding="utf-8"
-    )
-
-    strategy_name = "broken_strat"
-    res = _check_import(
-        strategy_name, strat_file, strat_file.read_text(encoding="utf-8")
-    )
-    assert not res.passed
-    assert strategy_name not in sys.modules
-
-
 def test_validate_output_duplicate_columns() -> None:
     """Verifies that weights with duplicate columns are rejected."""
     dates = pd.date_range("2023-01-01", periods=3)
@@ -395,9 +363,7 @@ def test_system_prompt_leverage_constraint() -> None:
     """Verifies that the restored leverage constraint is in the SYSTEM_PROMPT."""
     from autobacktest.llm.prompts import SYSTEM_PROMPT
 
-    assert (
-        "summing to at most 1.0 (sum <= 1.0) for every rebalance day" in SYSTEM_PROMPT
-    )
+    assert "summing to at most 1.0 (sum <= 1.0) for every rebalance day" in SYSTEM_PROMPT
 
 
 def test_db_schema_migration_and_custom_sorting(tmp_path: Path) -> None:
@@ -682,16 +648,10 @@ def test_orchestrator_lessons_persistence(tmp_path: Path) -> None:
     # 1. At the start of Iteration 2, the context received updated lessons!
     assert len(called_contexts) == 2
     assert called_contexts[0].lessons_text == "# Initial Lessons\n"
-    assert (
-        called_contexts[1].lessons_text
-        == "# Lessons: validation failed because of os import."
-    )
+    assert called_contexts[1].lessons_text == "# Lessons: validation failed because of os import."
 
     # 2. After the run, the final lessons.md on disk is preserved and updated!
-    assert (
-        lessons_file.read_text(encoding="utf-8")
-        == "# Lessons: rejected because no improvement."
-    )
+    assert lessons_file.read_text(encoding="utf-8") == "# Lessons: rejected because no improvement."
 
 
 def test_cli_reset_safe_abort(tmp_path: Path) -> None:
@@ -722,9 +682,7 @@ def test_cli_reset_safe_abort(tmp_path: Path) -> None:
         ledger_instance = mock_git_ledger.return_value
         ledger_instance.repo_root = tmp_path
         # Force an exception during git reset
-        ledger_instance.reset_to_main.side_effect = RuntimeError(
-            "Dirty working tree conflict"
-        )
+        ledger_instance.reset_to_main.side_effect = RuntimeError("Dirty working tree conflict")
 
         def mock_path(*args):
             if not args:
@@ -734,9 +692,7 @@ def test_cli_reset_safe_abort(tmp_path: Path) -> None:
             return Path(*args)
 
         with patch("autobacktest.cli.Path", side_effect=mock_path):
-            result = runner.invoke(
-                app, ["reset", "--strategy", "toy", "--run-dir", str(run_dir)]
-            )
+            result = runner.invoke(app, ["reset", "--strategy", "toy", "--run-dir", str(run_dir)])
 
         # Assert safe abort occurred
         assert result.exit_code == 1

@@ -7,9 +7,71 @@ from scipy.spatial.distance import squareform
 from scipy.stats import norm
 
 
-def calculate_effective_trials(
-    returns_matrix: pd.DataFrame, threshold: float = 0.5
-) -> int:
+def _ledoit_wolf_correlation(returns_matrix: pd.DataFrame) -> pd.DataFrame:
+    """Compute the shrunk correlation matrix using Ledoit-Wolf shrinkage to a scaled identity target.
+
+    If the returns_matrix has t <= 1 or fails to compute, gracefully falls back
+    to the standard empirical correlation matrix.
+    """
+    if returns_matrix.empty:
+        return pd.DataFrame()
+
+    t, p = returns_matrix.shape
+    # Fallback to empirical correlation if insufficient observations or features
+    if t <= 1 or p <= 1:
+        corr = returns_matrix.corr().fillna(0.0).clip(-1.0, 1.0)
+        vals = corr.to_numpy().copy()
+        np.fill_diagonal(vals, 1.0)
+        return pd.DataFrame(vals, index=corr.index, columns=corr.columns)
+
+    try:
+        # Standardize returns matrix (fill NaNs and center)
+        x = returns_matrix.fillna(0.0).values
+        x_centered = x - np.mean(x, axis=0)
+
+        # Empirical covariance S
+        s = (x_centered.T @ x_centered) / t
+
+        # Constant variance target F = mu * I
+        mu = np.trace(s) / p
+
+        # Misspecification distance d^2 = sum((S - F)^2)
+        d2 = np.sum((s - mu * np.eye(p)) ** 2)
+        if d2 == 0.0:
+            shrunk_cov = s
+        else:
+            # Estimate b^2 (variance of sample covariance elements)
+            x2 = x_centered**2
+            sum_t_x2_x2 = np.sum(x2.T @ x2)
+            sum_s2 = np.sum(s**2)
+            b2 = (sum_t_x2_x2 - t * sum_s2) / (t**2)
+
+            # Shrinkage coefficient delta (clipped at d^2)
+            b2 = min(b2, d2)
+            delta = b2 / d2
+
+            # Convex combination
+            shrunk_cov = (1.0 - delta) * s
+            np.fill_diagonal(shrunk_cov, shrunk_cov.diagonal() + delta * mu)
+
+        # Convert covariance to correlation
+        diag_cov = np.diag(shrunk_cov)
+        std_devs = np.sqrt(diag_cov)
+        # Handle zero-variance strategies gracefully
+        std_devs[std_devs == 0.0] = 1.0
+
+        shrunk_corr = shrunk_cov / np.outer(std_devs, std_devs)
+        shrunk_corr = np.clip(shrunk_corr, -1.0, 1.0)
+        np.fill_diagonal(shrunk_corr, 1.0)
+
+        return pd.DataFrame(shrunk_corr, index=returns_matrix.columns, columns=returns_matrix.columns)
+
+    except Exception:
+        # Graceful fallback on unexpected error
+        return returns_matrix.corr().fillna(0.0).clip(-1.0, 1.0)
+
+
+def calculate_effective_trials(returns_matrix: pd.DataFrame, threshold: float = 0.5) -> int:
     """Determine the number of independent strategy trials.
 
     Uses hierarchical clustering to group correlated returns.
@@ -24,8 +86,8 @@ def calculate_effective_trials(
     if returns_matrix.empty or returns_matrix.shape[1] <= 1:
         return int(max(returns_matrix.shape[1], 1))
 
-    # Compute correlation matrix
-    corr = returns_matrix.corr().fillna(0.0).clip(-1.0, 1.0)
+    # Compute correlation matrix using Ledoit-Wolf shrinkage to stabilize calculations
+    corr = _ledoit_wolf_correlation(returns_matrix)
 
     # Convert correlation to distance matrix: d_ij = sqrt(0.5 * (1 - rho_ij))
     dist = np.sqrt(0.5 * (1.0 - corr))

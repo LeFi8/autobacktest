@@ -19,9 +19,7 @@ def test_vectorized_backtest_constant_returns() -> None:
     # Constant weight of 1.0 in asset A
     weights = pd.DataFrame({"A": [1.0] * 100}, index=dates)
 
-    portfolio_returns, _equity_curve, daily_weights = run_vectorized_backtest(
-        prices, weights
-    )
+    portfolio_returns, _equity_curve, daily_weights = run_vectorized_backtest(prices, weights)
 
     # First day has 0 returns because of shift(1) lookahead bias guard
     assert portfolio_returns.iloc[0] == 0.0

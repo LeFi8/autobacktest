@@ -10,15 +10,9 @@ from autobacktest.llm.prompts import build_messages
 class AgentEditResponse(BaseModel):
     """Pydantic schema used for structured output parsing via LiteLLM."""
 
-    strategy_code: str = Field(
-        description="The complete new Python strategy source code."
-    )
-    config_yaml: str = Field(
-        description="The complete new YAML parameters configuration."
-    )
-    reasoning: str = Field(
-        description="Quantitative reasoning and explanation for changes."
-    )
+    strategy_code: str = Field(description="The complete new Python strategy source code.")
+    config_yaml: str = Field(description="The complete new YAML parameters configuration.")
+    reasoning: str = Field(description="Quantitative reasoning and explanation for changes.")
     lessons_text: str | None = Field(
         default=None,
         description="Complete updated lessons learned markdown text when changed.",
@@ -101,12 +95,26 @@ class LiteLLMProvider(LLMProvider):
             # Parse using Pydantic validation
             parsed_response = AgentEditResponse.model_validate_json(clean_content)
 
+            usage = getattr(response, "usage", None)
+            prompt_tokens = usage.prompt_tokens if usage else 0
+            completion_tokens = usage.completion_tokens if usage else 0
+            total_tokens = usage.total_tokens if usage else 0
+
+            try:
+                cost = litellm.completion_cost(completion_response=response) or 0.0
+            except Exception:
+                cost = 0.0
+
             return AgentEdit(
                 strategy_code=parsed_response.strategy_code,
                 config_yaml=parsed_response.config_yaml,
                 reasoning=parsed_response.reasoning,
                 raw_response=content,
                 lessons_text=parsed_response.lessons_text,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                cost=cost,
             )
 
         except Exception as e:

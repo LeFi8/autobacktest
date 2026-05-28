@@ -36,9 +36,7 @@ def test_validate_signature_correct() -> None:
     """Verifies that correct function signature passes."""
     mod = DummyModule("test_mod")
 
-    def generate_signals(
-        _prices: pd.DataFrame, _config: dict[str, Any]
-    ) -> pd.DataFrame:
+    def generate_signals(_prices: pd.DataFrame, _config: dict[str, Any]) -> pd.DataFrame:
         return pd.DataFrame()
 
     mod.generate_signals = generate_signals  # type: ignore
@@ -65,9 +63,7 @@ def test_validate_signature_keyword_only() -> None:
     """Verifies signature fails if parameters are strictly keyword-only."""
     mod = DummyModule("test_mod")
 
-    def generate_signals(
-        *, _prices: pd.DataFrame, _config: dict[str, Any]
-    ) -> pd.DataFrame:
+    def generate_signals(*, _prices: pd.DataFrame, _config: dict[str, Any]) -> pd.DataFrame:
         return pd.DataFrame()
 
     mod.generate_signals = generate_signals  # type: ignore
@@ -81,9 +77,7 @@ def test_validate_signature_too_many_required_args() -> None:
     """Verifies signature fails if 3+ parameters are required with no defaults."""
     mod = DummyModule("test_mod")
 
-    def generate_signals(
-        _prices: pd.DataFrame, _config: dict[str, Any], _required_extra: int
-    ) -> pd.DataFrame:
+    def generate_signals(_prices: pd.DataFrame, _config: dict[str, Any], _required_extra: int) -> pd.DataFrame:
         return pd.DataFrame()
 
     mod.generate_signals = generate_signals  # type: ignore

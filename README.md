@@ -49,11 +49,12 @@ uv sync
 uv run pre-commit install
 ```
 
-### 3. Set API Key
-Export the API key for your preferred provider. For example, using OpenAI:
+### 3. Environment Configuration
+Copy the environment variables template and configure your API keys and custom configuration settings:
 ```bash
-export OPENAI_API_KEY="your-api-key-here"
+cp .env.dist .env
 ```
+Open `.env` in a text editor to set your `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or custom models and backtesting dates. Fallbacks and defaults are fully managed via the centralized configuration system in `.env`.
 
 ### 4. Run the Optimization Loop
 Trigger the optimization loop on the reference **HAA (Hybrid Asset Allocation)** strategy for `5` iterations:

@@ -22,9 +22,7 @@ from autobacktest.orchestrator import OrchestratorResult, run_optimization
 # ---------------------------------------------------------------------------
 
 
-def _make_synthetic_prices(
-    start: str = "2013-01-01", end: str = "2025-01-01"
-) -> pd.DataFrame:
+def _make_synthetic_prices(start: str = "2013-01-01", end: str = "2025-01-01") -> pd.DataFrame:
     """Create a deterministic synthetic price DataFrame with HIGH and LOW assets.
 
     HIGH asset: 0.1% daily drift + tiny noise  → strong positive returns
@@ -172,9 +170,7 @@ def _make_fake_provider(synthetic_prices: pd.DataFrame) -> object:
                 # Benchmark ticker may not match column names — return first column
                 # renamed to the requested ticker so evaluation doesn't fail.
                 first_col = synthetic_prices.columns[0]
-                return synthetic_prices[[first_col]].rename(
-                    columns={first_col: tickers[0]}
-                )
+                return synthetic_prices[[first_col]].rename(columns={first_col: tickers[0]})
             return synthetic_prices[available]
 
     return FakeProvider()
@@ -270,9 +266,7 @@ def test_e2e_full_run_commits_improved_strategy(project_root: Path) -> None:
     run_branch = result.branch
     branch_commits = list(repo.iter_commits(run_branch))
     # Initial commit + at least one accepted-edit commit
-    assert len(branch_commits) >= 2, (
-        f"Expected ≥2 commits on {run_branch}, got {len(branch_commits)}"
-    )
+    assert len(branch_commits) >= 2, f"Expected ≥2 commits on {run_branch}, got {len(branch_commits)}"
 
     # --- MockProvider was called 3 times (one per iteration) ---
     assert len(mock_provider.calls) == 3
@@ -329,9 +323,7 @@ def test_e2e_validation_failure_continues(project_root: Path) -> None:
         event = json.loads(line)
         assert "validation" in event, f"Missing 'validation' key in event: {event}"
         assert event["validation"] is not None, "validation should not be None"
-        assert event["validation"]["passed"] is False, (
-            f"Expected validation.passed=False, got: {event['validation']}"
-        )
+        assert event["validation"]["passed"] is False, f"Expected validation.passed=False, got: {event['validation']}"
 
     # MockProvider was still called 2 times (edit was generated before validation)
     assert len(mock_provider.calls) == 2

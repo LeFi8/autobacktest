@@ -45,6 +45,10 @@ class AgentEdit:
     reasoning: str
     raw_response: str
     lessons_text: str | None = None
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    cost: float = 0.0
 
 
 class LLMError(Exception):
@@ -64,14 +68,13 @@ class LLMError(Exception):
         self.detail = detail
 
     def __str__(self) -> str:
-        return (
-            f"LLMError(provider='{self.provider}', "
-            f"model='{self.model}', detail='{self.detail}')"
-        )
+        return f"LLMError(provider='{self.provider}', model='{self.model}', detail='{self.detail}')"
 
 
 class LLMProvider(ABC):
     """Abstract base class defining the contract for LLM drivers."""
+
+    temperature: float
 
     @abstractmethod
     def generate_edit(self, context: AgentContext) -> AgentEdit:

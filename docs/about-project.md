@@ -39,4 +39,4 @@ graph TD
    - If all gate thresholds are satisfied, the system updates the strategy SQLite ledger tracking table and commits the modified code to Git.
    - If any gate fails, the change is reverted, and details of the failure are fed back to the LLM agent for the next iteration.
 
-Generated: 2026-05-25
+

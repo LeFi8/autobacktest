@@ -106,8 +106,7 @@ def validate_output(
         if not pd.api.types.is_numeric_dtype(weights[col]):
             return (
                 False,
-                f"Strategy weights column '{col}' must be numeric, "
-                f"got {weights[col].dtype}.",
+                f"Strategy weights column '{col}' must be numeric, got {weights[col].dtype}.",
             )
 
     # 1. No NaNs allowed
@@ -132,16 +131,12 @@ def validate_output(
     if (row_sums > 1.0 + LEVERAGE_TOLERANCE).any():
         offending_rows = row_sums[row_sums > 1.0 + LEVERAGE_TOLERANCE]
         return False, (
-            f"Strategy weights row sums exceed 1.0. "
-            f"Max sum found: {offending_rows.max()} on {offending_rows.idxmax()}"
+            f"Strategy weights row sums exceed 1.0. Max sum found: {offending_rows.max()} on {offending_rows.idxmax()}"
         )
 
     # 5. Must have at least one non-zero weight (not all zeros)
     if weights.abs().max().max() < 1e-7:
-        return False, (
-            "Strategy weights must not be all zeros "
-            "(must have at least one non-zero weight)."
-        )
+        return False, ("Strategy weights must not be all zeros (must have at least one non-zero weight).")
 
     # 6. Index validation (Finding 14)
     if not isinstance(weights.index, pd.DatetimeIndex):
@@ -155,10 +150,7 @@ def validate_output(
         if not invalid_dates.empty:
             return (
                 False,
-                (
-                    "Strategy weights index contains dates not in the "
-                    f"price history: {list(invalid_dates[:5])}"
-                ),
+                (f"Strategy weights index contains dates not in the price history: {list(invalid_dates[:5])}"),
             )
 
     return True, None
