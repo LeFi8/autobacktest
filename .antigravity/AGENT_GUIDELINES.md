@@ -39,4 +39,4 @@
 - Add unit tests for new modules. Aim for module line coverage >= 85%.
 - Maintain determinism: ensure all statistical simulations (DSR, bootstrap) accept and execute with explicit, locked random seeds (default: `42`).
 
-Generated: 2026-05-25
+

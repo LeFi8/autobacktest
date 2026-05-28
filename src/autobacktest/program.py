@@ -7,6 +7,14 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class ProgramSpec:
+    """Dataclass holding structured objectives and constraints from a program file.
+
+    Attributes:
+        objective: The extracted objectives text under the '# Objective' header.
+        constraints: The extracted constraints text under the '# Constraints' header.
+        raw_text: The entire raw contents of the program file.
+    """
+
     objective: str  # text under # Objective
     constraints: str  # text under # Constraints
     raw_text: str  # full file content (passed to LLM as-is)
@@ -15,7 +23,16 @@ class ProgramSpec:
 def parse_program(path: Path) -> ProgramSpec:
     """Parse a program.md file with required # Objective and # Constraints headers.
 
-    Raises ValueError if either header is missing.
+    Skips fenced code blocks to prevent false header matching.
+
+    Args:
+        path: Path to the markdown program objective file.
+
+    Returns:
+        ProgramSpec: The structured and validated objectives/constraints.
+
+    Raises:
+        ValueError: If either '# Objective' or '# Constraints' headers are missing.
     """
     raw_text = path.read_text(encoding="utf-8")
 

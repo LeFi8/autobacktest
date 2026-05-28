@@ -13,6 +13,7 @@ graph TD
     subgraph Core Orchestration
         ORCH[orchestrator.py]
         GATE[gate.py]
+        PROG[program.py]
     end
 
     subgraph Evaluation Pipeline
@@ -32,7 +33,7 @@ graph TD
     end
 
     subgraph Ledger Layer
-        LEDG[ledger/database & git]
+        LEDG[ledger/store.py & git_ops.py]
     end
 
     subgraph Strategies
@@ -43,6 +44,7 @@ graph TD
     ORCH --> EVAL
     ORCH --> GATE
     ORCH --> LEDG
+    ORCH --> PROG
     EVAL --> BACK
     EVAL --> COST
     EVAL --> DSR
@@ -79,7 +81,8 @@ Consumes daily price data and strategy allocation weights to compute risk/return
 
 ### 4. Git & SQLite Ledger (`ledger/`)
 Tracks strategy iterations.
-- **SQLite Ledger**: Relational database storing every iteration's parameters, Sharpe, Sortino, max drawdown, and gating outcomes.
-- **Git Ledger**: Commits valid strategy code changes. Reverts failures back to last known passing revision automatically.
+- `store.py`: Relational database storing every iteration's parameters, Sharpe, Sortino, max drawdown, and gating outcomes.
+- `git_ops.py`: Commits valid strategy code changes. Reverts failures back to last known passing revision automatically.
+- `event_log.py`: Manages the structured JSON events logging history.
 
-Generated: 2026-05-25
+

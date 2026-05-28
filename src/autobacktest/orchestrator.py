@@ -51,7 +51,33 @@ def run_optimization(
     start_date: str = "2015-01-01",
     end_date: str = "2026-01-01",
 ) -> OrchestratorResult:
-    """Run the LLM-driven strategy optimization loop."""
+    """Run the LLM-driven strategy optimization loop.
+
+    Args:
+        program_path: Path to the markdown program objective file.
+        strategy_name: The name of the target strategy to optimize.
+        iterations: Total optimization runs to execute.
+        provider: Enclosing LiteLLM/Mock provider to generate candidate mutations.
+        run_dir: Directory where the run database and events log are written.
+        strategies_dir: Directory enclosing target strategy modules.
+            Defaults to "strategies".
+        configs_dir: Directory enclosing YAML parameters files.
+            Defaults to "configs".
+        target_metric: Metric choice to target during gate checks.
+            Defaults to TargetMetric.SHARPE.
+        repo_path: Root repository path for Git workspace operations.
+            Defaults to root path.
+        start_date: Starting date boundary for evaluation.
+            Defaults to "2015-01-01".
+        end_date: Ending date boundary for evaluation.
+            Defaults to "2026-01-01".
+
+    Returns:
+        OrchestratorResult: Summary of the final optimization run outcomes.
+
+    Raises:
+        FileNotFoundError: If the target strategy or configuration files are missing.
+    """
     # 1. Parse program
     spec = parse_program(program_path)
 

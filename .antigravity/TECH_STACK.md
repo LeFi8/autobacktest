@@ -10,6 +10,7 @@
   - `scipy >=1.12.0` (Scientific/statistical distributions for PSR/DSR)
   - `pyarrow >=15.0.0` (Storage back-end for cached Parquet price files)
   - `pandas-market-calendars >=4.4.0` (Exchange schedule tracking)
+  - `yfinance >=0.2.38` (Yahoo Finance market data fetching)
 - **AI & Integrations**:
   - `litellm >=1.35.0` (Unified interface for LLM code/parameter mutation)
   - `gitpython >=3.1.40` (Git index interactions, branch/commit history state)
@@ -21,7 +22,7 @@
   - `pydantic >=2.0` (Data validation, schemas, and configurations)
   - `pyyaml >=6.0` (Configuration YAML parsing)
   - `python-dotenv >=1.0.1` (System secrets and API key handling)
-  - `joblib >=1.4.0` (Threaded/process concurrency for bootsrap and walk-forward evaluations)
+  - `joblib >=1.4.0` (Threaded/process concurrency for bootstrap and walk-forward evaluations)
 
 ## Development and Verification Tools
 - **Test Runner**: `pytest >=8.0.0` (with `pytest-cov >=4.1.0` for target coverage >=85%)
@@ -30,9 +31,11 @@
   - `vcrpy >=6.0.0` (HTTP response capture / caching)
 - **Linter & Formatter**: `ruff >=0.3.0` (combining flake8, black, isort rules; line length 88)
 - **Static Type Checking**: `mypy >=1.9.0` (strict mode enabled across project context)
+- **Hooks**: `pre-commit >=3.6.0` (quality pre-commit validation)
+- **Types**: `types-pyyaml >=6.0.12.20240311` (type stubs)
 
 ## Infrastructure and Persistence
 - **Database**: SQLite (built-in driver) for relational leaderboard run tracking.
-- **Cache Store**: Parquet local system storage (`data/cache/` by default).
+- **Cache Store**: Parquet local system storage (`data/` cache directory).
 
-Generated: 2026-05-25
+

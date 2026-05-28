@@ -158,4 +158,144 @@ def evaluate_strategy(
     """
 ```
 
-Generated: 2026-05-25
+---
+
+## 3. Strategy Registry & Pre-flight Validation (`autobacktest.strategy`)
+
+### `preflight`
+Runs all six pre-flight validations on a target strategy and configuration.
+```python
+def preflight(
+    strategy_name: str,
+    strategies_dir: Path,
+    configs_dir: Path,
+) -> ValidationResult:
+    """Run all six pre-flight validations on a target strategy and config.
+
+    Validations include:
+    1. Path traversal security check
+    2. AST static whitelist check to prevent imports of unauthorized packages
+    3. Pydantic configuration validation against StrategyConfig schema
+    4. Dynamic compilation and import using isolated compilation blocks
+    5. Smoke testing with synthetic prices to verify execution correctness
+    6. Sub-window rebalance stability validation for lookahead bias sniffing
+
+    Args:
+        strategy_name: Name of the strategy to validate.
+        strategies_dir: Path to directory containing strategy modules.
+        configs_dir: Path to directory containing YAML configs.
+
+    Returns:
+        ValidationResult: Pass/fail outcome and diagnostic errors if rejected.
+    """
+```
+
+### `StrategyConfig`
+Unified configuration validator inheriting from `pydantic.BaseModel`.
+- `from_yaml(path: Path) -> StrategyConfig`: Parses YAML file and instantiates schema.
+- `to_flat_dict() -> dict[str, Any]`: Flattens configurations including sub-parameter schemas to single-depth dictionary.
+
+---
+
+## 4. Gating Check & Metric Optimization (`autobacktest.gate`)
+
+### `accept`
+Evaluates target metrics and constraints against standard lexicographic criteria gates.
+```python
+def accept(
+    report: EvaluationReport,
+    baseline: EvaluationReport | None,
+    target_metric: TargetMetric = TargetMetric.SHARPE,
+    dd_limit: float | None = None,
+    turnover_limit: float | None = None,
+    dsr_threshold: float | None = None,
+    min_improvement: float | None = None,
+    config: Any = None,
+) -> GateResult:
+    """Evaluate candidate EvaluationReport against lexicographic gates.
+
+    Checked gates in sequence:
+    1. Max Drawdown holdout limit
+    2. Historical stress regime checks
+    3. Annualized rebalancing turnover holdout limit
+    4. Multiple-testing adjusted Deflated Sharpe Ratio (DSR) threshold
+
+    Tie-breaker check:
+    5. Target metric improvement over baseline by at least epsilon margin
+
+    Args:
+        report: Candidate strategy EvaluationReport.
+        baseline: Baseline comparison EvaluationReport.
+        target_metric: Target metric to compare improvement.
+        dd_limit: Maximum allowed holdout drawdown.
+        turnover_limit: Maximum allowed holdout turnover rate.
+        dsr_threshold: Minimum allowed DSR probability.
+        min_improvement: Epsilon required improvement margin.
+        config: Optional configuration model to resolve default gates limits.
+
+    Returns:
+        GateResult: Selection outcome specifying acceptance status and failure reasons.
+    """
+```
+
+---
+
+## 5. Storage Store & History Ledger (`autobacktest.ledger`)
+
+### `LedgerStore`
+SQLite relational database interface manager.
+- `create_run(run_id: str, strategy_name: str, ...)`: Commits structured metadata for a new optimization session.
+- `record_attempt(run_id: str, iteration: int, ...)`: Records attempt parameter values, performance metrics, gating decisions, and out-of-sample daily returns.
+- `fetch_historical_returns(dataset_hash: str) -> tuple[pd.DataFrame, list[float]]`: Retrieves all historical return series and Sharpe ratios matching active dataset universe for DSR effective trials calculation.
+
+---
+
+## 6. Optimization Orchestrator (`autobacktest.orchestrator`)
+
+### `run_optimization`
+Fires and coordinates the iterative quantitative strategy optimization process.
+```python
+def run_optimization(
+    program_path: Path,
+    strategy_name: str,
+    iterations: int,
+    provider: LLMProvider,
+    run_dir: Path,
+    *,
+    strategies_dir: Path = Path("strategies"),
+    configs_dir: Path = Path("configs"),
+    target_metric: TargetMetric = TargetMetric.SHARPE,
+    repo_path: Path = Path(),
+    start_date: str = "2015-01-01",
+    end_date: str = "2026-01-01",
+) -> OrchestratorResult:
+    """Run the LLM-driven strategy optimization loop.
+
+    Coordinates:
+    1. Parsing target program.md guidelines.
+    2. Evaluating the candidate baseline strategy as iteration 0.
+    3. Generating structured code/config edits via LLM mutations.
+    4. Executing static code analysis, dynamic signature, and lookahead preflight checks.
+    5. Evaluates walk-forward window and holdout returns.
+    6. Adjusts Sharpe ratio for multiple testing bias (DSR).
+    7. Runs lexicographic gates and handles commits/rollbacks automatically.
+
+    Args:
+        program_path: Path to the markdown program objective file.
+        strategy_name: The name of the target strategy to optimize.
+        iterations: Total optimization runs to execute.
+        provider: Enclosing LiteLLM/Mock provider to generate candidate mutations.
+        run_dir: Directory where the run database and events log are written.
+        strategies_dir: Directory enclosing target strategy modules.
+        configs_dir: Directory enclosing YAML parameters files.
+        target_metric: Metric choice to target during gate checks.
+        repo_path: Root repository path for Git workspace operations.
+        start_date: Starting date boundary for evaluation.
+        end_date: Ending date boundary for evaluation.
+
+    Returns:
+        OrchestratorResult: Summary of the final optimization run outcomes.
+    """
+```
+
+
