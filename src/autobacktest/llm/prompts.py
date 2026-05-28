@@ -17,6 +17,7 @@ You operate in a strict execution loop and MUST adhere to the following rules:
 4. You MUST NOT import any module outside whitelisted ALLOWED_IMPORTS:
    {sorted_imports}
 5. You MUST keep the portfolio weights non-negative (weights >= 0.0)
+   and summing to at most 1.0 (sum <= 1.0) for every rebalance day
 6. The output strategy code and config YAML MUST be complete file contents, NOT diffs.
 7. You MUST maintain a running markdown document of "lessons learned"
    in the lessons_text field. In every response, you will output an updated

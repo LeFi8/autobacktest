@@ -70,6 +70,32 @@ class LedgerStore:
         self._conn.execute(_CREATE_ATTEMPTS)
         self._conn.commit()
 
+        # Schema migration for older databases missing target_metric/value columns
+        cursor = self._conn.cursor()
+        cursor.execute("PRAGMA table_info(attempts)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if columns:
+            migrated = False
+            if "target_metric" not in columns:
+                self._conn.execute(
+                    "ALTER TABLE attempts ADD COLUMN target_metric TEXT "
+                    "NOT NULL DEFAULT 'sharpe'"
+                )
+                migrated = True
+            if "target_metric_value" not in columns:
+                self._conn.execute(
+                    "ALTER TABLE attempts ADD COLUMN target_metric_value REAL "
+                    "NOT NULL DEFAULT 0.0"
+                )
+                migrated = True
+            if migrated:
+                # Backfill target_metric_value using observed_sharpe for older attempts
+                self._conn.execute(
+                    "UPDATE attempts SET target_metric_value = observed_sharpe "
+                    "WHERE target_metric = 'sharpe'"
+                )
+                self._conn.commit()
+
     def create_run(
         self,
         run_id: str,
@@ -200,7 +226,7 @@ class LedgerStore:
         self,
         strategy_name: str | None = None,
     ) -> list[dict[str, object]]:
-        """Return the best accepted attempt per strategy (highest observed Sharpe).
+        """Return the best accepted attempt per strategy (highest target metric value).
 
         Optionally filtered to a single strategy_name.
         """
@@ -221,17 +247,17 @@ class LedgerStore:
                 SELECT s.strategy_name, MIN(s.id) AS best_id
                 FROM attempts s
                 INNER JOIN (
-                    SELECT strategy_name, MAX(observed_sharpe) AS best_sharpe
+                    SELECT strategy_name, MAX(target_metric_value) AS best_value
                     FROM attempts
                     WHERE accepted = 1
                     {where}
                     GROUP BY strategy_name
                 ) m ON s.strategy_name = m.strategy_name
-                     AND s.observed_sharpe = m.best_sharpe
+                     AND s.target_metric_value = m.best_value
                      AND s.accepted = 1
                 GROUP BY s.strategy_name
             ) best ON a.id = best.best_id
-            ORDER BY a.observed_sharpe DESC
+            ORDER BY a.target_metric_value DESC
         """
         if strategy_name is not None:
             query = base.format(where="AND strategy_name = ?")

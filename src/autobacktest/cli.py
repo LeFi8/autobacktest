@@ -141,8 +141,20 @@ def report(
 
     from autobacktest.ledger.store import LedgerStore
 
+    if compare_all and strategy is not None:
+        typer.echo("Error: Cannot specify both --strategy and --compare-all.")
+        raise typer.Exit(code=1)
+
     store = LedgerStore(db_path)
     try:
+        if not compare_all and strategy is None:
+            runs = store.list_runs()
+            if runs:
+                strategy = str(runs[0]["strategy_name"])
+            else:
+                typer.echo("No runs found in ledger.")
+                return
+
         if compare_all:
             rows = store.leaderboard(strategy_name=None)
         else:
@@ -157,6 +169,8 @@ def report(
         table.add_column("Strategy", style="cyan", justify="left")
         table.add_column("Run ID", style="magenta", justify="left")
         table.add_column("Iter", style="blue", justify="center")
+        table.add_column("Target Metric", style="magenta", justify="center")
+        table.add_column("Target Value", style="green", justify="right")
         table.add_column("Observed Sharpe", justify="right")
         table.add_column("Deflated Sharpe", style="yellow", justify="right")
         table.add_column("Max DD", style="red", justify="right")
@@ -180,13 +194,19 @@ def report(
             turnover_str = f"{turnover_val:.2f}x"
 
             date_str = r["created_at"]
-            if isinstance(date_str, str) and "T" in date_str:
-                date_str = date_str.split("T")[0]
+            if isinstance(date_str, str) and len(date_str) >= 10:
+                date_str = date_str[:10]
+
+            target_metric_str = str(r.get("target_metric", "sharpe")).upper()
+            target_val = float(cast(float, r.get("target_metric_value", 0.0)))
+            target_str = f"{target_val:.3f}"
 
             table.add_row(
                 str(r["strategy_name"]),
                 str(r["run_id"]),
                 str(r["iteration"]),
+                target_metric_str,
+                target_str,
                 sharpe_str,
                 deflated_str,
                 max_dd_str,
@@ -221,13 +241,20 @@ def reset(
     # 1. Reset strategy files to main baseline
     try:
         git_ledger = GitLedger(Path())
+        repo_root = git_ledger.repo_root
+        import pathlib
+
+        if not isinstance(repo_root, pathlib.Path):
+            repo_root = Path()  # type: ignore[unreachable]
         git_ledger.reset_to_main(strategy)
         typer.echo("Baseline strategy files restored successfully.")
     except Exception as e:
-        typer.echo(f"Error resetting strategy files via git: {e}")
+        typer.echo(f"Error: Failed to reset strategy files via git: {e}")
+        typer.echo("Abort: Reset could not be completed safely.")
+        raise typer.Exit(code=1) from e
 
     # 2. Restore lessons.md to empty template
-    lessons_path = Path("lessons.md")
+    lessons_path = repo_root / "lessons.md"
     template_content = """# Lessons
 
 <!-- Agent-curated memory. Updated by the LLM after each iteration. -->

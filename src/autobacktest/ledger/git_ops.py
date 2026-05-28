@@ -7,9 +7,14 @@ import git
 
 class GitLedger:
     def __init__(self, repo_path: Path) -> None:
-        self._repo = git.Repo(repo_path)
+        self._repo = git.Repo(repo_path, search_parent_directories=True)
         self._strategies_dir = "strategies"
         self._configs_dir = "configs"
+
+    @property
+    def repo_root(self) -> Path:
+        """Expose the absolute path of the git working tree root."""
+        return Path(self._repo.working_tree_dir or "")
 
     def ensure_clean(self, strategy_name: str) -> None:
         """Raise ValueError if target strategy/config files have uncommitted changes."""
@@ -42,14 +47,10 @@ class GitLedger:
         return commit.hexsha
 
     def rollback_strategy(self, strategy_name: str) -> None:
-        """Restore strategies/{name}.py, configs/{name}.yaml, and lessons.md to HEAD."""
+        """Restore strategies/{name}.py, configs/{name}.yaml to HEAD."""
         strat_rel = f"{self._strategies_dir}/{strategy_name}.py"
         cfg_rel = f"{self._configs_dir}/{strategy_name}.yaml"
-        files_to_checkout = [strat_rel, cfg_rel]
-        lessons_path = Path(self._repo.working_tree_dir or "") / "lessons.md"
-        if lessons_path.exists():
-            files_to_checkout.append("lessons.md")
-        self._repo.git.checkout("--", *files_to_checkout)
+        self._repo.git.checkout("--", strat_rel, cfg_rel)
 
     @property
     def current_branch(self) -> str:
@@ -57,9 +58,20 @@ class GitLedger:
         return str(self._repo.active_branch.name)
 
     def reset_to_main(self, strategy_name: str | None = None) -> None:
-        """Checkout main branch and restore strategy/config files to baseline."""
-        if self._repo.active_branch.name != "main":
-            self._repo.heads.main.checkout()
+        """Checkout primary branch (main or master) and restore strategy/config files
+        to baseline.
+        """
+        primary_branch = "main"
+        if "main" not in self._repo.heads:
+            if "master" in self._repo.heads:
+                primary_branch = "master"
+            elif self._repo.heads:
+                primary_branch = self._repo.heads[0].name
+            else:
+                raise ValueError("Could not find any branch in the repository.")
+
+        if self._repo.active_branch.name != primary_branch:
+            self._repo.heads[primary_branch].checkout()
 
         if strategy_name is not None:
             strat_rel = f"{self._strategies_dir}/{strategy_name}.py"

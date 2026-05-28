@@ -373,3 +373,375 @@ def test_gate_dsr_none_handling() -> None:
     res = gate_accept(report, baseline=None, dsr_threshold=0.95)
     assert not res.accepted
     assert "Deflated Sharpe Ratio is missing or NaN" in res.reason
+
+
+def test_agent_edit_response_lessons_text_default() -> None:
+    """Verifies that AgentEditResponse validates successfully and defaults
+    lessons_text to empty string when missing.
+    """
+    from autobacktest.llm.litellm_provider import AgentEditResponse
+
+    json_data = """{
+        "strategy_code": "def generate_signals(prices, config): return prices",
+        "config_yaml": "universe: [SPY]",
+        "reasoning": "Simple identity strategy."
+    }"""
+    parsed = AgentEditResponse.model_validate_json(json_data)
+    assert parsed.lessons_text == ""
+    assert parsed.strategy_code == "def generate_signals(prices, config): return prices"
+
+
+def test_system_prompt_leverage_constraint() -> None:
+    """Verifies that the restored leverage constraint is in the SYSTEM_PROMPT."""
+    from autobacktest.llm.prompts import SYSTEM_PROMPT
+
+    assert (
+        "summing to at most 1.0 (sum <= 1.0) for every rebalance day" in SYSTEM_PROMPT
+    )
+
+
+def test_db_schema_migration_and_custom_sorting(tmp_path: Path) -> None:
+    """Verifies that old SQLite databases without target_metric/value
+    are migrated and sorted properly.
+    """
+    import sqlite3
+
+    import pandas as pd
+
+    from autobacktest.ledger.store import LedgerStore
+
+    db_file = tmp_path / "old_ledger.db"
+
+    # 1. Create a mock old attempts table schema lacking the new columns
+    conn = sqlite3.connect(str(db_file))
+    conn.execute("""
+        CREATE TABLE attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL,
+            iteration INTEGER NOT NULL,
+            strategy_name TEXT NOT NULL,
+            dataset_hash TEXT NOT NULL,
+            config_yaml TEXT NOT NULL,
+            observed_sharpe REAL NOT NULL,
+            deflated_sharpe REAL NOT NULL,
+            holdout_max_drawdown REAL NOT NULL,
+            holdout_turnover REAL NOT NULL,
+            regime_passed INTEGER NOT NULL,
+            accepted INTEGER NOT NULL,
+            committed INTEGER NOT NULL,
+            commit_sha TEXT,
+            rejection_reason TEXT,
+            report_json TEXT NOT NULL,
+            returns_blob BLOB NOT NULL,
+            created_at TEXT NOT NULL
+        )
+    """)
+    # Insert an old attempt
+    conn.execute(
+        """
+        INSERT INTO attempts (
+            run_id, iteration, strategy_name, dataset_hash, config_yaml,
+            observed_sharpe, deflated_sharpe, holdout_max_drawdown, holdout_turnover,
+            regime_passed, accepted, committed, report_json, returns_blob, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """,
+        (
+            "run-1",
+            1,
+            "haa",
+            "abc",
+            "universe: [SPY]",
+            1.5,
+            1.4,
+            0.10,
+            0.5,
+            1,
+            1,
+            1,
+            "{}",
+            b"blob",
+            "2026-05-28 10:00:00",
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    # 2. Instantiate LedgerStore to trigger migration
+    store = LedgerStore(db_file)
+    try:
+        # Verify columns are added and backfilled
+        cursor = store._conn.cursor()
+        cursor.execute("PRAGMA table_info(attempts)")
+        columns = [row[1] for row in cursor.fetchall()]
+        assert "target_metric" in columns
+        assert "target_metric_value" in columns
+
+        # Retrieve migrated leaderboard
+        rows = store.leaderboard()
+        assert len(rows) == 1
+        assert rows[0]["target_metric"] == "sharpe"
+        assert rows[0]["target_metric_value"] == 1.5
+
+        # 3. Add a new attempt with a different target_metric and value
+        store.record_attempt(
+            run_id="run-1",
+            iteration=2,
+            strategy_name="haa",
+            dataset_hash="abc",
+            config_yaml="universe: [SPY]",
+            observed_sharpe=0.8,
+            deflated_sharpe=0.7,
+            target_metric="sortino",
+            target_metric_value=2.5,  # Higher value than the Sharpe attempt
+            holdout_max_drawdown=0.08,
+            holdout_turnover=0.4,
+            regime_passed=True,
+            accepted=True,
+            committed=True,
+            commit_sha="sha2",
+            rejection_reason=None,
+            report_json="{}",
+            holdout_returns=pd.Series([0.01, 0.02]),
+        )
+
+        # Leaderboard should return the Sortino attempt as best
+        rows2 = store.leaderboard()
+        assert len(rows2) == 1
+        assert rows2[0]["target_metric"] == "sortino"
+        assert rows2[0]["target_metric_value"] == 2.5
+    finally:
+        store.close()
+
+
+def test_git_ledger_upgrades(tmp_path: Path) -> None:
+    """Verifies subdirectory safety, dynamic baseline branch checkout, and
+    lessons.md decoupled rollback in GitLedger.
+    """
+    import git
+
+    from autobacktest.ledger.git_ops import GitLedger
+
+    # 1. Create a dummy git repo
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    repo = git.Repo.init(repo_dir)
+
+    # Configure user
+    repo.config_writer().set_value("user", "name", "Test").release()
+    repo.config_writer().set_value("user", "email", "test@test.com").release()
+
+    strat_dir = repo_dir / "strategies"
+    cfg_dir = repo_dir / "configs"
+    strat_dir.mkdir()
+    cfg_dir.mkdir()
+
+    strat_file = strat_dir / "test_strat.py"
+    cfg_file = cfg_dir / "test_strat.yaml"
+    lessons_file = repo_dir / "lessons.md"
+
+    strat_file.write_text("code v1", encoding="utf-8")
+    cfg_file.write_text("config v1", encoding="utf-8")
+    lessons_file.write_text("lessons v1", encoding="utf-8")
+
+    repo.index.add([str(strat_file), str(cfg_file), str(lessons_file)])
+    repo.index.commit("Initial baseline commit")
+
+    # Get the automatically created baseline branch name (master or main)
+    baseline_branch_name = repo.active_branch.name
+
+    # Verify CWD nested search
+    nested_dir = strat_dir / "nested"
+    nested_dir.mkdir()
+
+    # Instantiate from nested directory
+    git_ledger = GitLedger(nested_dir)
+    assert git_ledger.repo_root.resolve() == repo_dir.resolve()
+
+    # 2. Modify files and test rollback_strategy
+    strat_file.write_text("code v2", encoding="utf-8")
+    lessons_file.write_text("lessons v2", encoding="utf-8")
+
+    git_ledger.rollback_strategy("test_strat")
+
+    # Strategy files must be reverted to baseline, lessons.md must stay
+    # modified (decoupled)
+    assert strat_file.read_text(encoding="utf-8") == "code v1"
+    assert lessons_file.read_text(encoding="utf-8") == "lessons v2"
+
+    # 3. Create run branch and test reset_to_main (recovering baseline dynamically)
+    run_branch = repo.create_head("autobacktest/run-abc")
+    run_branch.checkout()
+
+    strat_file.write_text("code v3", encoding="utf-8")
+    # Commit changes on run branch
+    repo.index.add([str(strat_file)])
+    repo.index.commit("Iter 1 commit")
+
+    # Reset strategy back to baseline
+    git_ledger.reset_to_main("test_strat")
+
+    # Baseline files must be restored, and branch must be baseline_branch_name
+    assert repo.active_branch.name == baseline_branch_name
+    assert strat_file.read_text(encoding="utf-8") == "code v1"
+
+
+def test_orchestrator_lessons_persistence(tmp_path: Path) -> None:
+    """Verifies that lessons.md is successfully updated and persisted on disk
+    and in memory during rejected/exception orchestrator loops.
+    """
+    from unittest.mock import patch
+
+    import git
+
+    from autobacktest.gate import TargetMetric
+    from autobacktest.llm.base import AgentContext, AgentEdit, LLMProvider
+    from autobacktest.orchestrator import run_optimization
+
+    # 1. Create a dummy git repo with project structure
+    strat_dir = tmp_path / "strategies"
+    cfg_dir = tmp_path / "configs"
+    run_dir = tmp_path / "runs"
+    strat_dir.mkdir()
+    cfg_dir.mkdir()
+    run_dir.mkdir()
+
+    from tests.test_orchestrator_e2e import (
+        BASELINE_STRATEGY,
+        PROGRAM_MD,
+        STRATEGY_CONFIG,
+        _make_fake_provider,
+        _make_synthetic_prices,
+    )
+
+    (strat_dir / "toy.py").write_text(BASELINE_STRATEGY, encoding="utf-8")
+    (cfg_dir / "toy.yaml").write_text(STRATEGY_CONFIG, encoding="utf-8")
+    (tmp_path / "program.md").write_text(PROGRAM_MD, encoding="utf-8")
+
+    # Initial lessons.md file
+    lessons_file = tmp_path / "lessons.md"
+    lessons_file.write_text("# Initial Lessons\n", encoding="utf-8")
+
+    repo = git.Repo.init(tmp_path)
+    repo.config_writer().set_value("user", "name", "Test User").release()
+    repo.config_writer().set_value("user", "email", "test@test.com").release()
+    repo.index.add(["strategies/toy.py", "configs/toy.yaml", "lessons.md"])
+    repo.index.commit("initial: baseline toy strategy")
+
+    # 2. Mock LLM Provider
+    # Iteration 1: returns a validation-failing edit.
+    # Iteration 2: returns a valid strategy that gets evaluated.
+    called_contexts = []
+
+    class ScriptedLLMProvider(LLMProvider):
+        @property
+        def provider_name(self) -> str:
+            return "scripted"
+
+        def generate_edit(self, context: AgentContext) -> AgentEdit:
+            called_contexts.append(context)
+            if context.iteration == 1:
+                return AgentEdit(
+                    strategy_code="import os\n# bad code\n",  # fails validation
+                    config_yaml=STRATEGY_CONFIG,
+                    reasoning="Bad edit with os import.",
+                    raw_response="{}",
+                    lessons_text="# Lessons: validation failed because of os import.",
+                )
+            else:
+                return AgentEdit(
+                    strategy_code=BASELINE_STRATEGY,  # valid but identical -> rejected
+                    config_yaml=STRATEGY_CONFIG,
+                    reasoning="No changes reasoning.",
+                    raw_response="{}",
+                    lessons_text="# Lessons: rejected because no improvement.",
+                )
+
+    provider = ScriptedLLMProvider()
+    synthetic_prices = _make_synthetic_prices()
+    fake_instance = _make_fake_provider(synthetic_prices)
+
+    with patch(
+        "autobacktest.evaluator.evaluate.CachedDataProvider",
+        return_value=fake_instance,
+    ):
+        run_optimization(
+            program_path=tmp_path / "program.md",
+            strategy_name="toy",
+            iterations=2,
+            provider=provider,
+            run_dir=run_dir,
+            strategies_dir=strat_dir,
+            configs_dir=cfg_dir,
+            target_metric=TargetMetric.SHARPE,
+            repo_path=tmp_path,
+            start_date="2013-01-01",
+            end_date="2025-01-01",
+        )
+
+    # Verify that:
+    # 1. At the start of Iteration 2, the context received updated lessons!
+    assert len(called_contexts) == 2
+    assert called_contexts[0].lessons_text == "# Initial Lessons\n"
+    assert (
+        called_contexts[1].lessons_text
+        == "# Lessons: validation failed because of os import."
+    )
+
+    # 2. After the run, the final lessons.md on disk is preserved and updated!
+    assert (
+        lessons_file.read_text(encoding="utf-8")
+        == "# Lessons: rejected because no improvement."
+    )
+
+
+def test_cli_reset_safe_abort(tmp_path: Path) -> None:
+    """Verifies that the reset CLI command immediately aborts with exit code 1
+    if git checkout/reset fails, leaving files untouched.
+    """
+    from typer.testing import CliRunner
+
+    from autobacktest.cli import app
+
+    runner = CliRunner()
+
+    strat_dir = tmp_path / "strategies"
+    cfg_dir = tmp_path / "configs"
+    run_dir = tmp_path / "runs"
+    strat_dir.mkdir()
+    cfg_dir.mkdir()
+    run_dir.mkdir()
+
+    # Create lessons.md with uncommitted content
+    lessons_file = tmp_path / "lessons.md"
+    lessons_file.write_text("# Saved lessons\n", encoding="utf-8")
+
+    # Patch GitLedger to raise a GitCommandError or any Exception during reset_to_main
+    from unittest.mock import patch
+
+    with patch("autobacktest.ledger.git_ops.GitLedger") as mock_git_ledger:
+        ledger_instance = mock_git_ledger.return_value
+        ledger_instance.repo_root = tmp_path
+        # Force an exception during git reset
+        ledger_instance.reset_to_main.side_effect = RuntimeError(
+            "Dirty working tree conflict"
+        )
+
+        def mock_path(*args):
+            if not args:
+                return tmp_path
+            if args[0] == "lessons.md":
+                return tmp_path / "lessons.md"
+            return Path(*args)
+
+        with patch("autobacktest.cli.Path", side_effect=mock_path):
+            result = runner.invoke(
+                app, ["reset", "--strategy", "toy", "--run-dir", str(run_dir)]
+            )
+
+        # Assert safe abort occurred
+        assert result.exit_code == 1
+        assert "Abort: Reset could not be completed safely." in result.output
+
+        # Verify run directory and lessons.md were NOT wiped or deleted!
+        assert run_dir.exists()
+        assert lessons_file.read_text(encoding="utf-8") == "# Saved lessons\n"

@@ -115,13 +115,13 @@ def test_lessons_roundtrip_and_rollback(project_root_with_lessons: Path) -> None
     # Iteration 1 succeeded, Iteration 2 failed (syntax error triggers rollback)
     assert result.n_committed == 1
 
-    # Check that lessons.md on disk has Iteration 1 accepted content, NOT Iteration 2
+    # Check that lessons.md on disk has Iteration 2 failure content
+    # preserved (cumulative learning)
     lessons_path = project_root_with_lessons / "lessons.md"
     lessons_content = lessons_path.read_text(encoding="utf-8")
-    assert "Switched to HIGH asset and succeeded" in lessons_content
-    assert "This should be rolled back" not in lessons_content
+    assert "This should be rolled back and not persisted" in lessons_content
 
-    # Verify lessons.md git status / commits
+    # Verify lessons.md git commits: the committed HEAD does NOT have the bad edit
     repo = git.Repo(project_root_with_lessons)
     committed_lessons = repo.git.show(f"{result.branch}:lessons.md")
     assert "Switched to HIGH asset and succeeded" in committed_lessons

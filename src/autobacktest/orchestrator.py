@@ -96,7 +96,7 @@ def run_optimization(
         )
 
         # Initialize lessons
-        lessons_path = repo_path / "lessons.md"
+        lessons_path = git_ledger.repo_root / "lessons.md"
         lessons_text = ""
         if lessons_path.exists():
             lessons_text = lessons_path.read_text(encoding="utf-8")
@@ -166,6 +166,11 @@ def run_optimization(
 
             event["edit"] = {"reasoning": edit.reasoning}
 
+            # Immediately persist lessons_text from the edit to disk and memory
+            if edit.lessons_text is not None:
+                lessons_text = edit.lessons_text
+                lessons_path.write_text(lessons_text, encoding="utf-8")
+
             # 8c. Validate candidate via temp files (same pattern as llm-test command)
             ok, error_code, detail = _validate_candidate(
                 strategy_name, edit, strategies_dir, configs_dir
@@ -202,8 +207,6 @@ def run_optimization(
             except Exception as e:
                 # Rollback and skip
                 git_ledger.rollback_strategy(strategy_name)
-                if lessons_path.exists():
-                    lessons_text = lessons_path.read_text(encoding="utf-8")
                 event["evaluation"] = {"error": str(e)}
                 event["gate"] = None
                 event["commit"] = None
@@ -232,10 +235,6 @@ def run_optimization(
 
             # 8h. Commit or rollback
             if gate_res.accepted:
-                if edit.lessons_text:
-                    lessons_text = edit.lessons_text
-                    lessons_path.write_text(lessons_text, encoding="utf-8")
-
                 sha = git_ledger.commit_strategy(
                     strategy_name,
                     f"iter {k}: {edit.reasoning[:72]}",
@@ -267,8 +266,6 @@ def run_optimization(
                 event["commit"] = {"sha": sha}
             else:
                 git_ledger.rollback_strategy(strategy_name)
-                if lessons_path.exists():
-                    lessons_text = lessons_path.read_text(encoding="utf-8")
                 ledger.record_attempt(
                     run_id=run_id,
                     iteration=k,

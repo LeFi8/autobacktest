@@ -19,11 +19,12 @@ sequenceDiagram
     O->>LLM: AgentContext (+ lessons_text)
     LLM-->>O: AgentEdit (+ lessons_text)
     
+    O->>FS: Write updated lessons.md
+    
     alt Edit passes gate
-        O->>FS: Write updated lessons.md
         O->>Git: Commit (strategy + config + lessons)
     else Edit rejected
-        O->>Git: Rollback (strategy + config + lessons)
+        O->>Git: Rollback (strategy + config)
     end
 ```
 
@@ -97,6 +98,7 @@ Starts the autonomous optimization loop.
 - `--provider`: LiteLLM provider name (e.g. `openai`, `anthropic`, `google`).
 - `--model`: LLM model identifier (e.g. `gpt-4o`, `claude-3-5-sonnet-20241022`).
 - `--run-dir`: Output run directory (default: `runs/`).
+- `--target-metric`: Target metric for optimization: `sharpe` (default), `sortino`, or `information_ratio`.
 
 ### `report`
 Pretty-prints the run leaderboard sorted by observed Sharpe ratio.
@@ -124,6 +126,24 @@ AutoBacktest implements an **autonomous, self-curating memory system** for LLMs 
 - **Token Budget**: The orchestrator tracks a `4096` token limit (~16,000 characters) using a character-based proxy.
 - If lessons exceed the cap, a warnings alert triggers in the prompt, prompting the agent to **compress, consolidate, and prune** older findings.
 - This creates a tight, self-curated, semantic memory loop that improves strategy results across hundreds of iterations.
+
+---
+
+## 🧪 Testing & Verification
+
+Contributors can run the local quality and correctness verification suite to ensure all gates, validators, and evaluators are operating as specified:
+
+```bash
+uv run pytest
+uv run ruff check .
+uv run mypy --strict src/
+```
+
+Detailed developer guides, API specifications, and architectural deep-dives can be found in the [docs/](docs) directory:
+- [Architecture & Design Details](docs/architecture.md)
+- [API Reference Guide](docs/api-reference.md)
+- [Developer Setup Instructions](docs/developer-setup.md)
+- [About Project & Methodology](docs/about-project.md)
 
 ---
 

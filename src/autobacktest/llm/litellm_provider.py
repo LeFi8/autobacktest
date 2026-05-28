@@ -20,7 +20,7 @@ class AgentEditResponse(BaseModel):
         description="Quantitative reasoning and explanation for changes."
     )
     lessons_text: str = Field(
-        description="Complete updated lessons learned markdown text."
+        default="", description="Complete updated lessons learned markdown text."
     )
 
 
