@@ -18,7 +18,12 @@ benchmark: SPY
 # Strategy parameterization
 momentum_lookback: 12
 max_drawdown_limit: 0.15
-turnover_limit: 1.5
+turnover_limit: 10.0
+
+# Smoothing and Turnover reduction parameters
+smoothing_factor: 1.0
+hysteresis_threshold: 0.0
+momentum_buffer: 0.0
 
 # HAA-specific parameters (extra fields allowed by StrategyConfig schema)
 variant: balanced

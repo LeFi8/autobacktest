@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from autobacktest.config import settings
 from autobacktest.strategy.validator import ValidationError, preflight
 
 
@@ -298,8 +299,9 @@ def generate_signals(_prices: pd.DataFrame, _config: dict) -> pd.DataFrame:
     assert "forbidden attribute or dunder property" in res.detail
 
 
-def test_validator_file_size_limit(mock_dirs: tuple[Path, Path]) -> None:
+def test_validator_file_size_limit(mock_dirs: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch) -> None:
     """Verifies that strategy files exceeding size limits are rejected."""
+    monkeypatch.setattr(settings, "max_file_size_kb", 100)
     strat_dir, conf_dir = mock_dirs
 
     strat_file = strat_dir / "large_file.py"

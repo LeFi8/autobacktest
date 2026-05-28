@@ -64,15 +64,30 @@ def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFra
         score = (r1m + r3m + r6m + r12m) / 4.0
         mom_scores.loc[date] = score
 
+    smoothing_factor = float(config.get("smoothing_factor", 1.0))
+    hysteresis_threshold = float(config.get("hysteresis_threshold", 0.0))
+    momentum_buffer = float(config.get("momentum_buffer", 0.0))
+
     # Drop the first lookback months since we need lookback to calculate scores
     mom_scores = mom_scores.dropna(how="all")
 
     # Generate weights DataFrame aligned with monthly dates
     weights = pd.DataFrame(0.0, index=mom_scores.index, columns=prices.columns)
 
-    for date in mom_scores.index:
-        scores_t = mom_scores.loc[date]
+    for idx, date in enumerate(mom_scores.index):
+        prev_date = mom_scores.index[idx - 1] if idx > 0 else None
+        scores_t = mom_scores.loc[date].copy()
+
+        # Apply Momentum Buffer to boost scores of currently held assets
+        if prev_date is not None and momentum_buffer > 0.0:
+            prev_weights = weights.loc[prev_date]
+            held_assets = prev_weights[prev_weights > 0.0].index
+            for asset in held_assets:
+                if asset in scores_t.index:
+                    scores_t[asset] += momentum_buffer
+
         tip_score = scores_t.get(filter_ticker, -1.0)
+        target_w = pd.Series(0.0, index=prices.columns)
 
         if tip_score > 0.0:
             # Canary clear — apply dual momentum
@@ -80,13 +95,13 @@ def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFra
                 # HAA-Simple: single-asset SPY with defensive fallback
                 spy_score = scores_t.get("SPY", -1.0)
                 if spy_score > 0.0:
-                    weights.loc[date, "SPY"] = 1.0
+                    target_w["SPY"] = 1.0
                 else:
                     valid_def = [t for t in defensive_universe if t in scores_t.index]
                     def_scores = scores_t[valid_def].dropna()
                     if not def_scores.empty:
                         best_def = def_scores.idxmax()
-                        weights.loc[date, best_def] = 1.0
+                        target_w[best_def] = 1.0
             else:
                 # HAA-Balanced (or default): top-X selection
                 valid_off = [t for t in offensive_universe if t in scores_t.index]
@@ -102,15 +117,36 @@ def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFra
                 slot_weight = 1.0 / max(len(selected), 1)
                 for asset in selected.index:
                     if selected[asset] > 0.0:
-                        weights.loc[date, asset] = slot_weight
+                        target_w[asset] = slot_weight
                     else:
-                        weights.loc[date, best_def] += slot_weight
+                        target_w[best_def] += slot_weight
         else:
             # Canary triggered — full defensive
             valid_def = [t for t in defensive_universe if t in scores_t.index]
             def_scores = scores_t[valid_def].dropna()
             if not def_scores.empty:
                 best_def = def_scores.idxmax()
-                weights.loc[date, best_def] = 1.0
+                target_w[best_def] = 1.0
+
+        # Apply Turnover Hysteresis
+        if prev_date is not None and hysteresis_threshold > 0.0:
+            prev_w = weights.loc[prev_date]
+            adjusted_w = prev_w.copy()
+            for ticker in target_w.index:
+                diff = abs(target_w[ticker] - prev_w[ticker])
+                if diff >= hysteresis_threshold:
+                    adjusted_w[ticker] = target_w[ticker]
+            target_sum = target_w.sum()
+            adjusted_sum = adjusted_w.sum()
+            if adjusted_sum > 0.0:
+                adjusted_w = (adjusted_w / adjusted_sum) * target_sum
+            target_w = adjusted_w
+
+        # Apply Exponential Weight Smoothing
+        if prev_date is not None and smoothing_factor < 1.0:
+            prev_w = weights.loc[prev_date]
+            target_w = smoothing_factor * target_w + (1.0 - smoothing_factor) * prev_w
+
+        weights.loc[date] = target_w
 
     return weights
