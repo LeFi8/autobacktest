@@ -118,6 +118,11 @@ def report(
         "--run-dir",
         help="Path to runs directory containing ledger.db.",
     ),
+    run_id: str | None = typer.Option(
+        None,
+        "--run-id",
+        help="Run id to report. Defaults to the latest run.",
+    ),
     strategy: str | None = typer.Option(
         None,
         "--strategy",
@@ -147,25 +152,36 @@ def report(
 
     store = LedgerStore(db_path)
     try:
-        if not compare_all and strategy is None:
-            runs = store.list_runs()
-            if runs:
-                strategy = str(runs[0]["strategy_name"])
-            else:
-                typer.echo("No runs found in ledger.")
-                return
-
-        if compare_all:
-            rows = store.leaderboard(strategy_name=None)
-        else:
-            rows = store.leaderboard(strategy_name=strategy)
-
-        if not rows:
+        selected_run_id = run_id or store.latest_run_id()
+        if selected_run_id is None:
             typer.echo("No runs found in ledger.")
             return
 
+        selected_run = store.get_run(selected_run_id)
+        attempts_in_run = store.attempts_for_run(selected_run_id)
+        if selected_run is None and not attempts_in_run:
+            typer.echo(f"No run found with run id '{selected_run_id}'.")
+            return
+
+        if not compare_all and strategy is None:
+            if selected_run is not None:
+                strategy = str(selected_run["strategy_name"])
+            else:
+                strategy = str(attempts_in_run[0]["strategy_name"])
+
+        if compare_all:
+            rows = store.leaderboard(run_id=selected_run_id)
+        else:
+            rows = store.leaderboard(strategy_name=strategy, run_id=selected_run_id)
+
+        if not rows:
+            typer.echo(f"No accepted attempts found for run '{selected_run_id}'.")
+            return
+
         console = Console()
-        table = Table(title="AutoBacktest Optimization Leaderboard")
+        table = Table(
+            title=f"AutoBacktest Optimization Leaderboard ({selected_run_id})"
+        )
         table.add_column("Strategy", style="cyan", justify="left")
         table.add_column("Run ID", style="magenta", justify="left")
         table.add_column("Iter", style="blue", justify="center")
@@ -260,11 +276,13 @@ def reset(
 <!-- Agent-curated memory. Updated by the LLM after each iteration. -->
 <!-- Size cap: 4096 tokens (~16k characters). Prune when exceeded. -->
 """
+    cleanup_failures: list[str] = []
     try:
         lessons_path.write_text(template_content, encoding="utf-8")
         typer.echo("lessons.md cleared back to default template.")
     except Exception as e:
         typer.echo(f"Error clearing lessons.md: {e}")
+        cleanup_failures.append("lessons.md")
 
     # 3. Delete the run directory entirely
     run_path = Path(run_dir)
@@ -274,8 +292,13 @@ def reset(
             typer.echo(f"Run directory '{run_dir}' deleted entirely.")
         except Exception as e:
             typer.echo(f"Error deleting run directory '{run_dir}': {e}")
+            cleanup_failures.append(f"run directory '{run_dir}'")
     else:
         typer.echo(f"Run directory '{run_dir}' does not exist, skipping deletion.")
+
+    if cleanup_failures:
+        typer.echo("Reset failed.")
+        raise typer.Exit(code=1)
 
     typer.echo("Reset completed.")
 

@@ -31,7 +31,7 @@ def test_agent_edit_immutability() -> None:
         raw_response="{}",
     )
     assert edit.reasoning == "none"
-    assert edit.lessons_text == ""
+    assert edit.lessons_text is None
 
     with pytest.raises(FrozenInstanceError):
         # type: ignore

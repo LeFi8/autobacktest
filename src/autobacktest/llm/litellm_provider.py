@@ -19,8 +19,9 @@ class AgentEditResponse(BaseModel):
     reasoning: str = Field(
         description="Quantitative reasoning and explanation for changes."
     )
-    lessons_text: str = Field(
-        default="", description="Complete updated lessons learned markdown text."
+    lessons_text: str | None = Field(
+        default=None,
+        description="Complete updated lessons learned markdown text when changed.",
     )
 
 

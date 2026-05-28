@@ -37,14 +37,14 @@ class AgentEdit:
         config_yaml: Complete new YAML configuration content.
         reasoning: Text justification of modifications made.
         raw_response: Raw response string from the provider for audit logging.
-        lessons_text: Updated lessons markdown text.
+        lessons_text: Updated lessons markdown text, or None to leave it unchanged.
     """
 
     strategy_code: str
     config_yaml: str
     reasoning: str
     raw_response: str
-    lessons_text: str = ""
+    lessons_text: str | None = None
 
 
 class LLMError(Exception):

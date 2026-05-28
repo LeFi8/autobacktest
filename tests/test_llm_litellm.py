@@ -66,6 +66,27 @@ _CLEAN_JSON = """{
     "lessons_text": "Mock lessons"
 }"""
 
+_MISSING_LESSONS_JSON = """{
+    "strategy_code": "def generate_signals(): return None",
+    "config_yaml": "universe: [SPY]",
+    "reasoning": "Conservative change"
+}"""
+
+
+@patch("litellm.completion")
+def test_litellm_provider_allows_missing_lessons_text(
+    mock_completion: MagicMock,
+) -> None:
+    mock_completion.return_value = _mock_response(_MISSING_LESSONS_JSON)
+    provider = LiteLLMProvider(model="gpt-4o")
+
+    edit = provider.generate_edit(_make_context())
+
+    assert edit.strategy_code == _EXPECTED_PAYLOAD["strategy_code"]
+    assert edit.config_yaml == _EXPECTED_PAYLOAD["config_yaml"]
+    assert edit.reasoning == _EXPECTED_PAYLOAD["reasoning"]
+    assert edit.lessons_text is None
+
 
 @patch("litellm.completion")
 def test_litellm_provider_json_fenced(mock_completion: MagicMock) -> None:

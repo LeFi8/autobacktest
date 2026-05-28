@@ -126,3 +126,46 @@ def test_lessons_roundtrip_and_rollback(project_root_with_lessons: Path) -> None
     committed_lessons = repo.git.show(f"{result.branch}:lessons.md")
     assert "Switched to HIGH asset and succeeded" in committed_lessons
     assert "This should be rolled back" not in committed_lessons
+
+
+@pytest.mark.parametrize("lessons_text", [None, "", "   \n"])
+def test_orchestrator_preserves_lessons_when_update_missing_or_blank(
+    project_root_with_lessons: Path,
+    lessons_text: str | None,
+) -> None:
+    synthetic_prices = _make_synthetic_prices()
+    fake_instance = _make_fake_provider(synthetic_prices)
+    initial_lessons = (project_root_with_lessons / "lessons.md").read_text(
+        encoding="utf-8"
+    )
+
+    blank_edit = AgentEdit(
+        strategy_code="import os\n",
+        config_yaml=STRATEGY_CONFIG,
+        reasoning="Invalid edit without a lessons update.",
+        raw_response="{}",
+        lessons_text=lessons_text,
+    )
+    mock_provider = MockProvider(response=blank_edit)
+
+    with patch(
+        "autobacktest.evaluator.evaluate.CachedDataProvider",
+        return_value=fake_instance,
+    ):
+        run_optimization(
+            program_path=project_root_with_lessons / "program.md",
+            strategy_name="toy",
+            iterations=1,
+            provider=mock_provider,
+            run_dir=project_root_with_lessons / "runs",
+            strategies_dir=project_root_with_lessons / "strategies",
+            configs_dir=project_root_with_lessons / "configs",
+            target_metric=TargetMetric.SHARPE,
+            repo_path=project_root_with_lessons,
+            start_date="2013-01-01",
+            end_date="2025-01-01",
+        )
+
+    assert (project_root_with_lessons / "lessons.md").read_text(
+        encoding="utf-8"
+    ) == initial_lessons

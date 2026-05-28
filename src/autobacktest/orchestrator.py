@@ -166,8 +166,9 @@ def run_optimization(
 
             event["edit"] = {"reasoning": edit.reasoning}
 
-            # Immediately persist lessons_text from the edit to disk and memory
-            if edit.lessons_text is not None:
+            # Immediately persist non-empty lessons_text from the edit to disk
+            # and memory.
+            if edit.lessons_text is not None and edit.lessons_text.strip():
                 lessons_text = edit.lessons_text
                 lessons_path.write_text(lessons_text, encoding="utf-8")
 

@@ -67,3 +67,56 @@ def test_reset_command_flow(tmp_path: Path) -> None:
     assert "# Lessons" in lessons_content
     assert "Agent-curated memory" in lessons_content
     assert "Some lessons here" not in lessons_content
+
+
+def test_reset_rmtree_failure_exits_nonzero(tmp_path: Path) -> None:
+    """Reset reports failure when run directory deletion fails."""
+    run_dir = tmp_path / "runs"
+    run_dir.mkdir()
+    lessons_file = tmp_path / "lessons.md"
+    lessons_file.write_text("# Lessons\n\n- Existing.\n", encoding="utf-8")
+
+    with (
+        patch("autobacktest.ledger.git_ops.GitLedger") as mock_git_ledger,
+        patch("shutil.rmtree", side_effect=OSError("cannot delete")),
+    ):
+        ledger_instance = mock_git_ledger.return_value
+        ledger_instance.repo_root = tmp_path
+
+        result = runner.invoke(
+            app,
+            ["reset", "--strategy", "haa", "--run-dir", str(run_dir)],
+        )
+
+    assert result.exit_code == 1
+    assert "Error deleting run directory" in result.output
+    assert "Reset failed." in result.output
+    assert "Reset completed." not in result.output
+    assert run_dir.exists()
+
+
+def test_reset_lessons_write_failure_exits_nonzero(tmp_path: Path) -> None:
+    """Reset reports failure when lessons.md cannot be cleared."""
+    run_dir = tmp_path / "runs"
+    run_dir.mkdir()
+    lessons_file = tmp_path / "lessons.md"
+    lessons_file.write_text("# Saved lessons\n", encoding="utf-8")
+
+    with (
+        patch("autobacktest.ledger.git_ops.GitLedger") as mock_git_ledger,
+        patch.object(Path, "write_text", side_effect=OSError("cannot write")),
+    ):
+        ledger_instance = mock_git_ledger.return_value
+        ledger_instance.repo_root = tmp_path
+
+        result = runner.invoke(
+            app,
+            ["reset", "--strategy", "haa", "--run-dir", str(run_dir)],
+        )
+
+    assert result.exit_code == 1
+    assert "Error clearing lessons.md" in result.output
+    assert "Reset failed." in result.output
+    assert "Reset completed." not in result.output
+    assert not run_dir.exists()
+    assert lessons_file.read_text(encoding="utf-8") == "# Saved lessons\n"

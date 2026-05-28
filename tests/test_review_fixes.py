@@ -375,9 +375,9 @@ def test_gate_dsr_none_handling() -> None:
     assert "Deflated Sharpe Ratio is missing or NaN" in res.reason
 
 
-def test_agent_edit_response_lessons_text_default() -> None:
-    """Verifies that AgentEditResponse validates successfully and defaults
-    lessons_text to empty string when missing.
+def test_agent_edit_response_lessons_text_optional() -> None:
+    """Verifies that AgentEditResponse validates successfully and leaves
+    lessons_text unset when missing.
     """
     from autobacktest.llm.litellm_provider import AgentEditResponse
 
@@ -387,7 +387,7 @@ def test_agent_edit_response_lessons_text_default() -> None:
         "reasoning": "Simple identity strategy."
     }"""
     parsed = AgentEditResponse.model_validate_json(json_data)
-    assert parsed.lessons_text == ""
+    assert parsed.lessons_text is None
     assert parsed.strategy_code == "def generate_signals(prices, config): return prices"
 
 
