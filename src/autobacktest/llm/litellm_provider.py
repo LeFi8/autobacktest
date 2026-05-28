@@ -85,16 +85,13 @@ class LiteLLMProvider(LLMProvider):
         buffer = 4096
         dynamic_max = context_window - prompt_tokens - buffer
 
-        # Scale up to max 16000 or the env value
+        # Respect the configured max tokens limit, but cap it by the remaining context window
         env_limit = getattr(settings, "llm_max_tokens", 4096)
-        max_limit = max(16000, env_limit)
-
-        # Determine maximum output tokens
-        run_max_tokens = max(8192, min(dynamic_max, max_limit))
+        run_max_tokens = max(1, min(dynamic_max, env_limit))
 
         # Respect customized instance max_tokens if explicitly modified (e.g. retry or constructor test override)
         if hasattr(self, "max_tokens") and self.max_tokens is not None and self.max_tokens != env_limit:
-            run_max_tokens = self.max_tokens
+            run_max_tokens = max(1, min(dynamic_max, self.max_tokens))
 
         try:
             # Pick json_schema if capable, or raw json_object otherwise
@@ -114,7 +111,7 @@ class LiteLLMProvider(LLMProvider):
 
             choice = response.choices[0]
             content = choice.message.content
-            finish_reason = choice.get("finish_reason", None)
+            finish_reason = getattr(choice, "finish_reason", None)
 
             # Check stop condition (Premature Cutoff)
             if finish_reason == "length" or not content:
