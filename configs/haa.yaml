@@ -1,21 +1,38 @@
-# Historical Asset Allocation (HAA) Configuration
+# HAA-Balanced Configuration (recommended variant)
+# Reference: Keller & Keuning (2023), SSRN 4346906
 universe:
-  - SPY  # US Large Cap
-  - IWM  # US Small Cap
-  - QQQ  # US Tech
-  - VGK  # Europe
-  - EWJ  # Japan
-  - VWO  # Emerging Markets
-  - VNQ  # US Real Estate
-  - DBC  # Commodities
-  - IEF  # US 10Y Treasury (Defensive)
-  - BIL  # US 1-3M Treasury (Defensive)
-  - TIP  # Inflation Protected Bonds (Filter)
+  - SPY   # US Large Cap
+  - IWM   # US Small Cap
+  - VEA   # Developed Markets ex-US
+  - VWO   # Emerging Markets
+  - VNQ   # US Real Estate
+  - DBC   # Commodities
+  - IEF   # US 10Y Treasury (Offensive & Defensive)
+  - TLT   # US 20Y+ Treasury
+  - BIL   # US 1-3M Treasury (Defensive)
+  - TIP   # Inflation Protected Bonds (Canary)
 
 # Benchmark index
 benchmark: SPY
 
 # Strategy parameterization
 momentum_lookback: 12
-max_drawdown_limit: 0.20
-turnover_limit: 2.0
+max_drawdown_limit: 0.15
+turnover_limit: 1.5
+
+# HAA-specific parameters (extra fields allowed by StrategyConfig schema)
+variant: balanced
+top_x: 4
+offensive_universe:
+  - SPY
+  - IWM
+  - VEA
+  - VWO
+  - VNQ
+  - DBC
+  - IEF
+  - TLT
+defensive_universe:
+  - BIL
+  - IEF
+filter_ticker: TIP
