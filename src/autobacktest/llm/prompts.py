@@ -28,6 +28,11 @@ You operate in a strict execution loop and MUST adhere to the following rules:
    - Keep lessons structured, concise, and action-oriented.
    - If the current lessons exceed the 4096 token limit (~16k characters),
      you MUST prune, compress, and consolidate older or less useful lessons to fit.
+8. Strict JSON/Formatting Rule: Do not output any conversational text
+   before or after the JSON payload. For reasoning/thinking models,
+   the very first character immediately following the closing </think>
+   tag must be the opening {{ of the JSON payload. No markdown
+   wrapping (like ```json) is permitted.
 """
 
 
@@ -98,6 +103,12 @@ Your response must be returned as a JSON object containing the keys:
 - "reasoning": Concise explanation of the quantitative logic and changes.
 - "lessons_text": Complete, updated lessons markdown text incorporating learnings
   from the previous and current iterations, pruning if needed.
+
+Strict JSON/Formatting Constraint: The response must be a single,
+valid JSON object. Do not wrap the JSON object in markdown code
+block markers (such as ```json or ```). The very first character
+immediately following the </think> tag must be the opening {{ of the
+JSON payload.
 """
 
     user_message = {

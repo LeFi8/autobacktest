@@ -54,21 +54,36 @@ class AgentEdit:
 class LLMError(Exception):
     """Domain exception raised when an LLM provider fails."""
 
-    def __init__(self, provider: str, model: str, detail: str) -> None:
+    def __init__(
+        self,
+        provider: str,
+        model: str,
+        detail: str,
+        retryable: bool = True,
+        finish_reason: str | None = None,
+    ) -> None:
         """Initialize the error with details of the failing call.
 
         Args:
             provider: The name of the LLM provider (e.g. "openai", "mock").
             model: The name of the model that failed.
             detail: Detailed error message from the provider or library.
+            retryable: Whether the error is transient and can be retried.
+            finish_reason: The token completion stop condition if truncated (e.g. "length").
         """
         super().__init__(f"LLMError (provider={provider}, model={model}): {detail}")
         self.provider = provider
         self.model = model
         self.detail = detail
+        self.retryable = retryable
+        self.finish_reason = finish_reason
 
     def __str__(self) -> str:
-        return f"LLMError(provider='{self.provider}', model='{self.model}', detail='{self.detail}')"
+        return (
+            f"LLMError(provider='{self.provider}', model='{self.model}', "
+            f"detail='{self.detail}', retryable={self.retryable}, "
+            f"finish_reason='{self.finish_reason}')"
+        )
 
 
 class LLMProvider(ABC):

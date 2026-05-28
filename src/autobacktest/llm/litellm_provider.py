@@ -1,8 +1,11 @@
 """LiteLLM integration provider implementing structured response outputs."""
 
+import logging
+
 import litellm
 from pydantic import BaseModel, Field
 
+from autobacktest.config import settings
 from autobacktest.llm.base import AgentContext, AgentEdit, LLMError, LLMProvider
 from autobacktest.llm.prompts import build_messages
 
@@ -17,6 +20,9 @@ class AgentEditResponse(BaseModel):
         default=None,
         description="Complete updated lessons learned markdown text when changed.",
     )
+
+
+logger = logging.getLogger(__name__)
 
 
 class LiteLLMProvider(LLMProvider):
@@ -38,6 +44,13 @@ class LiteLLMProvider(LLMProvider):
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
+        if settings.litellm_debug:
+            litellm._turn_on_debug()  # type: ignore[attr-defined, no-untyped-call]
+
+        try:
+            self.supports_schema = litellm.supports_response_schema(model=self.model)
+        except Exception:
+            self.supports_schema = False
 
     @property
     def provider_name(self) -> str:
@@ -58,21 +71,56 @@ class LiteLLMProvider(LLMProvider):
         """
         messages = build_messages(context)
 
+        # 1. Centralized Dynamic Token Allocation
         try:
-            # We use litellm completion with response_format referencing BaseModel
+            prompt_tokens = litellm.token_counter(model=self.model, messages=messages)
+        except Exception:
+            prompt_tokens = len(str(messages)) // 4
+
+        try:
+            context_window = litellm.get_max_tokens(self.model) or 128000
+        except Exception:
+            context_window = 128000
+
+        buffer = 4096
+        dynamic_max = context_window - prompt_tokens - buffer
+
+        # Respect the configured max tokens limit, but cap it by the remaining context window
+        env_limit = getattr(settings, "llm_max_tokens", 4096)
+        run_max_tokens = max(1, min(dynamic_max, env_limit))
+
+        # Respect customized instance max_tokens if explicitly modified (e.g. retry or constructor test override)
+        if hasattr(self, "max_tokens") and self.max_tokens is not None and self.max_tokens != env_limit:
+            run_max_tokens = max(1, min(dynamic_max, self.max_tokens))
+
+        try:
+            # Pick json_schema if capable, or raw json_object otherwise
+            resp_format = AgentEditResponse if self.supports_schema else {"type": "json_object"}
+
             response = litellm.completion(
                 model=self.model,
                 messages=messages,
-                response_format=AgentEditResponse,
+                response_format=resp_format,
                 temperature=self.temperature,
-                max_tokens=self.max_tokens,
+                max_tokens=run_max_tokens,
+                request_timeout=settings.llm_request_timeout,  # Enforce mandatory request timeout
             )
 
             if not response.choices:
                 raise ValueError("LLM returned no choices.")
-            content = response.choices[0].message.content
-            if not content:
-                raise ValueError("LLM returned an empty or invalid content response.")
+
+            choice = response.choices[0]
+            content = choice.message.content
+            finish_reason = getattr(choice, "finish_reason", None)
+
+            # Check stop condition (Premature Cutoff)
+            if finish_reason == "length" or not content:
+                length_or_zero = len(content) if content else 0
+                raise ValueError(
+                    f"LLM generation stopped prematurely. "
+                    f"finish_reason: {finish_reason}. "
+                    f"content_length: {length_or_zero}"
+                )
 
             # Extract clean JSON block if prose-wrapped
             clean_content = content.strip()
@@ -118,8 +166,29 @@ class LiteLLMProvider(LLMProvider):
             )
 
         except Exception as e:
+            retryable = True
+            finish_reason = None
+            if isinstance(e, ValueError) and "stopped prematurely" in str(e):
+                if "finish_reason: length" in str(e):
+                    finish_reason = "length"
+            elif "length" in str(e).lower() or getattr(e, "finish_reason", None) == "length":
+                finish_reason = "length"
+
+            # Treat BadRequestError, AuthenticationError, NotFoundError as non-retryable config errors
+            if isinstance(
+                e,
+                (
+                    litellm.BadRequestError,  # type: ignore[attr-defined]
+                    litellm.AuthenticationError,  # type: ignore[attr-defined]
+                    litellm.NotFoundError,  # type: ignore[attr-defined]
+                ),
+            ) or getattr(e, "status_code", None) in (400, 401, 403, 404):
+                retryable = False
+
             raise LLMError(
                 provider="litellm",
                 model=self.model,
                 detail=str(e),
+                retryable=retryable,
+                finish_reason=finish_reason,
             ) from e

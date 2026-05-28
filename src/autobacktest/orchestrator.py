@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import logging
 import sys
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from time import sleep
 from typing import Any
 
 import pandas as pd
@@ -36,6 +38,8 @@ from autobacktest.llm.base import AgentContext, AgentEdit, LLMError, LLMProvider
 from autobacktest.program import parse_program
 from autobacktest.strategy.config_schema import StrategyConfig
 from autobacktest.strategy.validator import preflight
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -174,6 +178,7 @@ def run_optimization(
 
         # 8. Optimization loop
         n_committed = 0
+        n_llm_ok = 0
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -214,16 +219,65 @@ def run_optimization(
                         lessons_text=lessons_text,
                     )
 
-                    # 8b. Get LLM edit
-                    try:
-                        edit = provider.generate_edit(ctx)
-                    except LLMError as e:
-                        event["llm_error"] = str(e)
-                        event["validation"] = None
-                        event["evaluation"] = None
-                        event["gate"] = None
-                        event["commit"] = None
-                        event_log.write(event)
+                    # 8b. Get LLM edit (with auto-retry on length limit cutoff and transient error backoff)
+                    retry_count = 0
+                    max_retries = 1
+                    transient_retry_count = 0
+                    max_transient_retries = 2
+                    orig_max_tokens = getattr(provider, "max_tokens", None)
+                    edit = None
+                    while True:
+                        try:
+                            edit = provider.generate_edit(ctx)
+                            n_llm_ok += 1
+                            break
+                        except LLMError as e:
+                            # 1. Length cutoff retry
+                            if getattr(e, "finish_reason", None) == "length" and retry_count < max_retries:
+                                retry_count += 1
+                                if hasattr(provider, "max_tokens") and provider.max_tokens is not None:
+                                    old_tokens = provider.max_tokens
+                                    new_tokens = int(old_tokens * 1.5)
+                                    provider.max_tokens = new_tokens
+                                    logger.warning(
+                                        f"LLM cut off on length limit in iteration {k}. "
+                                        f"Retrying with max_tokens scaled from {old_tokens} to {new_tokens}."
+                                    )
+                                    continue
+
+                            # 2. Bounded backoff retry for transient retryable errors
+                            if e.retryable and transient_retry_count < max_transient_retries:
+                                transient_retry_count += 1
+                                backoff_sec = 2.0**transient_retry_count
+                                logger.warning(
+                                    f"LLM transient error in iteration {k}: {e.detail}. "
+                                    f"Retrying in {backoff_sec}s "
+                                    f"(retry {transient_retry_count}/{max_transient_retries})..."
+                                )
+                                sleep(backoff_sec)
+                                continue
+
+                            # 3. Exhausted retries or non-retryable error
+                            logger.warning(f"LLMError: {e.detail}")
+                            event["llm_error"] = str(e)
+                            event["validation"] = None
+                            event["evaluation"] = None
+                            event["gate"] = None
+                            event["commit"] = None
+                            event_log.write(event)
+                            if not e.retryable:
+                                from rich.console import Console
+
+                                console = Console(stderr=True)
+                                console.print(f"[bold red]LLM is misconfigured (non-retryable error):[/] {e.detail}")
+                                raise e
+                            edit = None
+                            break
+
+                    if orig_max_tokens is not None and hasattr(provider, "max_tokens"):
+                        provider.max_tokens = orig_max_tokens
+
+                    if edit is None:
                         continue
 
                     event["edit"] = {
@@ -360,6 +414,9 @@ def run_optimization(
                             f"[cyan]Optimizing {strategy_name}... (Incumbent Sharpe: {incumbent.observed_sharpe:.3f})"
                         ),
                     )
+
+        if n_llm_ok == 0:
+            raise RuntimeError("Zero successful LLM calls during optimization run. All iterations failed.")
 
     finally:
         if start_temp is not None:
