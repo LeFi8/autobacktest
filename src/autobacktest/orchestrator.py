@@ -113,6 +113,8 @@ def run_optimization(
     incumbent: EvaluationReport  # assigned during baseline below
     try:
         # 5. Load baseline config
+        start_temp = getattr(provider, "temperature", None)
+        min_temp = 0.1
         config_obj = StrategyConfig.from_yaml(cfg_path)
         config = config_obj.model_dump()
 
@@ -184,10 +186,19 @@ def run_optimization(
                 total=iterations,
             )
             for k in range(1, iterations + 1):
+                if start_temp is not None:
+                    if iterations > 1:
+                        decay_factor = (k - 1) / (iterations - 1)
+                        provider.temperature = start_temp - decay_factor * (start_temp - min_temp)
+                    else:
+                        provider.temperature = start_temp
+
                 event: dict[str, object] = {
                     "iteration": k,
                     "strategy": strategy_name,
                 }
+                if start_temp is not None:
+                    event["temperature"] = provider.temperature
 
                 # 8a. Build context
                 current_code = strat_path.read_text(encoding="utf-8")
@@ -377,6 +388,8 @@ def run_optimization(
                 )
 
     finally:
+        if start_temp is not None:
+            provider.temperature = start_temp
         # Refresh final report's DSR using complete session history so the
         # returned incumbent reflects the true multiple-testing penalty.
         try:
