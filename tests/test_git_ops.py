@@ -126,7 +126,7 @@ def test_reset_to_main(repo_setup: tuple[git.Repo, Path]) -> None:
     # Reset
     ledger.reset_to_main("toy")
 
-    # Verify we are back on main and files are restored
-    assert ledger.current_branch == "main"
+    # Verify we are back on main/master and files are restored
+    assert ledger.current_branch in ("main", "master")
     assert "generate_signals" in (tmp_path / "strategies" / "toy.py").read_text()
     assert "universe: [SPY]" in (tmp_path / "configs" / "toy.yaml").read_text()
