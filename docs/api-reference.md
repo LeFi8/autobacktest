@@ -298,4 +298,30 @@ def run_optimization(
     """
 ```
 
+---
+
+## 7. Centralized Configuration Module (`autobacktest.config`)
+
+### `Settings`
+Manages system configuration settings loaded from environment variables with safe fallbacks and Pydantic validation.
+- `llm_provider`: LiteLLM/Mock provider type string (default: `"litellm"`).
+- `llm_model`: Targeted LLM model identifier string (default: `"openai/gpt-4o"`).
+- `llm_temperature`: Generation temperature float parameter (default: `0.7`).
+- `llm_max_tokens`: Token boundary limit integer (default: `4096`).
+- `litellm_debug`: Boolean flag to toggle deep LiteLLM logs.
+- `llm_request_timeout`: Maximum duration in seconds for LLM call requests (default: `600.0`).
+- `default_start_date`: Standard backtesting starting date string (default: `"2015-01-01"`).
+- `default_end_date`: Standard backtesting ending date string (default: `"2026-01-01"`).
+- `default_holdout_years`: Holdout dataset division length integer (default: `3`).
+- `run_dir`: Output database and event log files folder path.
+- `cache_dir`: Local daily price files local cache folder path.
+- `strategies_dir`: Strategies folder path.
+- `configs_dir`: Configuration templates folder path.
+- `ledger_db_name`: Relational ledger storage filename.
+- `max_file_size_kb`: Maximum allowed candidate code file length (default: `100`).
+- `safe_imports_whitelist`: Comma-separated allowed module imports.
+- `sandbox_timeout`: Strategy signal execution limit integer (default: `15`).
+- `db_timeout`: Database block lock timeout limit (default: `15.0`).
+
+
 
