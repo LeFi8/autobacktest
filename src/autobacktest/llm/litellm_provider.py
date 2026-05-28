@@ -106,7 +106,7 @@ class LiteLLMProvider(LLMProvider):
                 response_format=resp_format,
                 temperature=self.temperature,
                 max_tokens=run_max_tokens,
-                request_timeout=60.0,  # Enforce mandatory request timeout
+                request_timeout=settings.llm_request_timeout,  # Enforce mandatory request timeout
             )
 
             if not response.choices:

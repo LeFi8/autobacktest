@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import git
 import numpy as np
@@ -377,3 +377,50 @@ def test_orchestrator_continues_on_retryable_error(project_root: Path) -> None:
             repo_path=project_root,
         )
     assert "Zero successful LLM calls" in str(exc_info.value)
+
+
+@patch("autobacktest.orchestrator.sleep")
+def test_orchestrator_retries_transient_error_with_backoff(mock_sleep: MagicMock, project_root: Path) -> None:
+    """When a retryable LLMError is raised, the orchestrator retries and sleeps with backoff."""
+    from autobacktest.llm.base import LLMError
+    from autobacktest.llm.mock_provider import MockProvider
+
+    call_count = 0
+
+    class FlakyProvider(MockProvider):
+        def generate_edit(self, _context):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 2:
+                raise LLMError(provider="mock", model="m", detail="Transient timeout", retryable=True)
+            return AgentEdit(
+                strategy_code=BASELINE_STRATEGY,
+                config_yaml=STRATEGY_CONFIG,
+                reasoning="Succeeded on retry",
+                raw_response="{}",
+            )
+
+    provider = FlakyProvider()
+
+    # We expect 1 iteration.
+    # On the first iteration, call 1 fails (transient retry 1), call 2 fails (transient retry 2), call 3 succeeds.
+    run_optimization(
+        program_path=project_root / "program.md",
+        strategy_name="toy",
+        iterations=1,
+        provider=provider,
+        run_dir=project_root / "runs",
+        strategies_dir=project_root / "strategies",
+        configs_dir=project_root / "configs",
+        repo_path=project_root,
+        start_date="2013-01-01",
+        end_date="2025-01-01",
+    )
+
+    # 3 total calls to FlakyProvider.generate_edit
+    assert call_count == 3
+    # time.sleep called twice with exponential backoff: 2.0 ** 1 = 2.0s, and 2.0 ** 2 = 4.0s
+    assert mock_sleep.call_count == 2
+    mock_sleep.assert_any_call(2.0)
+    mock_sleep.assert_any_call(4.0)
+

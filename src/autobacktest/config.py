@@ -21,6 +21,9 @@ class Settings(BaseModel):
     litellm_debug: bool = Field(
         default_factory=lambda: os.getenv("AUTOBACKTEST_LITELLM_DEBUG", "False").lower() in ("true", "1", "yes")
     )
+    llm_request_timeout: float = Field(
+        default_factory=lambda: float(os.getenv("AUTOBACKTEST_LLM_REQUEST_TIMEOUT", "600.0"))
+    )
 
     # --- BACKTEST WINDOWS ---
     default_start_date: str = Field(default_factory=lambda: os.getenv("AUTOBACKTEST_DEFAULT_START_DATE", "2015-01-01"))

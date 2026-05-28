@@ -10,6 +10,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from time import sleep
 from typing import Any
 
 import pandas as pd
@@ -218,9 +219,11 @@ def run_optimization(
                         lessons_text=lessons_text,
                     )
 
-                    # 8b. Get LLM edit (with auto-retry on length limit cutoff)
+                    # 8b. Get LLM edit (with auto-retry on length limit cutoff and transient error backoff)
                     retry_count = 0
                     max_retries = 1
+                    transient_retry_count = 0
+                    max_transient_retries = 2
                     orig_max_tokens = getattr(provider, "max_tokens", None)
                     edit = None
                     while True:
@@ -229,6 +232,7 @@ def run_optimization(
                             n_llm_ok += 1
                             break
                         except LLMError as e:
+                            # 1. Length cutoff retry
                             if getattr(e, "finish_reason", None) == "length" and retry_count < max_retries:
                                 retry_count += 1
                                 if hasattr(provider, "max_tokens") and provider.max_tokens is not None:
@@ -241,6 +245,19 @@ def run_optimization(
                                     )
                                     continue
 
+                            # 2. Bounded backoff retry for transient retryable errors
+                            if e.retryable and transient_retry_count < max_transient_retries:
+                                transient_retry_count += 1
+                                backoff_sec = 2.0 ** transient_retry_count
+                                logger.warning(
+                                    f"LLM transient error in iteration {k}: {e.detail}. "
+                                    f"Retrying in {backoff_sec}s "
+                                    f"(retry {transient_retry_count}/{max_transient_retries})..."
+                                )
+                                sleep(backoff_sec)
+                                continue
+
+                            # 3. Exhausted retries or non-retryable error
                             logger.warning(f"LLMError: {e.detail}")
                             event["llm_error"] = str(e)
                             event["validation"] = None
