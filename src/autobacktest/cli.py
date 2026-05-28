@@ -8,6 +8,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from autobacktest.config import settings
 from autobacktest.evaluator.evaluate import evaluate_strategy
 from autobacktest.gate import TargetMetric
 from autobacktest.ledger.store import LedgerStore
@@ -47,17 +48,17 @@ def run(
         help="Number of optimization iterations to run.",
     ),
     provider: str | None = typer.Option(
-        None,
+        settings.llm_provider,
         "--provider",
         help="LLM provider (e.g. anthropic, openai, google).",
     ),
     model: str | None = typer.Option(
-        None,
+        settings.llm_model,
         "--model",
         help="LLM model name to run.",
     ),
     run_dir: str | None = typer.Option(
-        None,
+        str(settings.run_dir),
         "--run-dir",
         help="Directory to store runs and SQLite ledger.",
     ),
@@ -85,14 +86,14 @@ def run(
         provider_impl = MockProvider()
     else:
         # Prefix with provider unless the model already contains a slash.
-        model_str = model or "gpt-4o"
+        model_str = model or settings.llm_model
         if provider and provider != "litellm" and "/" not in model_str:
             model_str = f"{provider}/{model_str}"
         provider_impl = LiteLLMProvider(model=model_str)
 
     # Resolve paths
     program_path = Path(program)
-    run_dir_path = Path(run_dir) if run_dir else Path("runs")
+    run_dir_path = Path(run_dir) if run_dir else settings.run_dir
 
     # Run optimization
     try:
@@ -120,7 +121,7 @@ def run(
 @app.command()
 def report(
     run_dir: str = typer.Option(
-        "runs",
+        str(settings.run_dir),
         "--run-dir",
         help="Path to runs directory containing ledger.db.",
     ),
@@ -243,7 +244,7 @@ def reset(
         help="Strategy name to reset. Resets all if not specified.",
     ),
     run_dir: str = typer.Option(
-        "runs",
+        str(settings.run_dir),
         "--run-dir",
         help="Path to runs directory to be deleted.",
     ),
@@ -356,12 +357,12 @@ def evaluate(
         help="Path to strategy file (e.g., strategies/haa.py).",
     ),
     start_date: str = typer.Option(
-        "2015-01-01",
+        settings.default_start_date,
         "--start-date",
         help="Start date YYYY-MM-DD for backtesting.",
     ),
     end_date: str = typer.Option(
-        "2026-01-01",
+        settings.default_end_date,
         "--end-date",
         help="End date YYYY-MM-DD for backtesting.",
     ),
@@ -440,21 +441,21 @@ def llm_test(
         help="Strategy name in the registry.",
     ),
     model: str = typer.Option(
-        "gpt-4o",
+        settings.llm_model,
         "--model",
         "-m",
         help="LLM model name to run.",
     ),
     provider: str = typer.Option(
-        "litellm",
+        settings.llm_provider,
         "--provider",
         "-p",
         help="LLM provider: 'litellm' or 'mock'.",
     ),
 ) -> None:
     """Test LLM-driven strategy edits against validation preflight checks."""
-    strategies_dir = Path("strategies")
-    configs_dir = Path("configs")
+    strategies_dir = settings.strategies_dir
+    configs_dir = settings.configs_dir
 
     strategy_path = strategies_dir / f"{strategy}.py"
     config_path = configs_dir / f"{strategy}.yaml"

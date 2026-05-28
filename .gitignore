@@ -29,6 +29,7 @@ Thumbs.db
 # Environments & secrets
 .env
 .env.*
+!.env.dist
 
 tmp/
 

@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from autobacktest.config import settings
 from autobacktest.data.cache import CachedDataProvider
 from autobacktest.data.yfinance_provider import YFinanceProvider
 from autobacktest.evaluator.backtest import run_vectorized_backtest
@@ -118,8 +119,8 @@ def evaluate_strategy_detailed(
     strategy_name: str,
     generate_signals_fn: Any,
     config: dict[str, Any] | StrategyConfig,
-    start_date: str = "2015-01-01",
-    end_date: str = "2026-01-01",
+    start_date: str = settings.default_start_date,
+    end_date: str = settings.default_end_date,
 ) -> tuple[EvaluationReport, pd.Series[Any]]:
     """Run full deterministic walk-forward & holdout evaluation lifecycle.
 
@@ -140,7 +141,7 @@ def evaluate_strategy_detailed(
 
     # Fetch daily price series
     raw_provider = YFinanceProvider()
-    provider = CachedDataProvider(raw_provider)
+    provider = CachedDataProvider(raw_provider, cache_dir=str(settings.cache_dir))
 
     prices = provider.get_prices(tickers, start_date, end_date)
     benchmark_prices = provider.get_prices([benchmark_ticker], start_date, end_date)
@@ -260,8 +261,8 @@ def evaluate_strategy(
     strategy_name: str,
     generate_signals_fn: Any,
     config: dict[str, Any] | StrategyConfig,
-    start_date: str = "2015-01-01",
-    end_date: str = "2026-01-01",
+    start_date: str = settings.default_start_date,
+    end_date: str = settings.default_end_date,
 ) -> EvaluationReport:
     """Run full deterministic walk-forward & holdout evaluation lifecycle.
 

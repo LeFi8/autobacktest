@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 from pydantic import ValidationError as PydanticValidationError
 
+from autobacktest.config import settings
 from autobacktest.strategy.config_schema import StrategyConfig
 from autobacktest.strategy.contract import validate_output, validate_signature
 
@@ -237,6 +238,18 @@ def preflight(
 
     # AST TOCTOU Protection: Read once (Finding 8)
     try:
+        # Verify file size limit
+        file_size_kb = strategy_path.stat().st_size / 1024.0
+        if file_size_kb > settings.max_file_size_kb:
+            return ValidationResult(
+                passed=False,
+                error_code=ValidationError.IMPORT_FAILED,
+                detail=(
+                    f"Strategy file exceeds size limit of "
+                    f"{settings.max_file_size_kb}KB "
+                    f"(actual: {file_size_kb:.1f}KB)"
+                ),
+            )
         content = strategy_path.read_text(encoding="utf-8")
     except Exception as e:
         return ValidationResult(
@@ -318,7 +331,7 @@ def _check_ast(content: str) -> ValidationResult:
         if isinstance(node, ast.Import):
             for alias in node.names:
                 root_module = alias.name.split(".")[0]
-                if root_module not in ALLOWED_IMPORTS:
+                if root_module not in settings.parsed_safe_imports:
                     msg = (
                         f"Import of non-whitelisted module '{alias.name}' "
                         f"is strictly blocked."
@@ -338,7 +351,7 @@ def _check_ast(content: str) -> ValidationResult:
         elif isinstance(node, ast.ImportFrom):
             if node.module:
                 root_module = node.module.split(".")[0]
-                if root_module not in ALLOWED_IMPORTS:
+                if root_module not in settings.parsed_safe_imports:
                     msg = (
                         f"Import from non-whitelisted module '{node.module}' "
                         f"is strictly blocked."

@@ -296,3 +296,29 @@ def generate_signals(_prices: pd.DataFrame, _config: dict) -> pd.DataFrame:
     assert not res.passed
     assert res.error_code == ValidationError.AST_BLOCKED_IMPORT
     assert "forbidden attribute or dunder property" in res.detail
+
+
+def test_validator_file_size_limit(mock_dirs: tuple[Path, Path]) -> None:
+    """Verifies that strategy files exceeding size limits are rejected."""
+    strat_dir, conf_dir = mock_dirs
+
+    strat_file = strat_dir / "large_file.py"
+    # Write a file exceeding 100KB (e.g. 101KB of comment padding)
+    padding = "#" * (101 * 1024)
+    strat_file.write_text(
+        f"""
+import pandas as pd
+{padding}
+def generate_signals(prices: pd.DataFrame, config: dict) -> pd.DataFrame:
+    return pd.DataFrame()
+""",
+        encoding="utf-8",
+    )
+
+    conf_file = conf_dir / "large_file.yaml"
+    conf_file.write_text("universe: [SPY]\n", encoding="utf-8")
+
+    res = preflight("large_file", strat_dir, conf_dir)
+    assert not res.passed
+    assert res.error_code == ValidationError.IMPORT_FAILED
+    assert "exceeds size limit" in res.detail

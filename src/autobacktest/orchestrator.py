@@ -13,6 +13,7 @@ from typing import Any
 
 import pandas as pd
 
+from autobacktest.config import settings
 from autobacktest.evaluator.deflated_sharpe import (
     calculate_effective_trials,
     calculate_psr_dsr,
@@ -44,12 +45,12 @@ def run_optimization(
     provider: LLMProvider,
     run_dir: Path,
     *,
-    strategies_dir: Path = Path("strategies"),
-    configs_dir: Path = Path("configs"),
+    strategies_dir: Path = settings.strategies_dir,
+    configs_dir: Path = settings.configs_dir,
     target_metric: TargetMetric = TargetMetric.SHARPE,
     repo_path: Path = Path(),
-    start_date: str = "2015-01-01",
-    end_date: str = "2026-01-01",
+    start_date: str = settings.default_start_date,
+    end_date: str = settings.default_end_date,
 ) -> OrchestratorResult:
     """Run the LLM-driven strategy optimization loop.
 
