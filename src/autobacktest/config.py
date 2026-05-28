@@ -47,6 +47,7 @@ class Settings(BaseModel):
             "pandas,numpy,math,typing,scipy,dataclasses,collections,itertools,functools,decimal,statistics,numbers,json",
         )
     )
+    sandbox_timeout: int = Field(default_factory=lambda: int(os.getenv("AUTOBACKTEST_SANDBOX_TIMEOUT", "15")))
 
     # --- SQLITE STORAGE CONFIGURATION ---
     db_timeout: float = Field(default_factory=lambda: float(os.getenv("AUTOBACKTEST_DB_TIMEOUT", "15.0")))

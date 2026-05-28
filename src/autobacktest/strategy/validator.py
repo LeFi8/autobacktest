@@ -265,6 +265,7 @@ def _run_validation_in_subprocess(
         "strategy_path": str(strategy_path),
         "config_dict": config.to_flat_dict(),
         "universe": config.universe,
+        "sandbox_timeout": settings.sandbox_timeout,
     }
 
     # Define the runner code block as a multi-line string
@@ -283,6 +284,7 @@ strategy_name = payload["strategy_name"]
 strategy_path = Path(payload["strategy_path"])
 config_dict = payload["config_dict"]
 universe = payload["universe"]
+sandbox_timeout = payload.get("sandbox_timeout", 15)
 
 from autobacktest.strategy.contract import validate_signature, validate_output
 from autobacktest.strategy.validator import timeout_sandbox, SandboxTimeoutError, _generate_synthetic_prices
@@ -320,7 +322,7 @@ def run_checks():
         # 3. Smoke Test (756 days)
         try:
             prices = _generate_synthetic_prices(universe, n_days=756)
-            with timeout_sandbox(seconds=15):
+            with timeout_sandbox(seconds=sandbox_timeout):
                 weights = module.generate_signals(prices, config_dict)
             ok, err = validate_output(weights, universe, expected_index=prices.index)
             if not ok:
@@ -351,7 +353,7 @@ def run_checks():
         # 4. Lookahead Sniff Test
         try:
             prices_base = _generate_synthetic_prices(universe, n_days=756, seed=123)
-            with timeout_sandbox(seconds=15):
+            with timeout_sandbox(seconds=sandbox_timeout):
                 weights_base = module.generate_signals(prices_base, config_dict)
 
             rng_future = np.random.default_rng(456)
@@ -363,7 +365,7 @@ def run_checks():
                 prices_future_ext[ticker] = base_last * np.exp(np.cumsum(steps))
 
             prices_future = pd.concat([prices_base, prices_future_ext])
-            with timeout_sandbox(seconds=15):
+            with timeout_sandbox(seconds=sandbox_timeout):
                 weights_future = module.generate_signals(prices_future, config_dict)
 
             common_idx = weights_base.index.intersection(weights_future.index)

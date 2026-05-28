@@ -353,7 +353,8 @@ def test_orchestrator_fail_fast_on_non_retryable_error(project_root: Path) -> No
     assert "Non-retryable config error" in str(exc_info.value)
 
 
-def test_orchestrator_continues_on_retryable_error(project_root: Path) -> None:
+@patch("autobacktest.orchestrator.sleep")
+def test_orchestrator_continues_on_retryable_error(_mock_sleep: MagicMock, project_root: Path) -> None:
     """When a retryable LLMError is raised, the orchestrator logs and continues."""
     from autobacktest.llm.base import LLMError
     from autobacktest.llm.mock_provider import MockProvider
