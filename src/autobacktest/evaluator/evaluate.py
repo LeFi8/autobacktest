@@ -166,8 +166,10 @@ def evaluate_strategy_detailed(
     if not ok:
         raise ValueError(f"Strategy weights validation failed: {err}")
 
-    # Partition holdout data (default last 3 years)
-    in_sample_idx, holdout_idx = partition_holdout_data(prices.index, holdout_years=3)
+    # Partition holdout data (configurable via AUTOBACKTEST_DEFAULT_HOLDOUT_YEARS)
+    in_sample_idx, holdout_idx = partition_holdout_data(
+        prices.index, holdout_years=settings.default_holdout_years
+    )
     if in_sample_idx.empty or holdout_idx.empty:
         raise ValueError(
             "In-sample or holdout period is empty. "

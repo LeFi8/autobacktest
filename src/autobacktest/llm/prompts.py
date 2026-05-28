@@ -1,10 +1,10 @@
 """System and user prompts construction for the LLM strategy optimizer."""
 
+from autobacktest.config import settings
 from autobacktest.llm.base import AgentContext
-from autobacktest.strategy.validator import ALLOWED_IMPORTS
 
 # System prompt outlining constraints and role
-sorted_imports = sorted(ALLOWED_IMPORTS)
+sorted_imports = sorted(settings.parsed_safe_imports)
 SYSTEM_PROMPT = f"""You are an expert quantitative strategist and Python developer.
 Your goal is to optimize mathematical quantitative trading strategies to maximize
 backtest performance while satisfying all provided guidelines and constraints.

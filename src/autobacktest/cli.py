@@ -89,7 +89,11 @@ def run(
         model_str = model or settings.llm_model
         if provider and provider != "litellm" and "/" not in model_str:
             model_str = f"{provider}/{model_str}"
-        provider_impl = LiteLLMProvider(model=model_str)
+        provider_impl = LiteLLMProvider(
+            model=model_str,
+            temperature=settings.llm_temperature,
+            max_tokens=settings.llm_max_tokens,
+        )
 
     # Resolve paths
     program_path = Path(program)
@@ -498,7 +502,11 @@ def llm_test(
     # 2. Instantiate LLM Provider
     provider_impl: _LLMProvider
     if provider == "litellm":
-        provider_impl = LiteLLMProvider(model=model)
+        provider_impl = LiteLLMProvider(
+            model=model,
+            temperature=settings.llm_temperature,
+            max_tokens=settings.llm_max_tokens,
+        )
     elif provider == "mock":
         provider_impl = MockProvider()
     else:

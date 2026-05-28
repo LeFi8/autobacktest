@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+
 import pytest
 
 from autobacktest.strategy.validator import ValidationError, preflight

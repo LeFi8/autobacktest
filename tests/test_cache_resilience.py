@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pandas as pd
-import pytest
 
 from autobacktest.data.base import DataProvider
 from autobacktest.data.cache import CachedDataProvider

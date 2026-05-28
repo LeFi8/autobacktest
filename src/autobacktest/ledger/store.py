@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from autobacktest.config import settings
+
 
 def _serialize_returns(series: pd.Series) -> bytes:
     json_str = series.to_json(orient="split", date_format="iso")
@@ -68,7 +70,7 @@ class LedgerStore:
     """Persist optimization attempts in a local SQLite database."""
 
     def __init__(self, db_path: Path) -> None:
-        self._conn = sqlite3.connect(str(db_path))
+        self._conn = sqlite3.connect(str(db_path), timeout=settings.db_timeout)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute(_CREATE_RUNS)
         self._conn.execute(_CREATE_ATTEMPTS)

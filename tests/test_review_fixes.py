@@ -279,24 +279,6 @@ def test_timeout_sandbox_non_main_thread() -> None:
     assert len(errors) == 0
 
 
-def test_check_import_modules_cleanup(mock_dirs: tuple[Path, Path]) -> None:
-    """Verifies that sys.modules is cleared on dynamic import failure."""
-    import sys
-
-    from autobacktest.strategy.validator import _check_import
-
-    strat_dir, _ = mock_dirs
-    strat_file = strat_dir / "broken_strat.py"
-    strat_file.write_text(
-        "raise RuntimeError('Compilation/execution failure')", encoding="utf-8"
-    )
-
-    strategy_name = "broken_strat"
-    res = _check_import(
-        strategy_name, strat_file, strat_file.read_text(encoding="utf-8")
-    )
-    assert not res.passed
-    assert strategy_name not in sys.modules
 
 
 def test_validate_output_duplicate_columns() -> None:

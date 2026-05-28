@@ -1,5 +1,6 @@
 """Mock provider implementation for local unit and integration tests."""
 
+from autobacktest.config import settings
 from autobacktest.llm.base import AgentContext, AgentEdit, LLMProvider
 
 
@@ -20,6 +21,8 @@ class MockProvider(LLMProvider):
         self.response = response
         self.error = error
         self.calls: list[AgentContext] = []
+        # Expose temperature so the orchestrator's decay schedule is exercised.
+        self.temperature: float = settings.llm_temperature
 
     @property
     def provider_name(self) -> str:
