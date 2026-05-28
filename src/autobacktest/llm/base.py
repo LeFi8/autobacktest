@@ -74,6 +74,8 @@ class LLMError(Exception):
 class LLMProvider(ABC):
     """Abstract base class defining the contract for LLM drivers."""
 
+    temperature: float
+
     @abstractmethod
     def generate_edit(self, context: AgentContext) -> AgentEdit:
         """Consume context and generate strategy modifications.

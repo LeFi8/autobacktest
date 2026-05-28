@@ -173,7 +173,7 @@ class CachedDataProvider(DataProvider):
                             cached_df.sort_index(inplace=True)
                             cached_df.to_parquet(cache_file)
                             # P0-1: advance boundary only when rows were received.
-                            self._save_metadata(ticker, interval, cache_start, end_dt)
+                            self._save_metadata(ticker, interval, cache_start, cached_df.index.max())
                         else:
                             # Provider responded cleanly but has no rows (holiday/gap).
                             # Record the boundary so we don't re-query this range.
@@ -206,7 +206,7 @@ class CachedDataProvider(DataProvider):
                             cached_df.sort_index(inplace=True)
                             cached_df.to_parquet(cache_file)
                             # P0-1: advance boundary only when rows were received.
-                            self._save_metadata(ticker, interval, start_dt, cache_end)
+                            self._save_metadata(ticker, interval, cached_df.index.min(), cache_end)
                         else:
                             self._save_metadata(
                                 ticker,
@@ -235,7 +235,7 @@ class CachedDataProvider(DataProvider):
                     cached_df.sort_index(inplace=True)
                     cached_df.to_parquet(cache_file)
                     # P0-1: metadata advance gated on actual rows stored.
-                    self._save_metadata(ticker, interval, start_dt, end_dt)
+                    self._save_metadata(ticker, interval, cached_df.index.min(), cached_df.index.max())
                     ticker_df = self._slice_window(cached_df, start_dt, end_dt)
                 else:
                     # Provider returned cleanly but no rows (missing ticker).

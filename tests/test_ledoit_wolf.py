@@ -74,8 +74,10 @@ def test_ledoit_wolf_fallbacks_and_edge_cases() -> None:
     # 2. Single observation T = 1
     df_single = pd.DataFrame([[0.1, 0.2, 0.3]], columns=["A", "B", "C"])
     corr_single = _ledoit_wolf_correlation(df_single)
-    # Should fallback to empirical correlation (which will be filled with zeros)
-    assert np.all(corr_single.values == 0.0)
+    # Should fallback to empirical correlation filled with zeros except diagonal=1.0
+    mask = ~np.eye(len(corr_single), dtype=bool)
+    np.testing.assert_allclose(np.diag(corr_single.values), 1.0, atol=1e-7)
+    np.testing.assert_allclose(corr_single.values[mask], 0.0, atol=1e-7)
 
     # 3. Single strategy trial p = 1
     df_one_col = pd.DataFrame({"A": [0.1, 0.2, -0.1]})

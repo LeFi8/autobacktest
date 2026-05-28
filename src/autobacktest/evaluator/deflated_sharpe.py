@@ -19,7 +19,10 @@ def _ledoit_wolf_correlation(returns_matrix: pd.DataFrame) -> pd.DataFrame:
     t, p = returns_matrix.shape
     # Fallback to empirical correlation if insufficient observations or features
     if t <= 1 or p <= 1:
-        return returns_matrix.corr().fillna(0.0).clip(-1.0, 1.0)
+        corr = returns_matrix.corr().fillna(0.0).clip(-1.0, 1.0)
+        vals = corr.to_numpy().copy()
+        np.fill_diagonal(vals, 1.0)
+        return pd.DataFrame(vals, index=corr.index, columns=corr.columns)
 
     try:
         # Standardize returns matrix (fill NaNs and center)
