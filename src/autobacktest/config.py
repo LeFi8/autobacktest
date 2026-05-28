@@ -18,6 +18,9 @@ class Settings(BaseModel):
     llm_model: str = Field(default_factory=lambda: os.getenv("AUTOBACKTEST_LLM_MODEL", "openai/gpt-4o"))
     llm_temperature: float = Field(default_factory=lambda: float(os.getenv("AUTOBACKTEST_LLM_TEMPERATURE", "0.7")))
     llm_max_tokens: int = Field(default_factory=lambda: int(os.getenv("AUTOBACKTEST_LLM_MAX_TOKENS", "4096")))
+    litellm_debug: bool = Field(
+        default_factory=lambda: os.getenv("AUTOBACKTEST_LITELLM_DEBUG", "False").lower() in ("true", "1", "yes")
+    )
 
     # --- BACKTEST WINDOWS ---
     default_start_date: str = Field(default_factory=lambda: os.getenv("AUTOBACKTEST_DEFAULT_START_DATE", "2015-01-01"))

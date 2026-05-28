@@ -3,6 +3,7 @@
 import litellm
 from pydantic import BaseModel, Field
 
+from autobacktest.config import settings
 from autobacktest.llm.base import AgentContext, AgentEdit, LLMError, LLMProvider
 from autobacktest.llm.prompts import build_messages
 
@@ -38,6 +39,8 @@ class LiteLLMProvider(LLMProvider):
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
+        if settings.litellm_debug:
+            litellm._turn_on_debug()  # type: ignore[attr-defined, no-untyped-call]
 
     @property
     def provider_name(self) -> str:

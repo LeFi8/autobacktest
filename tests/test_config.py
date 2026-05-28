@@ -16,6 +16,7 @@ def test_default_fallbacks() -> None:
         assert settings.llm_model == "openai/gpt-4o"
         assert settings.llm_temperature == 0.7
         assert settings.llm_max_tokens == 4096
+        assert settings.litellm_debug is False
         assert settings.default_start_date == "2015-01-01"
         assert settings.default_end_date == "2026-01-01"
         assert settings.default_holdout_years == 3
@@ -39,6 +40,7 @@ def test_env_var_override() -> None:
         "AUTOBACKTEST_LLM_MODEL": "custom_model/v1",
         "AUTOBACKTEST_LLM_TEMPERATURE": "0.2",
         "AUTOBACKTEST_LLM_MAX_TOKENS": "512",
+        "AUTOBACKTEST_LITELLM_DEBUG": "True",
         "AUTOBACKTEST_DEFAULT_START_DATE": "2020-06-01",
         "AUTOBACKTEST_DEFAULT_END_DATE": "2025-12-31",
         "AUTOBACKTEST_DEFAULT_HOLDOUT_YEARS": "1",
@@ -58,6 +60,7 @@ def test_env_var_override() -> None:
         assert settings.llm_model == "custom_model/v1"
         assert settings.llm_temperature == 0.2
         assert settings.llm_max_tokens == 512
+        assert settings.litellm_debug is True
         assert settings.default_start_date == "2020-06-01"
         assert settings.default_end_date == "2025-12-31"
         assert settings.default_holdout_years == 1
