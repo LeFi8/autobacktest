@@ -7,9 +7,14 @@ import git
 
 class GitLedger:
     def __init__(self, repo_path: Path) -> None:
-        self._repo = git.Repo(repo_path)
+        self._repo = git.Repo(repo_path, search_parent_directories=True)
         self._strategies_dir = "strategies"
         self._configs_dir = "configs"
+
+    @property
+    def repo_root(self) -> Path:
+        """Expose the absolute path of the git working tree root."""
+        return Path(self._repo.working_tree_dir or "")
 
     def ensure_clean(self, strategy_name: str) -> None:
         """Raise ValueError if target strategy/config files have uncommitted changes."""
@@ -30,15 +35,19 @@ class GitLedger:
         return branch_name
 
     def commit_strategy(self, strategy_name: str, message: str) -> str:
-        """Stage strategies/{name}.py and configs/{name}.yaml, commit, return hexsha."""
+        """Stage strategy, config, and lessons files, commit, return hexsha."""
         strat_rel = f"{self._strategies_dir}/{strategy_name}.py"
         cfg_rel = f"{self._configs_dir}/{strategy_name}.yaml"
-        self._repo.index.add([strat_rel, cfg_rel])
+        files_to_add = [strat_rel, cfg_rel]
+        lessons_path = Path(self._repo.working_tree_dir or "") / "lessons.md"
+        if lessons_path.exists():
+            files_to_add.append("lessons.md")
+        self._repo.index.add(files_to_add)
         commit = self._repo.index.commit(message)
         return commit.hexsha
 
     def rollback_strategy(self, strategy_name: str) -> None:
-        """Restore strategies/{name}.py and configs/{name}.yaml to HEAD."""
+        """Restore strategies/{name}.py, configs/{name}.yaml to HEAD."""
         strat_rel = f"{self._strategies_dir}/{strategy_name}.py"
         cfg_rel = f"{self._configs_dir}/{strategy_name}.yaml"
         self._repo.git.checkout("--", strat_rel, cfg_rel)
@@ -47,3 +56,28 @@ class GitLedger:
     def current_branch(self) -> str:
         """Return the name of the currently active branch."""
         return str(self._repo.active_branch.name)
+
+    def reset_to_main(self, strategy_name: str | None = None) -> None:
+        """Checkout primary branch (main or master) and restore strategy/config files
+        to baseline.
+        """
+        primary_branch = "main"
+        if "main" not in self._repo.heads:
+            if "master" in self._repo.heads:
+                primary_branch = "master"
+            elif self._repo.heads:
+                primary_branch = self._repo.heads[0].name
+            else:
+                raise ValueError("Could not find any branch in the repository.")
+
+        if self._repo.active_branch.name != primary_branch:
+            self._repo.heads[primary_branch].checkout()
+
+        if strategy_name is not None:
+            strat_rel = f"{self._strategies_dir}/{strategy_name}.py"
+            cfg_rel = f"{self._configs_dir}/{strategy_name}.yaml"
+            self._repo.git.checkout("HEAD", "--", strat_rel, cfg_rel)
+        else:
+            self._repo.git.checkout(
+                "HEAD", "--", self._strategies_dir, self._configs_dir
+            )

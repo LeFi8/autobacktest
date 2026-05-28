@@ -196,3 +196,81 @@ def test_exclude_id(tmp_path: Path) -> None:
     assert df.shape[1] == 1
     assert len(sharpes) == 1
     assert sharpes[0] == pytest.approx(1.5)
+
+
+def test_list_runs_and_leaderboard_keys(tmp_path: Path) -> None:
+    db = tmp_path / "ledger.db"
+    store = LedgerStore(db)
+
+    store.create_run(
+        run_id="run-1",
+        strategy_name="strat_a",
+        program_path="/tmp/strat.py",
+        provider="openai",
+        model="gpt-4o",
+        branch="main",
+        dataset_hash="hash-abc",
+        iterations=10,
+        started_at="2024-01-01T00:00:00",
+    )
+
+    _record(store, iteration=1, observed_sharpe=1.2, accepted=True)
+
+    runs = store.list_runs()
+    board = store.leaderboard()
+    store.close()
+
+    assert len(runs) == 1
+    assert runs[0]["run_id"] == "run-1"
+    assert runs[0]["provider"] == "openai"
+
+    assert len(board) == 1
+    assert board[0]["target_metric"] == "sharpe"
+    assert board[0]["target_metric_value"] == pytest.approx(1.2)
+
+
+def test_run_scoped_attempts_and_leaderboard(tmp_path: Path) -> None:
+    db = tmp_path / "ledger.db"
+    store = LedgerStore(db)
+
+    store.create_run(
+        run_id="run-old",
+        strategy_name="strat_a",
+        program_path="/tmp/strat.py",
+        provider="openai",
+        model="gpt-4o",
+        branch="main",
+        dataset_hash="hash-abc",
+        iterations=10,
+        started_at="2024-01-01T00:00:00",
+    )
+    store.create_run(
+        run_id="run-new",
+        strategy_name="strat_a",
+        program_path="/tmp/strat.py",
+        provider="openai",
+        model="gpt-4o",
+        branch="main",
+        dataset_hash="hash-abc",
+        iterations=10,
+        started_at="2024-01-02T00:00:00",
+    )
+
+    _record(store, run_id="run-old", strategy_name="strat_a", observed_sharpe=2.0)
+    _record(store, run_id="run-new", strategy_name="strat_a", observed_sharpe=0.5)
+    _record(store, run_id="run-new", strategy_name="strat_b", observed_sharpe=1.5)
+
+    assert store.latest_run_id() == "run-new"
+
+    attempts = store.attempts_for_run("run-new")
+    run_strategies = {row["strategy_name"] for row in attempts}
+    latest_board = store.leaderboard(strategy_name="strat_a", run_id="run-new")
+    all_time_board = store.leaderboard(strategy_name="strat_a")
+    store.close()
+
+    assert run_strategies == {"strat_a", "strat_b"}
+    assert len(latest_board) == 1
+    assert latest_board[0]["run_id"] == "run-new"
+    assert latest_board[0]["observed_sharpe"] == pytest.approx(0.5)
+    assert all_time_board[0]["run_id"] == "run-old"
+    assert all_time_board[0]["observed_sharpe"] == pytest.approx(2.0)

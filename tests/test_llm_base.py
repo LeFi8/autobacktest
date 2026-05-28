@@ -16,6 +16,7 @@ def test_agent_context_immutability() -> None:
     )
     assert context.strategy_name == "haa"
     assert context.iteration == 1
+    assert context.lessons_text == ""
 
     with pytest.raises(FrozenInstanceError):
         # type: ignore
@@ -30,6 +31,7 @@ def test_agent_edit_immutability() -> None:
         raw_response="{}",
     )
     assert edit.reasoning == "none"
+    assert edit.lessons_text is None
 
     with pytest.raises(FrozenInstanceError):
         # type: ignore

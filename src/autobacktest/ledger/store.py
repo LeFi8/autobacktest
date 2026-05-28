@@ -70,6 +70,32 @@ class LedgerStore:
         self._conn.execute(_CREATE_ATTEMPTS)
         self._conn.commit()
 
+        # Schema migration for older databases missing target_metric/value columns
+        cursor = self._conn.cursor()
+        cursor.execute("PRAGMA table_info(attempts)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if columns:
+            migrated = False
+            if "target_metric" not in columns:
+                self._conn.execute(
+                    "ALTER TABLE attempts ADD COLUMN target_metric TEXT "
+                    "NOT NULL DEFAULT 'sharpe'"
+                )
+                migrated = True
+            if "target_metric_value" not in columns:
+                self._conn.execute(
+                    "ALTER TABLE attempts ADD COLUMN target_metric_value REAL "
+                    "NOT NULL DEFAULT 0.0"
+                )
+                migrated = True
+            if migrated:
+                # Backfill target_metric_value using observed_sharpe for older attempts
+                self._conn.execute(
+                    "UPDATE attempts SET target_metric_value = observed_sharpe "
+                    "WHERE target_metric = 'sharpe'"
+                )
+                self._conn.commit()
+
     def create_run(
         self,
         run_id: str,
@@ -196,47 +222,81 @@ class LedgerStore:
         matrix = pd.concat(series_list, axis=1)
         return matrix, sharpes
 
-    def leaderboard(
+    def latest_run_id(self) -> str | None:
+        """Return the most recently started run id, if any runs exist."""
+        row = self._conn.execute(
+            """
+            SELECT run_id
+            FROM runs
+            ORDER BY started_at DESC, run_id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        if row is None:
+            return None
+        return str(row[0])
+
+    def get_run(self, run_id: str) -> dict[str, object] | None:
+        """Return metadata for one run id, or None when it is absent."""
+        row = self._conn.execute(
+            """
+            SELECT
+                run_id, strategy_name, program_path, provider, model,
+                branch, dataset_hash, iterations, started_at
+            FROM runs
+            WHERE run_id = ?
+            """,
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "run_id": row[0],
+            "strategy_name": row[1],
+            "program_path": row[2],
+            "provider": row[3],
+            "model": row[4],
+            "branch": row[5],
+            "dataset_hash": row[6],
+            "iterations": row[7],
+            "started_at": row[8],
+        }
+
+    def attempts_for_run(
         self,
+        run_id: str,
         strategy_name: str | None = None,
     ) -> list[dict[str, object]]:
-        """Return the best accepted attempt per strategy (highest observed Sharpe).
-
-        Optionally filtered to a single strategy_name.
-        """
-        base = """
-            SELECT
-                a.strategy_name,
-                a.run_id,
-                a.iteration,
-                a.observed_sharpe,
-                a.deflated_sharpe,
-                a.holdout_max_drawdown,
-                a.holdout_turnover,
-                a.created_at
-            FROM attempts a
-            INNER JOIN (
-                SELECT s.strategy_name, MIN(s.id) AS best_id
-                FROM attempts s
-                INNER JOIN (
-                    SELECT strategy_name, MAX(observed_sharpe) AS best_sharpe
-                    FROM attempts
-                    WHERE accepted = 1
-                    {where}
-                    GROUP BY strategy_name
-                ) m ON s.strategy_name = m.strategy_name
-                     AND s.observed_sharpe = m.best_sharpe
-                     AND s.accepted = 1
-                GROUP BY s.strategy_name
-            ) best ON a.id = best.best_id
-            ORDER BY a.observed_sharpe DESC
-        """
+        """Return attempts recorded for one run, optionally scoped to a strategy."""
+        filters = ["run_id = ?"]
+        params: list[object] = [run_id]
         if strategy_name is not None:
-            query = base.format(where="AND strategy_name = ?")
-            rows = self._conn.execute(query, (strategy_name,)).fetchall()
-        else:
-            query = base.format(where="")
-            rows = self._conn.execute(query).fetchall()
+            filters.append("strategy_name = ?")
+            params.append(strategy_name)
+        where_sql = " AND ".join(filters)
+
+        rows = self._conn.execute(
+            f"""
+            SELECT
+                strategy_name,
+                run_id,
+                iteration,
+                observed_sharpe,
+                deflated_sharpe,
+                holdout_max_drawdown,
+                holdout_turnover,
+                created_at,
+                target_metric,
+                target_metric_value,
+                accepted,
+                committed,
+                rejection_reason
+            FROM attempts
+            WHERE {where_sql}
+            ORDER BY strategy_name ASC, iteration ASC, id ASC
+            """,
+            tuple(params),
+        ).fetchall()
 
         results: list[dict[str, object]] = []
         for row in rows:
@@ -250,6 +310,113 @@ class LedgerStore:
                     "holdout_max_drawdown": row[5],
                     "holdout_turnover": row[6],
                     "created_at": row[7],
+                    "target_metric": row[8],
+                    "target_metric_value": row[9],
+                    "accepted": bool(row[10]),
+                    "committed": bool(row[11]),
+                    "rejection_reason": row[12],
+                }
+            )
+        return results
+
+    def leaderboard(
+        self,
+        strategy_name: str | None = None,
+        run_id: str | None = None,
+    ) -> list[dict[str, object]]:
+        """Return the best accepted attempt per strategy (highest target metric value).
+
+        Optionally filtered to a single strategy_name and/or run_id.
+        """
+        filters = ["accepted = 1"]
+        params: list[object] = []
+        if strategy_name is not None:
+            filters.append("strategy_name = ?")
+            params.append(strategy_name)
+        if run_id is not None:
+            filters.append("run_id = ?")
+            params.append(run_id)
+        where_sql = " AND ".join(filters)
+
+        rows = self._conn.execute(
+            f"""
+            SELECT
+                strategy_name,
+                run_id,
+                iteration,
+                observed_sharpe,
+                deflated_sharpe,
+                holdout_max_drawdown,
+                holdout_turnover,
+                created_at,
+                target_metric,
+                target_metric_value
+            FROM (
+                SELECT
+                    a.strategy_name,
+                    a.run_id,
+                    a.iteration,
+                    a.observed_sharpe,
+                    a.deflated_sharpe,
+                    a.holdout_max_drawdown,
+                    a.holdout_turnover,
+                    a.created_at,
+                    a.target_metric,
+                    a.target_metric_value,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY a.strategy_name
+                        ORDER BY a.target_metric_value DESC, a.id ASC
+                    ) AS row_num
+                FROM attempts a
+                WHERE {where_sql}
+            ) ranked
+            WHERE row_num = 1
+            ORDER BY target_metric_value DESC, strategy_name ASC
+            """,
+            tuple(params),
+        ).fetchall()
+
+        results: list[dict[str, object]] = []
+        for row in rows:
+            results.append(
+                {
+                    "strategy_name": row[0],
+                    "run_id": row[1],
+                    "iteration": row[2],
+                    "observed_sharpe": row[3],
+                    "deflated_sharpe": row[4],
+                    "holdout_max_drawdown": row[5],
+                    "holdout_turnover": row[6],
+                    "created_at": row[7],
+                    "target_metric": row[8],
+                    "target_metric_value": row[9],
+                }
+            )
+        return results
+
+    def list_runs(self) -> list[dict[str, object]]:
+        """Return metadata for all recorded runs."""
+        query = """
+            SELECT
+                run_id, strategy_name, program_path, provider, model,
+                branch, dataset_hash, iterations, started_at
+            FROM runs
+            ORDER BY started_at DESC
+        """
+        rows = self._conn.execute(query).fetchall()
+        results: list[dict[str, object]] = []
+        for row in rows:
+            results.append(
+                {
+                    "run_id": row[0],
+                    "strategy_name": row[1],
+                    "program_path": row[2],
+                    "provider": row[3],
+                    "model": row[4],
+                    "branch": row[5],
+                    "dataset_hash": row[6],
+                    "iterations": row[7],
+                    "started_at": row[8],
                 }
             )
         return results

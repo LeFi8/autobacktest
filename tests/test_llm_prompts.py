@@ -78,3 +78,22 @@ def test_build_messages_with_report() -> None:
     assert "Current Loop Iteration: 3" in user_msg
     assert "hash123" in user_msg
     assert "observed_sharpe" in user_msg
+
+
+def test_build_messages_lessons_warning() -> None:
+    # 4096 tokens limit is approx 16384 characters. So let's make it >16385 chars.
+    long_lessons = "a" * 17000
+    context = AgentContext(
+        strategy_name="haa",
+        strategy_code="def signals(): pass",
+        config_yaml="universe: []",
+        program_text="make it conservative",
+        evaluation_report=None,
+        iteration=1,
+        lessons_text=long_lessons,
+    )
+    messages = build_messages(context)
+    user_msg = messages[1]["content"]
+    assert "exceeds the cap of 4096 tokens" in user_msg
+    assert "## Lessons" in user_msg
+    assert long_lessons in user_msg

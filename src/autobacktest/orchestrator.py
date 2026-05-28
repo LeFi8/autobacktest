@@ -95,6 +95,12 @@ def run_optimization(
             started_at=datetime.now(tz=UTC).isoformat(),
         )
 
+        # Initialize lessons
+        lessons_path = git_ledger.repo_root / "lessons.md"
+        lessons_text = ""
+        if lessons_path.exists():
+            lessons_text = lessons_path.read_text(encoding="utf-8")
+
         # 7. Baseline evaluation (iteration 0 — not written to events.jsonl)
         baseline_fn = _load_signals(strat_path)
         baseline_report, baseline_returns = evaluate_strategy_detailed(
@@ -143,6 +149,7 @@ def run_optimization(
                 program_text=spec.raw_text,
                 evaluation_report=incumbent,
                 iteration=k,
+                lessons_text=lessons_text,
             )
 
             # 8b. Get LLM edit
@@ -158,6 +165,12 @@ def run_optimization(
                 continue
 
             event["edit"] = {"reasoning": edit.reasoning}
+
+            # Immediately persist non-empty lessons_text from the edit to disk
+            # and memory.
+            if edit.lessons_text is not None and edit.lessons_text.strip():
+                lessons_text = edit.lessons_text
+                lessons_path.write_text(lessons_text, encoding="utf-8")
 
             # 8c. Validate candidate via temp files (same pattern as llm-test command)
             ok, error_code, detail = _validate_candidate(
