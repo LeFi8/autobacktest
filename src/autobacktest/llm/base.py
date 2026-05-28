@@ -68,10 +68,7 @@ class LLMError(Exception):
         self.detail = detail
 
     def __str__(self) -> str:
-        return (
-            f"LLMError(provider='{self.provider}', "
-            f"model='{self.model}', detail='{self.detail}')"
-        )
+        return f"LLMError(provider='{self.provider}', model='{self.model}', detail='{self.detail}')"
 
 
 class LLMProvider(ABC):

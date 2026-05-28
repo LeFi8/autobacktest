@@ -28,9 +28,7 @@ def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFra
     filter_ticker = config.get("filter_ticker", "TIP")
 
     # Extract daily prices of actual last trading days for each month
-    last_trading_days = prices.groupby(prices.index.to_period("M")).apply(
-        lambda x: x.index[-1]
-    )
+    last_trading_days = prices.groupby(prices.index.to_period("M")).apply(lambda x: x.index[-1])
     monthly_prices = prices.loc[last_trading_days]
 
     # Calculate momentum score:

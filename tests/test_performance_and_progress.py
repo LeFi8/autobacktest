@@ -48,7 +48,6 @@ def test_orchestrator_progress_bar_interaction(
     mock_progress_instance.add_task.return_value = mock_task_id
 
     # 2. Setup minimum mocks to run orchestrator with mock provider for 2 iterations
-    project_root = Path(__file__).resolve().parent.parent
 
     # Create dummy strategy and config in tmp_path
     strategies_dir = tmp_path / "strategies"
@@ -88,13 +87,11 @@ None.
     )
 
     # Mock evaluate_strategy_detailed, preflight, and GitLedger to avoid heavy processes and Git commands
-    with patch(
-        "autobacktest.orchestrator.evaluate_strategy_detailed"
-    ) as mock_evaluate, patch(
-        "autobacktest.orchestrator.preflight"
-    ) as mock_preflight, patch(
-        "autobacktest.orchestrator.GitLedger"
-    ) as mock_git_ledger_cls:
+    with (
+        patch("autobacktest.orchestrator.evaluate_strategy_detailed") as mock_evaluate,
+        patch("autobacktest.orchestrator.preflight") as mock_preflight,
+        patch("autobacktest.orchestrator.GitLedger") as mock_git_ledger_cls,
+    ):
         mock_git_ledger = MagicMock()
         mock_git_ledger.repo_root = tmp_path
         mock_git_ledger.create_run_branch.return_value = "mock-branch"
@@ -112,16 +109,17 @@ None.
         mock_report.holdout_metrics.turnover = 0.2
         mock_report.regime_passed = True
         mock_report.to_json.return_value = "{}"
-    
+
         import pandas as pd
+
         dummy_returns = pd.Series([0.001] * 5, index=pd.date_range("2025-01-01", periods=5))
-    
+
         mock_evaluate.return_value = (mock_report, dummy_returns)
-    
+
         mock_preflight_res = MagicMock()
         mock_preflight_res.passed = True
         mock_preflight.return_value = mock_preflight_res
-    
+
         # 3. Call run_optimization for 2 iterations
         provider = MockProvider()
         run_optimization(

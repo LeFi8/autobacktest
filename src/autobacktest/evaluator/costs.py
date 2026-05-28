@@ -44,9 +44,7 @@ def calculate_turnover_and_costs(
     portfolio_growth = 1.0 + daily_returns
 
     # Avoid division by zero by replacing zero with NaN before dividing
-    drift_weights = growth.div(portfolio_growth.replace(0.0, np.nan), axis=0).fillna(
-        0.0
-    )
+    drift_weights = growth.div(portfolio_growth.replace(0.0, np.nan), axis=0).fillna(0.0)
 
     # The trade size is the absolute difference between new target weights
     # and the drift-adjusted weights from the previous period
@@ -56,9 +54,7 @@ def calculate_turnover_and_costs(
     daily_trade_volume = trades.sum(axis=1)
 
     # Linear fee + market impact (quadratic term)
-    costs = daily_trade_volume * cost_per_trade_value + impact_coef * (
-        daily_trade_volume**2
-    )
+    costs = daily_trade_volume * cost_per_trade_value + impact_coef * (daily_trade_volume**2)
 
     # Deduct transaction costs from gross daily returns
     net_returns = daily_returns - costs

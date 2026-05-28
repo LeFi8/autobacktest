@@ -60,13 +60,9 @@ def parse_program(path: Path) -> ProgramSpec:
         sections[name] = raw_text[body_start:next_line_start].strip()
 
     if "Objective" not in sections:
-        raise ValueError(
-            f"program.md at {path} is missing required '# Objective' header"
-        )
+        raise ValueError(f"program.md at {path} is missing required '# Objective' header")
     if "Constraints" not in sections:
-        raise ValueError(
-            f"program.md at {path} is missing required '# Constraints' header"
-        )
+        raise ValueError(f"program.md at {path} is missing required '# Constraints' header")
 
     return ProgramSpec(
         objective=sections["Objective"],

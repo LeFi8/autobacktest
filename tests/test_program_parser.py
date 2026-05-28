@@ -8,8 +8,7 @@ from autobacktest.program import ProgramSpec, parse_program
 def test_parse_valid_program(tmp_path: Path) -> None:
     p = tmp_path / "program.md"
     p.write_text(
-        "# Objective\nMaximize risk-adjusted returns.\n\n"
-        "# Constraints\nMax drawdown 15%. Turnover limit 2x.",
+        "# Objective\nMaximize risk-adjusted returns.\n\n# Constraints\nMax drawdown 15%. Turnover limit 2x.",
         encoding="utf-8",
     )
     spec = parse_program(p)

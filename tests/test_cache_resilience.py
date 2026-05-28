@@ -28,10 +28,10 @@ class MockResilientDataProvider(DataProvider):
     ) -> pd.DataFrame:
         _ = interval
         self.fetch_count += 1
-        
+
         if self.raise_error:
             raise RuntimeError("Raw provider query timed out or failed.")
-            
+
         if self.return_empty:
             return pd.DataFrame()
 
@@ -60,7 +60,7 @@ def test_market_holiday_skips_redundant_fetches() -> None:
         # Verify companion JSON metadata covers May 25
         meta_file = Path(tmp_dir) / "SPY_1d.json"
         assert meta_file.exists()
-        meta_start, meta_end = cached_provider._load_metadata("SPY", "1d")
+        _, meta_end = cached_provider._load_metadata("SPY", "1d")
         assert meta_end == pd.to_datetime("2026-05-25")
 
         # 3. Query the same range again (holiday is now covered by metadata bounds)
@@ -83,7 +83,7 @@ def test_provider_errors_graceful_handling() -> None:
 
         # 2. Raw provider starts raising exceptions (e.g. rate limits, disconnects)
         raw_provider.raise_error = True
-        
+
         # Incremental fetch shouldn't crash, but log a warning and return whatever is in cache
         df = cached_provider.get_prices(["SPY"], "2026-05-20", "2026-05-25")
         assert raw_provider.fetch_count == 2

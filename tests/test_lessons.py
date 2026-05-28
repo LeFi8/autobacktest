@@ -135,9 +135,7 @@ def test_orchestrator_preserves_lessons_when_update_missing_or_blank(
 ) -> None:
     synthetic_prices = _make_synthetic_prices()
     fake_instance = _make_fake_provider(synthetic_prices)
-    initial_lessons = (project_root_with_lessons / "lessons.md").read_text(
-        encoding="utf-8"
-    )
+    initial_lessons = (project_root_with_lessons / "lessons.md").read_text(encoding="utf-8")
 
     blank_edit = AgentEdit(
         strategy_code="import os\n",
@@ -166,6 +164,4 @@ def test_orchestrator_preserves_lessons_when_update_missing_or_blank(
             end_date="2025-01-01",
         )
 
-    assert (project_root_with_lessons / "lessons.md").read_text(
-        encoding="utf-8"
-    ) == initial_lessons
+    assert (project_root_with_lessons / "lessons.md").read_text(encoding="utf-8") == initial_lessons

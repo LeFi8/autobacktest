@@ -47,12 +47,8 @@ def generate_walk_forward_windows(
 
         # Only append if we have a valid test window
         if current_test_start < max_date:
-            aligned_train = index[
-                (index >= current_train_start) & (index <= current_train_end)
-            ]
-            aligned_test = index[
-                (index >= current_test_start) & (index <= current_test_end)
-            ]
+            aligned_train = index[(index >= current_train_start) & (index <= current_train_end)]
+            aligned_test = index[(index >= current_test_start) & (index <= current_test_end)]
 
             if not aligned_train.empty and not aligned_test.empty:
                 windows.append(

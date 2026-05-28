@@ -213,10 +213,7 @@ def preflight(
         return ValidationResult(
             passed=False,
             error_code=ValidationError.IMPORT_FAILED,
-            detail=(
-                f"Path traversal or validation error for "
-                f"strategy '{strategy_name}': {e}"
-            ),
+            detail=(f"Path traversal or validation error for strategy '{strategy_name}': {e}"),
         )
 
     # AST TOCTOU Protection: Read once (Finding 8)
@@ -228,9 +225,7 @@ def preflight(
                 passed=False,
                 error_code=ValidationError.IMPORT_FAILED,
                 detail=(
-                    f"Strategy file exceeds size limit of "
-                    f"{settings.max_file_size_kb}KB "
-                    f"(actual: {file_size_kb:.1f}KB)"
+                    f"Strategy file exceeds size limit of {settings.max_file_size_kb}KB (actual: {file_size_kb:.1f}KB)"
                 ),
             )
         content = strategy_path.read_text(encoding="utf-8")
@@ -306,13 +301,21 @@ def run_checks():
         code_obj = compile(content, str(strategy_path), "exec")
         exec(code_obj, module.__dict__)
     except Exception as e:
-        return {"passed": False, "error_code": "import_failed", "detail": f"Dynamic import execution failed: {e}"}
+        return {
+            "passed": False,
+            "error_code": "import_failed",
+            "detail": f"Dynamic import execution failed: {e}",
+        }
 
     try:
         # 2. Signature Check
         sig_ok, sig_err = validate_signature(module)
         if not sig_ok:
-            return {"passed": False, "error_code": "signature_mismatch", "detail": sig_err}
+            return {
+                "passed": False,
+                "error_code": "signature_mismatch",
+                "detail": sig_err,
+            }
 
         # 3. Smoke Test (756 days)
         try:
@@ -321,13 +324,29 @@ def run_checks():
                 weights = module.generate_signals(prices, config_dict)
             ok, err = validate_output(weights, universe, expected_index=prices.index)
             if not ok:
-                return {"passed": False, "error_code": "smoke_test_failed", "detail": f"Smoke test output constraints failed: {err}"}
+                return {
+                    "passed": False,
+                    "error_code": "smoke_test_failed",
+                    "detail": f"Smoke test output constraints failed: {err}",
+                }
         except SandboxTimeoutError as e:
-            return {"passed": False, "error_code": "smoke_test_failed", "detail": str(e)}
+            return {
+                "passed": False,
+                "error_code": "smoke_test_failed",
+                "detail": str(e),
+            }
         except MemoryError as e:
-            return {"passed": False, "error_code": "smoke_test_failed", "detail": f"Strategy execution exceeded memory limit: {e}"}
+            return {
+                "passed": False,
+                "error_code": "smoke_test_failed",
+                "detail": f"Strategy execution exceeded memory limit: {e}",
+            }
         except Exception as e:
-            return {"passed": False, "error_code": "smoke_test_failed", "detail": f"Smoke test execution exception: {e}"}
+            return {
+                "passed": False,
+                "error_code": "smoke_test_failed",
+                "detail": f"Smoke test execution exception: {e}",
+            }
 
         # 4. Lookahead Sniff Test
         try:
@@ -349,36 +368,70 @@ def run_checks():
 
             common_idx = weights_base.index.intersection(weights_future.index)
             if common_idx.empty:
-                return {"passed": False, "error_code": "lookahead_detected", "detail": "Lookahead bias detected: no overlapping rebalance dates."}
+                return {
+                    "passed": False,
+                    "error_code": "lookahead_detected",
+                    "detail": "Lookahead bias detected: no overlapping rebalance dates.",
+                }
 
             w_base = weights_base.loc[common_idx]
             w_fut = weights_future.loc[common_idx]
 
             if w_base.isna().any().any() or w_fut.isna().any().any():
-                return {"passed": False, "error_code": "smoke_test_failed", "detail": "Lookahead bias sniff test failed: strategy weights contain NaNs."}
+                return {
+                    "passed": False,
+                    "error_code": "smoke_test_failed",
+                    "detail": "Lookahead bias sniff test failed: strategy weights contain NaNs.",
+                }
 
             if w_base.shape != w_fut.shape:
-                return {"passed": False, "error_code": "lookahead_detected", "detail": f"Lookahead bias sniff test failed: strategy weights shape changed from {w_base.shape} to {w_fut.shape}."}
+                return {
+                    "passed": False,
+                    "error_code": "lookahead_detected",
+                    "detail": (
+                        f"Lookahead bias sniff test failed: strategy weights shape "
+                        f"changed from {w_base.shape} to {w_fut.shape}."
+                    ),
+                }
 
             if not w_base.columns.equals(w_fut.columns):
-                return {"passed": False, "error_code": "lookahead_detected", "detail": "Lookahead bias sniff test failed: strategy columns diverged."}
+                return {
+                    "passed": False,
+                    "error_code": "lookahead_detected",
+                    "detail": "Lookahead bias sniff test failed: strategy columns diverged.",
+                }
 
             if not np.allclose(w_base.values, w_fut.values, rtol=0.0, atol=1e-7):
                 diff = np.abs(w_base - w_fut)
                 bad_row = diff.max(axis=1) > 1e-7
                 if bad_row.any():
                     first_bad_date = common_idx[bad_row.values][0].strftime("%Y-%m-%d")
-                    msg = f"Lookahead bias sniff test failed. Rebalance signals at '{first_bad_date}' changed when future data was appended to the price history."
+                    msg = (
+                        f"Lookahead bias sniff test failed. Rebalance signals at "
+                        f"'{first_bad_date}' changed when future data was appended to the price history."
+                    )
                 else:
                     msg = "Lookahead bias sniff test failed."
                 return {"passed": False, "error_code": "lookahead_detected", "detail": msg}
 
         except SandboxTimeoutError as e:
-            return {"passed": False, "error_code": "smoke_test_failed", "detail": str(e)}
+            return {
+                "passed": False,
+                "error_code": "smoke_test_failed",
+                "detail": str(e),
+            }
         except MemoryError as e:
-            return {"passed": False, "error_code": "smoke_test_failed", "detail": f"Strategy execution exceeded memory limit: {e}"}
+            return {
+                "passed": False,
+                "error_code": "smoke_test_failed",
+                "detail": f"Strategy execution exceeded memory limit: {e}",
+            }
         except Exception as e:
-            return {"passed": False, "error_code": "smoke_test_failed", "detail": f"Lookahead bias sniff test execution failed: {e}"}
+            return {
+                "passed": False,
+                "error_code": "smoke_test_failed",
+                "detail": f"Lookahead bias sniff test execution failed: {e}",
+            }
 
         return {"passed": True, "error_code": None, "detail": None}
     finally:
@@ -409,12 +462,10 @@ print("__RESULT__" + json.dumps(result))
         result_line = None
         for line in proc.stdout.splitlines():
             if line.startswith("__RESULT__"):
-                result_line = line[len("__RESULT__"):]
+                result_line = line[len("__RESULT__") :]
                 break
         if result_line is None:
-            raise ValueError(
-                f"Subprocess produced no result line. stderr: {proc.stderr.strip()!r}"
-            )
+            raise ValueError(f"Subprocess produced no result line. stderr: {proc.stderr.strip()!r}")
         res_data = json.loads(result_line)
         err_code = None
         if res_data["error_code"]:
@@ -467,10 +518,7 @@ def _check_ast(content: str) -> ValidationResult:
             for alias in node.names:
                 root_module = alias.name.split(".")[0]
                 if root_module not in settings.parsed_safe_imports:
-                    msg = (
-                        f"Import of non-whitelisted module '{alias.name}' "
-                        f"is strictly blocked."
-                    )
+                    msg = f"Import of non-whitelisted module '{alias.name}' is strictly blocked."
                     return ValidationResult(
                         passed=False,
                         error_code=ValidationError.AST_BLOCKED_IMPORT,
@@ -487,10 +535,7 @@ def _check_ast(content: str) -> ValidationResult:
             if node.module:
                 root_module = node.module.split(".")[0]
                 if root_module not in settings.parsed_safe_imports:
-                    msg = (
-                        f"Import from non-whitelisted module '{node.module}' "
-                        f"is strictly blocked."
-                    )
+                    msg = f"Import from non-whitelisted module '{node.module}' is strictly blocked."
                     return ValidationResult(
                         passed=False,
                         error_code=ValidationError.AST_BLOCKED_IMPORT,
@@ -530,10 +575,7 @@ def _check_ast(content: str) -> ValidationResult:
         # Inspect forbidden attributes (prevents dunder escapes & chained - Finding 5)
         elif isinstance(node, ast.Attribute):
             if node.attr in FORBIDDEN_NAMES or node.attr.startswith("__"):
-                msg = (
-                    f"Use of forbidden attribute or dunder property '{node.attr}' "
-                    f"is strictly blocked."
-                )
+                msg = f"Use of forbidden attribute or dunder property '{node.attr}' is strictly blocked."
                 return ValidationResult(
                     passed=False,
                     error_code=ValidationError.AST_BLOCKED_IMPORT,
@@ -545,8 +587,7 @@ def _check_ast(content: str) -> ValidationResult:
                 for part in parts:
                     if part in FORBIDDEN_NAMES or part.startswith("__"):
                         msg = (
-                            f"Use of forbidden attribute or dunder property '{part}' "
-                            f"in '{chain}' is strictly blocked."
+                            f"Use of forbidden attribute or dunder property '{part}' in '{chain}' is strictly blocked."
                         )
                         return ValidationResult(
                             passed=False,
@@ -582,9 +623,7 @@ def _check_config(path: Path) -> ValidationResult:
         )
 
 
-def _generate_synthetic_prices(
-    tickers: list[str], n_days: int, seed: int = 42
-) -> pd.DataFrame:
+def _generate_synthetic_prices(tickers: list[str], n_days: int, seed: int = 42) -> pd.DataFrame:
     """Helper to generate geometric random walk price DataFrame."""
     rng = np.random.default_rng(seed)
     dates = pd.date_range("2023-01-01", periods=n_days, freq="B")
@@ -593,4 +632,3 @@ def _generate_synthetic_prices(
         steps = rng.normal(0.0002, 0.01, n_days)
         prices[ticker] = 100.0 * np.exp(np.cumsum(steps))
     return prices
-

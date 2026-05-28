@@ -120,15 +120,9 @@ def test_fetch_historical_returns_multiple(tmp_path: Path) -> None:
     db = tmp_path / "ledger.db"
     store = LedgerStore(db)
 
-    _record(
-        store, dataset_hash="hash-abc", observed_sharpe=1.0, returns=_make_returns(0)
-    )
-    _record(
-        store, dataset_hash="hash-abc", observed_sharpe=1.2, returns=_make_returns(1)
-    )
-    _record(
-        store, dataset_hash="hash-xyz", observed_sharpe=0.8, returns=_make_returns(2)
-    )
+    _record(store, dataset_hash="hash-abc", observed_sharpe=1.0, returns=_make_returns(0))
+    _record(store, dataset_hash="hash-abc", observed_sharpe=1.2, returns=_make_returns(1))
+    _record(store, dataset_hash="hash-xyz", observed_sharpe=0.8, returns=_make_returns(2))
 
     df_abc, sharpes_abc = store.fetch_historical_returns("hash-abc")
     df_xyz, sharpes_xyz = store.fetch_historical_returns("hash-xyz")
@@ -176,18 +170,12 @@ def test_exclude_id(tmp_path: Path) -> None:
     db = tmp_path / "ledger.db"
     store = LedgerStore(db)
 
-    _record(
-        store, dataset_hash="hash-abc", observed_sharpe=1.0, returns=_make_returns(0)
-    )
-    _record(
-        store, dataset_hash="hash-abc", observed_sharpe=1.5, returns=_make_returns(1)
-    )
+    _record(store, dataset_hash="hash-abc", observed_sharpe=1.0, returns=_make_returns(0))
+    _record(store, dataset_hash="hash-abc", observed_sharpe=1.5, returns=_make_returns(1))
 
     # Get all to find the first id
     conn = sqlite3.connect(str(db))
-    first_id = conn.execute(
-        "SELECT id FROM attempts ORDER BY id ASC LIMIT 1"
-    ).fetchone()[0]
+    first_id = conn.execute("SELECT id FROM attempts ORDER BY id ASC LIMIT 1").fetchone()[0]
     conn.close()
 
     df, sharpes = store.fetch_historical_returns("hash-abc", exclude_id=first_id)

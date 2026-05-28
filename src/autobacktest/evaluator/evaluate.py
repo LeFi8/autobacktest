@@ -36,9 +36,7 @@ def calculate_sortino_ratio(net_returns: pd.Series) -> float:
     return float((mean_ret / downside_std) * np.sqrt(252))
 
 
-def calculate_information_ratio(
-    net_returns: pd.Series, benchmark_returns: pd.Series
-) -> float:
+def calculate_information_ratio(net_returns: pd.Series, benchmark_returns: pd.Series) -> float:
     """Calculate the Information Ratio of daily returns relative to benchmark."""
     if net_returns.empty or benchmark_returns.empty:
         return 0.0
@@ -67,14 +65,10 @@ def generate_window_report(
     window_prices = prices.loc[start:end]
     window_weights = weights.loc[start:end]
 
-    portfolio_returns, _, daily_weights = run_vectorized_backtest(
-        window_prices, window_weights
-    )
+    portfolio_returns, _, daily_weights = run_vectorized_backtest(window_prices, window_weights)
 
     # Compute net returns and turnover
-    net_returns, net_equity, turnover = calculate_turnover_and_costs(
-        portfolio_returns, daily_weights, window_prices
-    )
+    net_returns, net_equity, turnover = calculate_turnover_and_costs(portfolio_returns, daily_weights, window_prices)
 
     # Standard performance metrics
     mean_ret = net_returns.mean() if not net_returns.empty else 0.0
@@ -83,10 +77,7 @@ def generate_window_report(
     ann_ret = 0.0
     if not net_returns.empty:
         total_growth = net_equity.iloc[-1] if not net_equity.empty else 1.0
-        if total_growth > 0.0:
-            ann_ret = float(total_growth ** (252.0 / len(net_returns)) - 1.0)
-        else:
-            ann_ret = -1.0  # complete loss
+        ann_ret = float(total_growth ** (252.0 / len(net_returns)) - 1.0) if total_growth > 0.0 else -1.0
 
     ann_vol = float(std_ret * np.sqrt(252))
     sharpe = float((mean_ret / std_ret * np.sqrt(252)) if std_ret > 0.0 else 0.0)
@@ -149,9 +140,7 @@ def evaluate_strategy_detailed(
     if prices.empty:
         raise ValueError("No price history returned for requested strategy universe.")
     if benchmark_prices.empty or benchmark_ticker not in benchmark_prices.columns:
-        raise ValueError(
-            f"No price history returned for benchmark ticker: {benchmark_ticker}"
-        )
+        raise ValueError(f"No price history returned for benchmark ticker: {benchmark_ticker}")
 
     # Calculate daily percentage returns of the benchmark
     bench_returns = benchmark_prices[benchmark_ticker].pct_change().fillna(0.0)
@@ -167,49 +156,32 @@ def evaluate_strategy_detailed(
         raise ValueError(f"Strategy weights validation failed: {err}")
 
     # Partition holdout data (configurable via AUTOBACKTEST_DEFAULT_HOLDOUT_YEARS)
-    in_sample_idx, holdout_idx = partition_holdout_data(
-        prices.index, holdout_years=settings.default_holdout_years
-    )
+    in_sample_idx, holdout_idx = partition_holdout_data(prices.index, holdout_years=settings.default_holdout_years)
     if in_sample_idx.empty or holdout_idx.empty:
-        raise ValueError(
-            "In-sample or holdout period is empty. "
-            "Ensure the backtest period is sufficiently long."
-        )
+        raise ValueError("In-sample or holdout period is empty. Ensure the backtest period is sufficiently long.")
 
     # Walk-forward on In-Sample index
-    wf_windows = generate_walk_forward_windows(
-        in_sample_idx, train_years=5, test_years=1
-    )
+    wf_windows = generate_walk_forward_windows(in_sample_idx, train_years=5, test_years=1)
     wf_reports = []
 
     for _, _, test_start, test_end in wf_windows:
-        wf_reports.append(
-            generate_window_report(prices, weights, test_start, test_end, bench_returns)
-        )
+        wf_reports.append(generate_window_report(prices, weights, test_start, test_end, bench_returns))
 
     # Evaluate holdout window
     holdout_start = holdout_idx.min()
     holdout_end = holdout_idx.max()
-    holdout_report = generate_window_report(
-        prices, weights, holdout_start, holdout_end, bench_returns
-    )
+    holdout_report = generate_window_report(prices, weights, holdout_start, holdout_end, bench_returns)
 
     # Compute holdout net returns from the same window backtest used for holdout_report
     # (consistent source for both observed_sharpe and the DSR test statistic)
     holdout_prices = prices.loc[holdout_start:holdout_end]
     holdout_weights = weights.loc[holdout_start:holdout_end]
-    h_portfolio_returns, _, h_daily_weights = run_vectorized_backtest(
-        holdout_prices, holdout_weights
-    )
-    holdout_net_returns, _, _ = calculate_turnover_and_costs(
-        h_portfolio_returns, h_daily_weights, holdout_prices
-    )
+    h_portfolio_returns, _, h_daily_weights = run_vectorized_backtest(holdout_prices, holdout_weights)
+    holdout_net_returns, _, _ = calculate_turnover_and_costs(h_portfolio_returns, h_daily_weights, holdout_prices)
 
     # Evaluate full period net returns for Monte Carlo and Regime tests
     full_returns, _, daily_weights = run_vectorized_backtest(prices, weights)
-    net_returns, _, _ = calculate_turnover_and_costs(
-        full_returns, daily_weights, prices
-    )
+    net_returns, _, _ = calculate_turnover_and_costs(full_returns, daily_weights, prices)
 
     # Labeled stress testing regimes
     regime_drawdowns, regime_passed = evaluate_stress_regimes(net_returns)
@@ -270,7 +242,5 @@ def evaluate_strategy(
 
     Thin wrapper around evaluate_strategy_detailed that returns only the report.
     """
-    report, _ = evaluate_strategy_detailed(
-        strategy_name, generate_signals_fn, config, start_date, end_date
-    )
+    report, _ = evaluate_strategy_detailed(strategy_name, generate_signals_fn, config, start_date, end_date)
     return report

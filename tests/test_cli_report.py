@@ -57,18 +57,14 @@ def test_report_with_runs(tmp_path: Path) -> None:
     store.close()
 
     # Test single strategy filter
-    result = runner.invoke(
-        app, ["report", "--run-dir", str(tmp_path), "--strategy", "toy"]
-    )
+    result = runner.invoke(app, ["report", "--run-dir", str(tmp_path), "--strategy", "toy"])
     assert result.exit_code == 0
     assert "Leaderboard" in result.output
     assert "toy" in result.output
     assert "1.234" in result.output
 
     # Test compare-all option
-    result_all = runner.invoke(
-        app, ["report", "--run-dir", str(tmp_path), "--compare-all"]
-    )
+    result_all = runner.invoke(app, ["report", "--run-dir", str(tmp_path), "--compare-all"])
     assert result_all.exit_code == 0
     assert "toy" in result_all.output
     assert "1.234" in result_all.output
@@ -173,9 +169,7 @@ def test_report_run_id_selects_non_latest_run(tmp_path: Path) -> None:
     )
     store.close()
 
-    result = runner.invoke(
-        app, ["report", "--run-dir", str(tmp_path), "--run-id", "run-old"]
-    )
+    result = runner.invoke(app, ["report", "--run-dir", str(tmp_path), "--run-id", "run-old"])
 
     assert result.exit_code == 0
     assert "run-old" in result.output

@@ -73,10 +73,7 @@ def run(
     try:
         metric = TargetMetric(target_metric)
     except ValueError as err:
-        error_msg = (
-            f"Error: Unknown target metric '{target_metric}'. "
-            "Use: sharpe, sortino, information_ratio."
-        )
+        error_msg = f"Error: Unknown target metric '{target_metric}'. Use: sharpe, sortino, information_ratio."
         typer.echo(error_msg)
         raise typer.Exit(code=1) from err
 
@@ -185,9 +182,7 @@ def report(
             return
 
         console = Console()
-        table = Table(
-            title=f"AutoBacktest Optimization Leaderboard ({selected_run_id})"
-        )
+        table = Table(title=f"AutoBacktest Optimization Leaderboard ({selected_run_id})")
         table.add_column("Strategy", style="cyan", justify="left")
         table.add_column("Run ID", style="magenta", justify="left")
         table.add_column("Iter", style="blue", justify="center")
@@ -243,7 +238,9 @@ def report(
         total_cost = sum(cast(float, r.get("cost", 0.0)) for r in attempts_in_run)
         console.print(
             f"\n[bold]Total Run Optimization Cost:[/] [green]${total_cost:.4f}[/] "
-            f"(Prompt: {total_prompt:,} tokens, Completion: {total_completion:,} tokens, Total: {total_tokens:,} tokens)"
+            f"(Prompt: {total_prompt:,} tokens, "
+            f"Completion: {total_completion:,} tokens, "
+            f"Total: {total_tokens:,} tokens)"
         )
     finally:
         store.close()
@@ -391,9 +388,7 @@ def evaluate(
     config_path = Path("configs") / f"{strategy_name}.yaml"
     if not config_path.exists():
         # Fallback to strategy_path's parent relative directory configs
-        config_path = (
-            strategy_path.resolve().parent.parent / "configs" / f"{strategy_name}.yaml"
-        )
+        config_path = strategy_path.resolve().parent.parent / "configs" / f"{strategy_name}.yaml"
 
     if not config_path.exists():
         typer.echo(f"Error: Strategy config file not found at {config_path}")
@@ -416,10 +411,7 @@ def evaluate(
     module = importlib.util.module_from_spec(spec)
     try:
         # Security log warning for execution of dynamic third-party strategy files
-        typer.echo(
-            "WARNING: Dynamically executing external python module: "
-            f"{strategy_path.resolve()}"
-        )
+        typer.echo(f"WARNING: Dynamically executing external python module: {strategy_path.resolve()}")
         spec.loader.exec_module(module)
     except Exception as e:
         typer.echo(f"Error: Failed to execute strategy file module: {e}")

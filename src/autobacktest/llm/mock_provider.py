@@ -53,11 +53,7 @@ class MockProvider(LLMProvider):
         # represent the prompt edit and keep it valid python code,
         # unless program_text is "none" or empty.
         edited_code = context.strategy_code
-        prompt_comment = (
-            context.program_text.strip().replace("\n", " ")
-            if context.program_text
-            else ""
-        )
+        prompt_comment = context.program_text.strip().replace("\n", " ") if context.program_text else ""
         if prompt_comment and prompt_comment != "none":
             edited_code += f"\n# Mock edit for: {prompt_comment}\n"
             reasoning = f"Mock transformation reflecting prompt: {prompt_comment}"
@@ -65,11 +61,7 @@ class MockProvider(LLMProvider):
             reasoning = "Identity transformation: no edits made."
 
         lessons_suffix = "\n- Mock lesson recorded."
-        lessons_text = (
-            context.lessons_text + lessons_suffix
-            if context.lessons_text
-            else "- Mock lesson recorded."
-        )
+        lessons_text = context.lessons_text + lessons_suffix if context.lessons_text else "- Mock lesson recorded."
 
         return AgentEdit(
             strategy_code=edited_code,

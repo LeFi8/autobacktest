@@ -58,9 +58,7 @@ def test_invalid_benchmark_raises_error() -> None:
 def test_negative_values_raises_error() -> None:
     """Verifies that limit values must be positive and drawdowns capped at 1.0."""
     with pytest.raises(ValidationError):
-        StrategyConfig.model_validate(
-            {"universe": ["SPY"], "max_drawdown_limit": -0.01}
-        )
+        StrategyConfig.model_validate({"universe": ["SPY"], "max_drawdown_limit": -0.01})
     with pytest.raises(ValidationError):
         StrategyConfig.model_validate({"universe": ["SPY"], "max_drawdown_limit": 1.05})
     with pytest.raises(ValidationError):

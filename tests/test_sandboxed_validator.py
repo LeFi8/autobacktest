@@ -156,7 +156,7 @@ benchmark: SPY
     os.environ["AUTOBACKTEST_SAFE_IMPORTS_WHITELIST"] = "pandas,numpy,os"
 
     try:
-        res = preflight("pollute", strat_dir, conf_dir)
+        preflight("pollute", strat_dir, conf_dir)
         # Pollution should have occurred in the subprocess, but not in the parent process
         assert "POLLUTED_BY_SANDBOX" not in os.environ
     finally:

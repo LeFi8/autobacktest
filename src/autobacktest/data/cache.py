@@ -19,13 +19,11 @@ class CachedDataProvider(DataProvider):
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
-    def _load_metadata(
-        self, ticker: str, interval: str
-    ) -> tuple[pd.Timestamp | None, pd.Timestamp | None]:
+    def _load_metadata(self, ticker: str, interval: str) -> tuple[pd.Timestamp | None, pd.Timestamp | None]:
         meta_file = self.cache_dir / f"{ticker}_{interval}.json"
         if meta_file.exists():
             try:
-                with open(meta_file) as f:
+                with meta_file.open() as f:
                     data = json.load(f)
                 return pd.to_datetime(data["start"]), pd.to_datetime(data["end"])
             except Exception:
@@ -50,7 +48,7 @@ class CachedDataProvider(DataProvider):
         """
         meta_file = self.cache_dir / f"{ticker}_{interval}.json"
         try:
-            with open(meta_file, "w") as f:
+            with meta_file.open("w") as f:
                 json.dump(
                     {
                         # isoformat() preserves time-of-day for sub-daily intervals
@@ -89,14 +87,16 @@ class CachedDataProvider(DataProvider):
         except Exception as e:
             logger.warning(
                 "Failed %s for ticker %s from %s to %s: %s",
-                context, ticker, start, end, e,
+                context,
+                ticker,
+                start,
+                end,
+                e,
             )
             return pd.DataFrame(), False
 
     @staticmethod
-    def _slice_window(
-        df: pd.DataFrame, start_dt: pd.Timestamp, end_dt: pd.Timestamp
-    ) -> pd.DataFrame:
+    def _slice_window(df: pd.DataFrame, start_dt: pd.Timestamp, end_dt: pd.Timestamp) -> pd.DataFrame:
         """Return rows in [start_dt, end_dt]; empty DataFrame if df is empty."""
         if df.empty:
             return pd.DataFrame()
@@ -138,10 +138,9 @@ class CachedDataProvider(DataProvider):
             meta_start, meta_end = None, None
             if parquet_ok:
                 meta_start, meta_end = self._load_metadata(ticker, interval)
-            if meta_start is None or meta_end is None:
-                if not cached_df.empty:
-                    meta_start = cached_df.index.min()
-                    meta_end = cached_df.index.max()
+            if (meta_start is None or meta_end is None) and not cached_df.empty:
+                meta_start = cached_df.index.min()
+                meta_end = cached_df.index.max()
 
             needs_fetch = True
             ticker_df = pd.DataFrame()
@@ -170,9 +169,7 @@ class CachedDataProvider(DataProvider):
                     else:
                         if not new_data.empty:
                             cached_df = pd.concat([cached_df, new_data])
-                            cached_df = cached_df[
-                                ~cached_df.index.duplicated(keep="last")
-                            ]
+                            cached_df = cached_df[~cached_df.index.duplicated(keep="last")]
                             cached_df.sort_index(inplace=True)
                             cached_df.to_parquet(cache_file)
                             # P0-1: advance boundary only when rows were received.
@@ -181,7 +178,10 @@ class CachedDataProvider(DataProvider):
                             # Provider responded cleanly but has no rows (holiday/gap).
                             # Record the boundary so we don't re-query this range.
                             self._save_metadata(
-                                ticker, interval, cache_start, end_dt,
+                                ticker,
+                                interval,
+                                cache_start,
+                                end_dt,
                                 confirmed_empty=True,
                             )
                         ticker_df = self._slice_window(cached_df, start_dt, end_dt)
@@ -202,16 +202,17 @@ class CachedDataProvider(DataProvider):
                     else:
                         if not new_data.empty:
                             cached_df = pd.concat([new_data, cached_df])
-                            cached_df = cached_df[
-                                ~cached_df.index.duplicated(keep="last")
-                            ]
+                            cached_df = cached_df[~cached_df.index.duplicated(keep="last")]
                             cached_df.sort_index(inplace=True)
                             cached_df.to_parquet(cache_file)
                             # P0-1: advance boundary only when rows were received.
                             self._save_metadata(ticker, interval, start_dt, cache_end)
                         else:
                             self._save_metadata(
-                                ticker, interval, start_dt, cache_end,
+                                ticker,
+                                interval,
+                                start_dt,
+                                cache_end,
                                 confirmed_empty=True,
                             )
                         ticker_df = self._slice_window(cached_df, start_dt, end_dt)
@@ -219,9 +220,7 @@ class CachedDataProvider(DataProvider):
 
             if needs_fetch:
                 # Full window fetch.
-                new_data, fetch_ok = self._safe_fetch(
-                    ticker, start, end, interval, "full window fetch"
-                )
+                new_data, fetch_ok = self._safe_fetch(ticker, start, end, interval, "full window fetch")
 
                 if not fetch_ok:
                     # Provider errored — return whatever is in cache (may be empty).
@@ -241,18 +240,12 @@ class CachedDataProvider(DataProvider):
                 else:
                     # Provider returned cleanly but no rows (missing ticker).
                     # Record confirmed_empty so future calls don't re-query.
-                    self._save_metadata(
-                        ticker, interval, start_dt, end_dt, confirmed_empty=True
-                    )
+                    self._save_metadata(ticker, interval, start_dt, end_dt, confirmed_empty=True)
                     ticker_df = self._slice_window(cached_df, start_dt, end_dt)
 
             # Align prices
             if not ticker_df.empty:
-                if merged.empty:
-                    merged = ticker_df
-                else:
-                    # Outer join to align indices, handling possible duplicates
-                    merged = merged.join(ticker_df[[ticker]], how="outer")
+                merged = ticker_df if merged.empty else merged.join(ticker_df[[ticker]], how="outer")
 
         # Return aligned columns matching requested order and universe
         return merged.reindex(columns=tickers)

@@ -76,25 +76,11 @@ def accept(
         GateResult: Decision outcome.
     """
     # Resolve limits and parameters from config if not explicitly passed (Finding 10)
-    dd_limit = (
-        dd_limit
-        if dd_limit is not None
-        else _get_config_val(config, "max_drawdown_limit", 0.15)
-    )
-    turnover_limit = (
-        turnover_limit
-        if turnover_limit is not None
-        else _get_config_val(config, "turnover_limit", 1.0)
-    )
-    dsr_threshold = (
-        dsr_threshold
-        if dsr_threshold is not None
-        else _get_config_val(config, "dsr_threshold", 0.95)
-    )
+    dd_limit = dd_limit if dd_limit is not None else _get_config_val(config, "max_drawdown_limit", 0.15)
+    turnover_limit = turnover_limit if turnover_limit is not None else _get_config_val(config, "turnover_limit", 1.0)
+    dsr_threshold = dsr_threshold if dsr_threshold is not None else _get_config_val(config, "dsr_threshold", 0.95)
     min_improvement = (
-        min_improvement
-        if min_improvement is not None
-        else _get_config_val(config, "min_improvement", 0.0)
+        min_improvement if min_improvement is not None else _get_config_val(config, "min_improvement", 0.0)
     )
 
     # Evaluate gates individually and populate gates_passed
@@ -148,10 +134,7 @@ def accept(
         if math.isnan(turnover):
             msg = "Holdout turnover is NaN."
         else:
-            msg = (
-                f"Holdout turnover {turnover:.4f} "
-                f"exceeds limit of {turnover_limit:.4f}."
-            )
+            msg = f"Holdout turnover {turnover:.4f} exceeds limit of {turnover_limit:.4f}."
         report.is_accepted = False
         report.rejection_reason = msg
         return GateResult(
@@ -165,10 +148,7 @@ def accept(
         if dsr is None or math.isnan(dsr):
             msg = "Deflated Sharpe Ratio is missing or NaN."
         else:
-            msg = (
-                f"Deflated Sharpe Ratio {dsr:.4f} "
-                f"is below threshold of {dsr_threshold:.4f}."
-            )
+            msg = f"Deflated Sharpe Ratio {dsr:.4f} is below threshold of {dsr_threshold:.4f}."
         report.is_accepted = False
         report.rejection_reason = msg
         return GateResult(
@@ -192,11 +172,7 @@ def accept(
         candidate_val = _get_metric_val(report)
         baseline_val = _get_metric_val(baseline)
 
-        if (
-            math.isnan(candidate_val)
-            or math.isnan(baseline_val)
-            or candidate_val <= baseline_val + min_improvement
-        ):
+        if math.isnan(candidate_val) or math.isnan(baseline_val) or candidate_val <= baseline_val + min_improvement:
             msg = (
                 f"Candidate {target_metric.value} ({candidate_val:.4f}) does not "
                 f"improve upon baseline {target_metric.value} ({baseline_val:.4f}) "

@@ -10,15 +10,9 @@ from autobacktest.llm.prompts import build_messages
 class AgentEditResponse(BaseModel):
     """Pydantic schema used for structured output parsing via LiteLLM."""
 
-    strategy_code: str = Field(
-        description="The complete new Python strategy source code."
-    )
-    config_yaml: str = Field(
-        description="The complete new YAML parameters configuration."
-    )
-    reasoning: str = Field(
-        description="Quantitative reasoning and explanation for changes."
-    )
+    strategy_code: str = Field(description="The complete new Python strategy source code.")
+    config_yaml: str = Field(description="The complete new YAML parameters configuration.")
+    reasoning: str = Field(description="Quantitative reasoning and explanation for changes.")
     lessons_text: str | None = Field(
         default=None,
         description="Complete updated lessons learned markdown text when changed.",

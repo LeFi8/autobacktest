@@ -241,9 +241,7 @@ def run_optimization(
                         lessons_path.write_text(lessons_text, encoding="utf-8")
 
                     # 8c. Validate candidate via temp files (same pattern as llm-test command)
-                    ok, error_code, detail = _validate_candidate(
-                        strategy_name, edit, strategies_dir, configs_dir
-                    )
+                    ok, error_code, detail = _validate_candidate(strategy_name, edit, strategies_dir, configs_dir)
                     if not ok:
                         event["validation"] = {
                             "passed": False,
@@ -358,7 +356,9 @@ def run_optimization(
                     progress.update(
                         task,
                         advance=1,
-                        description=f"[cyan]Optimizing {strategy_name}... (Incumbent Sharpe: {incumbent.observed_sharpe:.3f})",
+                        description=(
+                            f"[cyan]Optimizing {strategy_name}... (Incumbent Sharpe: {incumbent.observed_sharpe:.3f})"
+                        ),
                     )
 
     finally:
@@ -367,15 +367,11 @@ def run_optimization(
         # Refresh final report's DSR using complete session history so the
         # returned incumbent reflects the true multiple-testing penalty.
         try:
-            hist_matrix, hist_sharpes = ledger.fetch_historical_returns(
-                incumbent.dataset_hash
-            )
+            hist_matrix, hist_sharpes = ledger.fetch_historical_returns(incumbent.dataset_hash)
             if not hist_matrix.empty and len(hist_sharpes) > 1:
                 n = max(1, calculate_effective_trials(hist_matrix))
                 incumbent.effective_trials = n
-                incumbent.deflated_sharpe = calculate_psr_dsr(
-                    incumbent_returns, hist_sharpes, n
-                )
+                incumbent.deflated_sharpe = calculate_psr_dsr(incumbent_returns, hist_sharpes, n)
         except Exception:
             pass  # best-effort; do not mask the loop exception
         # 9. Cleanup
