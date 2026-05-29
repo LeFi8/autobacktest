@@ -9,6 +9,8 @@ def calculate_turnover_and_costs(
     commission_bps: float = 5.0,  # default 5bps
     spread_bps: float = 5.0,  # default 5bps
     impact_coef: float = 0.0,
+    *,
+    asset_returns: pd.DataFrame | None = None,
 ) -> tuple[pd.Series, pd.Series, float]:
     """Calculate net returns after transaction costs and annualized turnover.
 
@@ -36,7 +38,7 @@ def calculate_turnover_and_costs(
 
     # Calculate weight drift due to daily asset returns
     # drift_weights_t = weights_{t-1} * (1 + R_t) / (1 + Rp_t)
-    asset_returns = prices.pct_change().fillna(0.0)
+    asset_returns = asset_returns.loc[prices.index] if asset_returns is not None else prices.pct_change().fillna(0.0)
     shifted_weights = daily_weights.shift(1).fillna(0.0)
 
     # Calculate drift adjusted weights just before the end-of-day rebalance

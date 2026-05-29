@@ -128,6 +128,7 @@ def run_optimization(
         min_temp = 0.1
         config_obj = StrategyConfig.from_yaml(cfg_path)
         config = config_obj.model_dump()
+        _eval_cache: dict[int, tuple[EvaluationReport, pd.Series]] = {}
 
         # 6. Record run metadata
         dataset_hash = _compute_dataset_hash(config)
@@ -151,8 +152,15 @@ def run_optimization(
 
         # 7. Baseline evaluation (iteration 0 — not written to events.jsonl)
         baseline_fn = _load_signals(strat_path)
+        _baseline_code = strat_path.read_text(encoding="utf-8")
         baseline_report, baseline_returns = evaluate_strategy_detailed(
-            strategy_name, baseline_fn, config, start_date=start_date, end_date=end_date
+            strategy_name,
+            baseline_fn,
+            config,
+            start_date=start_date,
+            end_date=end_date,
+            _eval_cache=_eval_cache,
+            _strategy_code=_baseline_code,
         )
         _deflate(baseline_report, baseline_returns, ledger)
         incumbent = baseline_report
@@ -348,6 +356,8 @@ def run_optimization(
                             new_config,
                             start_date=start_date,
                             end_date=end_date,
+                            _eval_cache=_eval_cache,
+                            _strategy_code=edit.strategy_code,
                         )
                     except Exception as e:
                         # Rollback and skip
