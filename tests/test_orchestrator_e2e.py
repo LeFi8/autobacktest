@@ -113,7 +113,7 @@ turnover_limit: 5.0
 """
 
 # Improved config differs enough from STRATEGY_CONFIG to pass the diversity gate
-# (config similarity < 0.90 threshold).
+# (config similarity < 0.95 threshold).
 IMPROVED_CONFIG = """\
 universe:
   - HIGH

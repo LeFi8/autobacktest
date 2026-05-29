@@ -45,7 +45,7 @@ from autobacktest.strategy.validator import preflight
 
 logger = logging.getLogger(__name__)
 
-DIVERSITY_CONFIG_THRESHOLD = 0.90
+DIVERSITY_CONFIG_THRESHOLD = 0.95
 DIVERSITY_RETURNS_THRESHOLD = 0.90
 
 
