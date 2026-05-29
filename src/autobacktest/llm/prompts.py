@@ -30,7 +30,7 @@ You operate in a strict execution loop and MUST adhere to the following rules:
       you MUST prune, compress, and consolidate older or less useful lessons to fit.
 8. Diversity Rule: Your proposed strategy config YAML will be compared
    against ALL past attempts with the same asset universe. If it has
-   >90% similarity (same params, same asset sets, same structure), the
+    >95% similarity (same params, same asset sets, same structure), the
    iteration will be rejected WITHOUT backtesting and the iteration
    budget is consumed. To avoid this, you MUST explore structurally
    different approaches each time — change the asset universe, swap the
@@ -88,7 +88,7 @@ def build_messages(context: AgentContext) -> list[dict[str, str]]:
             f"\n## Diversity Warning\n"
             f"There are {context.n_historical_configs} historical strategy variants "
             f"tracked for this asset universe. The config similarity gate will reject "
-            f"proposals with >90% fingerprint overlap.\n"
+            f"proposals with >95% fingerprint overlap.\n"
         )
 
     user_content = f"""## Iteration
