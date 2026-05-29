@@ -37,9 +37,16 @@ from autobacktest.ledger.store import LedgerStore
 from autobacktest.llm.base import AgentContext, AgentEdit, LLMError, LLMProvider
 from autobacktest.program import parse_program
 from autobacktest.strategy.config_schema import StrategyConfig
+from autobacktest.strategy.diversity import (
+    check_returns_correlation,
+    max_config_similarity,
+)
 from autobacktest.strategy.validator import preflight
 
 logger = logging.getLogger(__name__)
+
+DIVERSITY_CONFIG_THRESHOLD = 0.90
+DIVERSITY_RETURNS_THRESHOLD = 0.90
 
 
 @dataclass
@@ -209,6 +216,7 @@ def run_optimization(
                     # 8a. Build context
                     current_code = strat_path.read_text(encoding="utf-8")
                     current_yaml = cfg_path.read_text(encoding="utf-8")
+                    historical_configs = ledger.fetch_configs(dataset_hash)
                     ctx = AgentContext(
                         strategy_name=strategy_name,
                         strategy_code=current_code,
@@ -217,6 +225,7 @@ def run_optimization(
                         evaluation_report=incumbent,
                         iteration=k,
                         lessons_text=lessons_text,
+                        n_historical_configs=len(historical_configs),
                     )
 
                     # 8b. Get LLM edit (with auto-retry on length limit cutoff and transient error backoff)
@@ -310,6 +319,21 @@ def run_optimization(
 
                     event["validation"] = {"passed": True}
 
+                    # 8c.5 Tier 1 — Config diversity gate (pre-backtest)
+                    if historical_configs:
+                        max_sim = max_config_similarity(edit.config_yaml, historical_configs)
+                        if max_sim > DIVERSITY_CONFIG_THRESHOLD:
+                            event["diversity"] = {
+                                "tier": "config",
+                                "passed": False,
+                                "max_similarity": max_sim,
+                            }
+                            event["evaluation"] = None
+                            event["gate"] = None
+                            event["commit"] = None
+                            event_log.write(event)
+                            continue
+
                     # 8d. Apply to real files and 8e. Evaluate — both inside the same
                     # try/except so a write error also triggers a clean rollback.
                     try:
@@ -333,6 +357,25 @@ def run_optimization(
                         event["commit"] = None
                         event_log.write(event)
                         continue
+
+                    # 8e.5 Tier 2 — Returns correlation diversity gate (post-backtest)
+                    hist_matrix, _ = ledger.fetch_historical_returns(dataset_hash)
+                    if not hist_matrix.empty:
+                        corr_passed, max_corr = check_returns_correlation(
+                            returns_k, hist_matrix, DIVERSITY_RETURNS_THRESHOLD
+                        )
+                        if not corr_passed:
+                            git_ledger.rollback_strategy(strategy_name)
+                            event["diversity"] = {
+                                "tier": "returns",
+                                "passed": False,
+                                "max_correlation": max_corr,
+                            }
+                            event["evaluation"] = None
+                            event["gate"] = None
+                            event["commit"] = None
+                            event_log.write(event)
+                            continue
 
                     # 8f. DSR deflation
                     _deflate(report_k, returns_k, ledger)

@@ -26,9 +26,18 @@ You operate in a strict execution loop and MUST adhere to the following rules:
    - Summarize findings of the previous iteration (e.g. if the previous
      edit failed AST checks, execution, or the gate, analyze why and record it).
    - Keep lessons structured, concise, and action-oriented.
-   - If the current lessons exceed the 4096 token limit (~16k characters),
-     you MUST prune, compress, and consolidate older or less useful lessons to fit.
-8. Strict JSON/Formatting Rule: Do not output any conversational text
+    - If the current lessons exceed the 4096 token limit (~16k characters),
+      you MUST prune, compress, and consolidate older or less useful lessons to fit.
+8. Diversity Rule: Your proposed strategy config YAML will be compared
+   against ALL past attempts with the same asset universe. If it has
+   >90% similarity (same params, same asset sets, same structure), the
+   iteration will be rejected WITHOUT backtesting and the iteration
+   budget is consumed. To avoid this, you MUST explore structurally
+   different approaches each time — change the asset universe, swap the
+   momentum metric (e.g., EWMA crossover instead of 13612U), alter the
+   canary logic, or modify the weighting scheme. Stale parameter tweaks
+   (varying hysteresis by ±0.005) will be caught.
+9. Strict JSON/Formatting Rule: Do not output any conversational text
    before or after the JSON payload. For reasoning/thinking models,
    the very first character immediately following the closing </think>
    tag must be the opening {{ of the JSON payload. No markdown
@@ -72,6 +81,16 @@ def build_messages(context: AgentContext) -> list[dict[str, str]]:
             f"to keep them under the cap.\n"
         )
 
+    # Diversity warning section
+    diversity_warning = ""
+    if context.n_historical_configs > 0:
+        diversity_warning = (
+            f"\n## Diversity Warning\n"
+            f"There are {context.n_historical_configs} historical strategy variants "
+            f"tracked for this asset universe. The config similarity gate will reject "
+            f"proposals with >90% fingerprint overlap.\n"
+        )
+
     user_content = f"""## Iteration
 Current Loop Iteration: {context.iteration}
 
@@ -93,7 +112,7 @@ Current Loop Iteration: {context.iteration}
 
 ## Latest Evaluation
 {eval_report_str}
-
+{diversity_warning}
 ## Instructions
 Improve the strategy per the objective. Optimize parameters, signal
 logic, or asset weights.

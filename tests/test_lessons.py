@@ -14,6 +14,7 @@ from autobacktest.llm.mock_provider import MockProvider
 from autobacktest.orchestrator import run_optimization
 from tests.test_orchestrator_e2e import (
     BASELINE_STRATEGY,
+    IMPROVED_CONFIG,
     IMPROVED_STRATEGY,
     STRATEGY_CONFIG,
     _make_fake_provider,
@@ -64,7 +65,7 @@ def test_lessons_roundtrip_and_rollback(project_root_with_lessons: Path) -> None
     # 1st iteration: Accepted edit (improves strategy) with updated lessons_text
     improved_edit = AgentEdit(
         strategy_code=IMPROVED_STRATEGY,
-        config_yaml=STRATEGY_CONFIG,
+        config_yaml=IMPROVED_CONFIG,
         reasoning="Switch to HIGH asset.",
         raw_response="{}",
         lessons_text="# Lessons\n\n- Switched to HIGH asset and succeeded.\n",

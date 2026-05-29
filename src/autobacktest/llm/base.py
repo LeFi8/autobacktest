@@ -26,6 +26,7 @@ class AgentContext:
     evaluation_report: EvaluationReport | None
     iteration: int
     lessons_text: str = ""
+    n_historical_configs: int = 0
 
 
 @dataclass(frozen=True)

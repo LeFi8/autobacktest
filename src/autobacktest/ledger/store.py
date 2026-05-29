@@ -242,6 +242,30 @@ class LedgerStore:
         matrix = pd.concat(series_list, axis=1)
         return matrix, sharpes
 
+    def fetch_configs(
+        self,
+        dataset_hash: str,
+        exclude_id: int | None = None,
+    ) -> list[str]:
+        """Return all config_yaml strings for a given dataset_hash (chronological).
+
+        Args:
+            dataset_hash: Stable hash of the sorted universe tickers.
+            exclude_id: Optional attempt id to exclude (e.g. the current candidate).
+
+        Returns:
+            List of YAML config strings, oldest first.
+        """
+        query = "SELECT config_yaml FROM attempts WHERE dataset_hash = ?"
+        params: tuple[object, ...] = (dataset_hash,)
+        if exclude_id is not None:
+            query += " AND id != ?"
+            params = (dataset_hash, exclude_id)
+        query += " ORDER BY id ASC"
+
+        rows = self._conn.execute(query, params).fetchall()
+        return [str(row[0]) for row in rows]
+
     def latest_run_id(self) -> str | None:
         """Return the most recently started run id, if any runs exist."""
         row = self._conn.execute(

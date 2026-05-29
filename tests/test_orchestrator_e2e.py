@@ -112,6 +112,18 @@ max_drawdown_limit: 0.50
 turnover_limit: 5.0
 """
 
+# Improved config differs enough from STRATEGY_CONFIG to pass the diversity gate
+# (config similarity < 0.90 threshold).
+IMPROVED_CONFIG = """\
+universe:
+  - HIGH
+  - LOW
+benchmark: HIGH
+momentum_lookback: 1
+max_drawdown_limit: 0.30
+turnover_limit: 10.0
+"""
+
 PROGRAM_MD = """\
 # Objective
 Maximize risk-adjusted returns on the toy universe.
@@ -195,7 +207,7 @@ def test_e2e_full_run_commits_improved_strategy(project_root: Path) -> None:
 
     scripted_edit = AgentEdit(
         strategy_code=IMPROVED_STRATEGY,
-        config_yaml=STRATEGY_CONFIG,
+        config_yaml=IMPROVED_CONFIG,
         reasoning="Switch allocation to HIGH asset for better risk-adjusted returns",
         raw_response="{}",
     )
