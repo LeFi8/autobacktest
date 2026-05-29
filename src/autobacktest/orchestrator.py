@@ -375,6 +375,30 @@ def run_optimization(
                             event["gate"] = None
                             event["commit"] = None
                             event_log.write(event)
+                            ledger.record_attempt(
+                                run_id=run_id,
+                                iteration=k,
+                                strategy_name=strategy_name,
+                                dataset_hash=dataset_hash,
+                                config_yaml=edit.config_yaml,
+                                observed_sharpe=report_k.observed_sharpe,
+                                deflated_sharpe=report_k.deflated_sharpe,
+                                target_metric=target_metric.value,
+                                target_metric_value=_get_metric_value(report_k, target_metric),
+                                holdout_max_drawdown=report_k.holdout_metrics.max_drawdown,
+                                holdout_turnover=report_k.holdout_metrics.turnover,
+                                regime_passed=report_k.regime_passed,
+                                accepted=False,
+                                committed=False,
+                                commit_sha=None,
+                                rejection_reason="diversity_tier2_returns",
+                                report_json=report_k.to_json(),
+                                holdout_returns=returns_k,
+                                prompt_tokens=edit.prompt_tokens,
+                                completion_tokens=edit.completion_tokens,
+                                total_tokens=edit.total_tokens,
+                                cost=edit.cost,
+                            )
                             continue
 
                     # 8f. DSR deflation

@@ -49,10 +49,7 @@ class ConfigFingerprint:
         self.set_fields = set_fields or {}
 
     def __repr__(self) -> str:
-        return (
-            f"ConfigFingerprint(numeric_keys={list(self.numeric_params)}, "
-            f"set_keys={list(self.set_fields)})"
-        )
+        return f"ConfigFingerprint(numeric_keys={list(self.numeric_params)}, set_keys={list(self.set_fields)})"
 
 
 # ---------------------------------------------------------------------------
@@ -192,6 +189,18 @@ def _align_numeric_vectors(
     vb: list[float] = []
 
     for key in all_keys:
+        # Skip unknown params with degenerate global range (hi <= lo means no
+        # discriminatory signal across the population — normalising both sides
+        # to 0.5 would inflate cosine similarity toward 1.0).
+        if (
+            key not in KNOWN_RANGES
+            and global_min is not None
+            and global_max is not None
+            and key in global_min
+            and global_min[key] >= global_max[key]
+        ):
+            continue
+
         av = a.get(key)
         bv = b.get(key)
 
