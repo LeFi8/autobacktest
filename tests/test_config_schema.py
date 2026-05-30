@@ -17,8 +17,8 @@ def test_valid_minimal_config() -> None:
     assert cfg.universe == ["SPY", "BIL"]
     assert cfg.benchmark == "SPY"
     assert cfg.momentum_lookback == 12
-    assert cfg.max_drawdown_limit == 0.15
-    assert cfg.turnover_limit == 1.0
+    assert cfg.max_drawdown_limit == 0.20
+    assert cfg.turnover_limit == 2.0
     assert cfg.params == {}
 
 

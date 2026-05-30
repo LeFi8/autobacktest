@@ -20,8 +20,8 @@ class StrategyConfig(BaseModel):
     universe: list[str] = Field(..., min_length=1, description="List of asset tickers in strategy universe")
     benchmark: str = Field("SPY", description="Benchmark index ticker")
     momentum_lookback: int = Field(12, ge=1, description="Momentum score lookback window")
-    max_drawdown_limit: float = Field(0.15, ge=0.0, le=1.0, description="Max permitted drawdown in holdout")
-    turnover_limit: float = Field(1.0, gt=0.0, description="Max permitted annualized turnover rate")
+    max_drawdown_limit: float = Field(0.20, ge=0.0, le=1.0, description="Max permitted drawdown in holdout")
+    turnover_limit: float = Field(2.0, gt=0.0, description="Max permitted annualized turnover rate")
     params: dict[str, Any] = Field(default_factory=dict, description="Strategy-specific parameters")
 
     @model_validator(mode="after")

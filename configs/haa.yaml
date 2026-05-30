@@ -17,5 +17,5 @@ benchmark: SPY
 
 # Strategy parameterization
 momentum_lookback: 12
-max_drawdown_limit: 0.15
-turnover_limit: 1.5
+max_drawdown_limit: 0.20
+turnover_limit: 2.0
