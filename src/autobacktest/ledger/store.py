@@ -256,7 +256,7 @@ class LedgerStore:
         Returns:
             List of YAML config strings, oldest first.
         """
-        query = "SELECT config_yaml FROM attempts WHERE dataset_hash = ? AND committed = 1"
+        query = "SELECT config_yaml FROM attempts WHERE dataset_hash = ?"
         params: tuple[object, ...] = (dataset_hash,)
         if exclude_id is not None:
             query += " AND id != ?"

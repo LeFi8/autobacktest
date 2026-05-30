@@ -86,9 +86,9 @@ def build_messages(context: AgentContext) -> list[dict[str, str]]:
     if context.n_historical_configs > 0:
         diversity_warning = (
             f"\n## Diversity Warning\n"
-            f"There are {context.n_historical_configs} historical strategy variants "
-            f"tracked for this asset universe. The config similarity gate will reject "
-            f"proposals with >95% fingerprint overlap.\n"
+            f"There are {context.n_historical_configs} attempted strategy variants "
+            f"tracked (including rejected ones) for this asset universe. The config "
+            f"similarity gate will reject proposals with >95% fingerprint overlap.\n"
         )
 
     # Build the "Previous Attempt Result" section if a failed attempt exists

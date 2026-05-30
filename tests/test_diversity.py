@@ -12,7 +12,7 @@ import pandas as pd
 import pytest
 
 from autobacktest.gate import TargetMetric
-from autobacktest.llm.base import AgentEdit
+from autobacktest.llm.base import AgentContext, AgentEdit, LLMProvider
 from autobacktest.llm.mock_provider import MockProvider
 from autobacktest.orchestrator import run_optimization
 from autobacktest.strategy.diversity import (
@@ -24,10 +24,33 @@ from autobacktest.strategy.diversity import (
 from tests.test_orchestrator_e2e import (
     BASELINE_STRATEGY,
     IMPROVED_CONFIG,
+    IMPROVED_STRATEGY,
     STRATEGY_CONFIG,
     _make_fake_provider,
     _make_synthetic_prices,
 )
+
+# ---------------------------------------------------------------------------
+# Sequence provider — returns different edits on successive calls
+# ---------------------------------------------------------------------------
+
+
+class SequenceProvider(LLMProvider):
+    """Returns edits from a list in order; repeats the last on overflow."""
+
+    def __init__(self, responses: list[AgentEdit]) -> None:
+        self.responses = responses
+        self.calls: list[AgentContext] = []
+        self.temperature: float = 1.0
+
+    @property
+    def provider_name(self) -> str:
+        return "sequence"
+
+    def generate_edit(self, context: AgentContext) -> AgentEdit:
+        self.calls.append(context)
+        idx = min(len(self.calls) - 1, len(self.responses) - 1)
+        return self.responses[idx]
 
 # ---------------------------------------------------------------------------
 # Test config YAML strings
@@ -413,3 +436,108 @@ class TestDiversityGateIntegration:
         assert len(rows) >= 2  # baseline (iter 0) + tier 2 rejection (iter 1)
         assert rows[-1][1] == 0  # accepted=False
         assert rows[-1][2] == "diversity_tier2_returns"  # specific rejection reason
+
+    def test_diversity_retry_succeeds_on_second_proposal(self, project_root: Path) -> None:
+        """Tier-1 diversity retry: first proposal is too-similar, second passes.
+
+        The iteration budget must NOT be consumed — the outer loop only advances
+        after the diversity gate passes (or retries are exhausted).
+        """
+        synthetic_prices = _make_synthetic_prices()
+        fake_instance = _make_fake_provider(synthetic_prices)
+
+        # First call → same config as baseline (100% similarity → diversity rejected)
+        same_config_edit = AgentEdit(
+            strategy_code=BASELINE_STRATEGY,
+            config_yaml=STRATEGY_CONFIG,
+            reasoning="Identical config",
+            raw_response="{}",
+        )
+        # Second call → different config (passes diversity) + improved strategy
+        diverse_edit = AgentEdit(
+            strategy_code=IMPROVED_STRATEGY,
+            config_yaml=IMPROVED_CONFIG,
+            reasoning="Diverse config",
+            raw_response="{}",
+        )
+
+        provider = SequenceProvider(responses=[same_config_edit, diverse_edit])
+
+        with patch(
+            "autobacktest.evaluator.evaluate.CachedDataProvider",
+            return_value=fake_instance,
+        ):
+            result = run_optimization(
+                program_path=project_root / "program.md",
+                strategy_name="toy",
+                iterations=1,
+                provider=provider,
+                run_dir=project_root / "runs",
+                strategies_dir=project_root / "strategies",
+                configs_dir=project_root / "configs",
+                target_metric=TargetMetric.SHARPE,
+                repo_path=project_root,
+                start_date="2013-01-01",
+                end_date="2025-01-01",
+            )
+
+        # The second proposal (diverse_edit) should have been accepted.
+        # The retry happened within the same iteration, so budget was not wasted.
+        assert result.n_committed >= 1
+        # Provider was called at least twice (initial + 1 retry)
+        assert len(provider.calls) >= 2
+
+    def test_diversity_retry_exhausted_consumes_iteration(self, project_root: Path) -> None:
+        """Tier-1 diversity retry: all retries exhausted → iteration budget consumed.
+
+        When every retry still produces a too-similar config, the iteration is
+        consumed (event written with retries_exhausted=True) and n_committed stays 0.
+        """
+        synthetic_prices = _make_synthetic_prices()
+        fake_instance = _make_fake_provider(synthetic_prices)
+
+        # Every call returns the same config → always fails diversity
+        same_config_edit = AgentEdit(
+            strategy_code=BASELINE_STRATEGY,
+            config_yaml=STRATEGY_CONFIG,
+            reasoning="Identical config every time",
+            raw_response="{}",
+        )
+
+        provider = SequenceProvider(responses=[same_config_edit])
+
+        with patch(
+            "autobacktest.evaluator.evaluate.CachedDataProvider",
+            return_value=fake_instance,
+        ):
+            result = run_optimization(
+                program_path=project_root / "program.md",
+                strategy_name="toy",
+                iterations=1,
+                provider=provider,
+                run_dir=project_root / "runs",
+                strategies_dir=project_root / "strategies",
+                configs_dir=project_root / "configs",
+                target_metric=TargetMetric.SHARPE,
+                repo_path=project_root,
+                start_date="2013-01-01",
+                end_date="2025-01-01",
+            )
+
+        # No commit — all retries failed diversity
+        assert result.n_committed == 0
+
+        # Event must record retries_exhausted
+        events_path = project_root / "runs" / result.run_id / "events.jsonl"
+        events = [json.loads(ln) for ln in events_path.read_text().strip().split("\n") if ln]
+        # Find the diversity-rejected event
+        diversity_events = [e for e in events if e.get("diversity", {}).get("tier") == "config"]
+        assert len(diversity_events) >= 1
+        assert diversity_events[0]["diversity"]["retries_exhausted"] is True
+        assert diversity_events[0]["diversity"]["passed"] is False
+
+        # Provider was called MAX_DIVERSITY_RETRIES + 1 times for the iteration
+        # (1 initial + MAX_DIVERSITY_RETRIES retries = 3 total per iteration)
+        from autobacktest.orchestrator import MAX_DIVERSITY_RETRIES
+
+        assert len(provider.calls) >= MAX_DIVERSITY_RETRIES + 1

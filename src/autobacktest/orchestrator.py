@@ -49,6 +49,7 @@ DIVERSITY_CONFIG_THRESHOLD = 0.95
 DIVERSITY_RETURNS_THRESHOLD = 0.90
 STUCK_THRESHOLD = 5
 STUCK_ESCALATION_FACTOR = 0.8
+MAX_DIVERSITY_RETRIES = 2
 
 
 @dataclass
@@ -346,19 +347,19 @@ def run_optimization(
 
                     event["validation"] = {"passed": True}
 
-                    # 8c.5 Tier 1 — Config diversity gate (pre-backtest)
+                    # 8c.5 Tier 1 — Config diversity gate (pre-backtest), with bounded retry
+                    _diversity_exhausted = False
                     if historical_configs:
-                        max_sim = max_config_similarity(edit.config_yaml, historical_configs)
-                        if max_sim > DIVERSITY_CONFIG_THRESHOLD:
-                            event["diversity"] = {
-                                "tier": "config",
-                                "passed": False,
-                                "max_similarity": max_sim,
-                            }
-                            event["evaluation"] = None
-                            event["gate"] = None
-                            event["commit"] = None
-                            event_log.write(event)
+                        diversity_retry_count = 0
+                        while True:
+                            max_sim = max_config_similarity(
+                                edit.config_yaml, historical_configs
+                            )
+                            if max_sim <= DIVERSITY_CONFIG_THRESHOLD:
+                                break  # Passed — continue to evaluation
+
+                            # Diversity rejected: give LLM one more chance within the
+                            # same iteration
                             last_attempt = {
                                 "stage": "diversity_config",
                                 "detail": (
@@ -368,8 +369,43 @@ def run_optimization(
                                 ),
                                 "candidate_config_yaml": edit.config_yaml,
                             }
-                            consecutive_no_accept += 1
-                            continue
+                            if diversity_retry_count >= MAX_DIVERSITY_RETRIES:
+                                # Exhausted retries — log and consume this iteration
+                                event["diversity"] = {
+                                    "tier": "config",
+                                    "passed": False,
+                                    "max_similarity": max_sim,
+                                    "retries_exhausted": True,
+                                }
+                                event["evaluation"] = None
+                                event["gate"] = None
+                                event["commit"] = None
+                                event_log.write(event)
+                                consecutive_no_accept += 1
+                                _diversity_exhausted = True
+                                break
+
+                            diversity_retry_count += 1
+                            ctx_retry = AgentContext(
+                                strategy_name=strategy_name,
+                                strategy_code=current_code,
+                                config_yaml=current_yaml,
+                                program_text=spec.raw_text,
+                                evaluation_report=incumbent,
+                                iteration=k,
+                                lessons_text=lessons_text,
+                                n_historical_configs=len(historical_configs),
+                                last_attempt=last_attempt,
+                            )
+                            try:
+                                edit = provider.generate_edit(ctx_retry)
+                            except LLMError:
+                                # On LLM failure during retry, bail out of diversity
+                                # retry loop
+                                break
+
+                    if _diversity_exhausted:
+                        continue
 
                     # 8d. Apply to real files and 8e. Evaluate — both inside the same
                     # try/except so a write error also triggers a clean rollback.

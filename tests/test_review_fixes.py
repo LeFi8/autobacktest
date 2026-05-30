@@ -649,7 +649,12 @@ def test_orchestrator_lessons_persistence(tmp_path: Path) -> None:
 
     # Verify that:
     # 1. At the start of Iteration 2, the context received updated lessons!
-    assert len(called_contexts) == 2
+    # Iteration 1 produces 1 call (validation failure — no diversity check reached).
+    # Iteration 2 produces 1 initial call + up to MAX_DIVERSITY_RETRIES retries (because
+    # STRATEGY_CONFIG is identical to the baseline → diversity rejected each time).
+    from autobacktest.orchestrator import MAX_DIVERSITY_RETRIES
+
+    assert len(called_contexts) == 1 + (1 + MAX_DIVERSITY_RETRIES)
     assert called_contexts[0].lessons_text == "# Initial Lessons\n"
     assert called_contexts[1].lessons_text == "# Lessons: validation failed because of os import."
 

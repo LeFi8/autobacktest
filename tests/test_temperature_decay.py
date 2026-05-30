@@ -98,10 +98,24 @@ def test_temperature_decay_progression(mock_project: tuple[Path, Path, Path, Pat
         repo_path=repo_root,
     )
 
-    # 5 iterations should record exactly 5 temperature states
-    assert len(provider.recorded_temperatures) == 5
-    expected = [0.7, 0.55, 0.4, 0.25, 0.1]
-    assert provider.recorded_temperatures == pytest.approx(expected)
+    # Each iteration records its temperature on the initial call AND each diversity retry.
+    # The MockProvider always returns the same (baseline) config, so diversity fires and
+    # exhausts MAX_DIVERSITY_RETRIES retries every iteration.
+    from autobacktest.orchestrator import MAX_DIVERSITY_RETRIES
+
+    calls_per_iter = 1 + MAX_DIVERSITY_RETRIES
+    assert len(provider.recorded_temperatures) == 5 * calls_per_iter
+
+    # The temperature for each iteration's calls must match the expected decay value.
+    # Temperature is set once per outer iteration and unchanged during diversity retries.
+    expected_per_iter = [0.7, 0.55, 0.4, 0.25, 0.1]
+    for i, expected_temp in enumerate(expected_per_iter):
+        for j in range(calls_per_iter):
+            idx = i * calls_per_iter + j
+            assert provider.recorded_temperatures[idx] == pytest.approx(expected_temp), (
+                f"Iteration {i + 1}, retry {j}: expected {expected_temp:.3f}, "
+                f"got {provider.recorded_temperatures[idx]:.4f}"
+            )
 
     # Verify that original state is restored at the end
     assert provider.temperature == 0.7
@@ -123,8 +137,14 @@ def test_temperature_decay_single_iteration(mock_project: tuple[Path, Path, Path
         repo_path=repo_root,
     )
 
-    assert len(provider.recorded_temperatures) == 1
-    assert provider.recorded_temperatures[0] == 0.7
+    # With diversity retry: MockProvider returns the same config as baseline → diversity
+    # fires and exhausts MAX_DIVERSITY_RETRIES retries.
+    from autobacktest.orchestrator import MAX_DIVERSITY_RETRIES
+
+    calls_per_iter = 1 + MAX_DIVERSITY_RETRIES
+    assert len(provider.recorded_temperatures) == calls_per_iter
+    for temp in provider.recorded_temperatures:
+        assert temp == pytest.approx(0.7)
     assert provider.temperature == 0.7
 
 
@@ -156,25 +176,35 @@ def test_stuck_temperature_escalation(mock_project: tuple[Path, Path, Path, Path
         repo_path=repo_root,
     )
 
-    assert len(provider.recorded_temperatures) == n_iter
+    # MockProvider returns the baseline config → diversity fires and exhausts
+    # MAX_DIVERSITY_RETRIES retries each iteration.  Temperature is set once per
+    # outer iteration and held constant during intra-iteration retries.
+    from autobacktest.orchestrator import MAX_DIVERSITY_RETRIES
+
+    calls_per_iter = 1 + MAX_DIVERSITY_RETRIES
+    assert len(provider.recorded_temperatures) == n_iter * calls_per_iter
 
     # First STUCK_THRESHOLD iterations (k=1..5) use normal monotonic decay.
     # consecutive_no_accept < STUCK_THRESHOLD at the START of each of these iterations.
     for i in range(STUCK_THRESHOLD):
         decay_factor = i / (n_iter - 1)
         expected = start_temp - decay_factor * (start_temp - min_temp)
-        assert provider.recorded_temperatures[i] == pytest.approx(expected), (
-            f"Iteration {i + 1}: expected normal decay {expected:.4f}, "
-            f"got {provider.recorded_temperatures[i]:.4f}"
-        )
+        for j in range(calls_per_iter):
+            idx = i * calls_per_iter + j
+            assert provider.recorded_temperatures[idx] == pytest.approx(expected), (
+                f"Iteration {i + 1}, retry {j}: expected normal decay {expected:.4f}, "
+                f"got {provider.recorded_temperatures[idx]:.4f}"
+            )
 
     # Iterations STUCK_THRESHOLD+1 onward should all use the escalated temperature.
     escalated = min(start_temp, min_temp + (start_temp - min_temp) * 0.8)
     for i in range(STUCK_THRESHOLD, n_iter):
-        assert provider.recorded_temperatures[i] == pytest.approx(escalated), (
-            f"Iteration {i + 1}: expected escalated temp {escalated:.4f}, "
-            f"got {provider.recorded_temperatures[i]:.4f}"
-        )
+        for j in range(calls_per_iter):
+            idx = i * calls_per_iter + j
+            assert provider.recorded_temperatures[idx] == pytest.approx(escalated), (
+                f"Iteration {i + 1}, retry {j}: expected escalated temp {escalated:.4f}, "
+                f"got {provider.recorded_temperatures[idx]:.4f}"
+            )
 
     # Original temperature is restored after the run.
     assert provider.temperature == pytest.approx(start_temp)
