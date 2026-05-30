@@ -400,8 +400,9 @@ def run_optimization(
                             try:
                                 edit = provider.generate_edit(ctx_retry)
                             except LLMError:
-                                # On LLM failure during retry, bail out of diversity
-                                # retry loop
+                                # On LLM failure during retry, skip this iteration rather
+                                # than evaluating the already-rejected config
+                                _diversity_exhausted = True
                                 break
 
                     if _diversity_exhausted:
