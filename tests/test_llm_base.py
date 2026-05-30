@@ -20,7 +20,6 @@ def test_agent_context_immutability() -> None:
     assert context.last_attempt is None
 
     with pytest.raises(FrozenInstanceError):
-        # type: ignore
         context.iteration = 2  # type: ignore
 
 
@@ -83,7 +82,6 @@ def test_agent_edit_immutability() -> None:
     assert edit.lessons_text is None
 
     with pytest.raises(FrozenInstanceError):
-        # type: ignore
         edit.reasoning = "new reasoning"  # type: ignore
 
 

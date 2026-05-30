@@ -13,7 +13,7 @@ import pandas as pd
 import pytest
 
 from autobacktest.gate import TargetMetric
-from autobacktest.llm.base import AgentEdit
+from autobacktest.llm.base import AgentContext, AgentEdit
 from autobacktest.llm.mock_provider import MockProvider
 from autobacktest.orchestrator import OrchestratorResult, run_optimization
 
@@ -354,7 +354,7 @@ def test_orchestrator_fail_fast_on_non_retryable_error(project_root: Path) -> No
     from autobacktest.llm.mock_provider import MockProvider
 
     class FailingProvider(MockProvider):
-        def generate_edit(self, _context):
+        def generate_edit(self, _context: AgentContext) -> AgentEdit:
             raise LLMError(provider="mock", model="m", detail="Non-retryable config error", retryable=False)
 
     provider = FailingProvider()
@@ -379,7 +379,7 @@ def test_orchestrator_continues_on_retryable_error(_mock_sleep: MagicMock, proje
     from autobacktest.llm.mock_provider import MockProvider
 
     class RetryableProvider(MockProvider):
-        def generate_edit(self, _context):
+        def generate_edit(self, _context: AgentContext) -> AgentEdit:
             raise LLMError(provider="mock", model="m", detail="Transient timeout", retryable=True)
 
     provider = RetryableProvider()
@@ -408,7 +408,7 @@ def test_orchestrator_retries_transient_error_with_backoff(mock_sleep: MagicMock
     call_count = 0
 
     class FlakyProvider(MockProvider):
-        def generate_edit(self, _context):
+        def generate_edit(self, _context: AgentContext) -> AgentEdit:
             nonlocal call_count
             call_count += 1
             if call_count <= 2:

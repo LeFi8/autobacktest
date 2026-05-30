@@ -73,7 +73,7 @@ def test_extra_fields_allowed() -> None:
             "some_extra_field": "allowed",
         }
     )
-    assert cfg.some_extra_field == "allowed"
+    assert cfg.some_extra_field == "allowed"  # type: ignore[attr-defined]
 
 
 def test_params_collision_raises_error() -> None:

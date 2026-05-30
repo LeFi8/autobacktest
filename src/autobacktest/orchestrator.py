@@ -198,7 +198,7 @@ def run_optimization(
         # 8. Optimization loop
         n_committed = 0
         n_llm_ok = 0
-        last_attempt: dict | None = None
+        last_attempt: dict[str, Any] | None = None
         consecutive_no_accept: int = 0
         _early_stop = False
         with Progress(
@@ -217,9 +217,7 @@ def run_optimization(
                     if consecutive_no_accept >= STUCK_THRESHOLD:
                         # Stuck: bump temperature back toward start_temp for exploration
                         if consecutive_no_accept == STUCK_THRESHOLD:
-                            logger.info(
-                                f"Stuck for {STUCK_THRESHOLD} iterations, escalating temperature."
-                            )
+                            logger.info(f"Stuck for {STUCK_THRESHOLD} iterations, escalating temperature.")
                         provider.temperature = min(
                             start_temp, min_temp + (start_temp - min_temp) * STUCK_ESCALATION_FACTOR
                         )
@@ -358,9 +356,7 @@ def run_optimization(
                     if historical_configs:
                         diversity_retry_count = 0
                         while True:
-                            max_sim = max_config_similarity(
-                                edit.config_yaml, historical_configs
-                            )
+                            max_sim = max_config_similarity(edit.config_yaml, historical_configs)
                             if max_sim <= DIVERSITY_CONFIG_THRESHOLD:
                                 break  # Passed — continue to evaluation
 

@@ -1,11 +1,14 @@
 """Unit tests verifying the dynamic temperature decay schema inside the Orchestrator loop."""
 
 from pathlib import Path
+from typing import Any
 
 import git
 import pytest
 
+from autobacktest.evaluator.report import EvaluationReport
 from autobacktest.gate import GateResult
+from autobacktest.llm.base import AgentContext, AgentEdit
 from autobacktest.llm.mock_provider import MockProvider
 from autobacktest.orchestrator import STUCK_ESCALATION_FACTOR, STUCK_THRESHOLD, run_optimization
 
@@ -13,12 +16,12 @@ from autobacktest.orchestrator import STUCK_ESCALATION_FACTOR, STUCK_THRESHOLD, 
 class TemperatureTrackingProvider(MockProvider):
     """MockProvider subclass that records temperatures at each invocation."""
 
-    def __init__(self, **kwargs) -> None:
+    def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self.temperature = 0.7
-        self.recorded_temperatures = []
+        self.recorded_temperatures: list[float] = []
 
-    def generate_edit(self, context) -> any:
+    def generate_edit(self, context: AgentContext) -> AgentEdit:
         self.recorded_temperatures.append(self.temperature)
         return super().generate_edit(context)
 
@@ -222,7 +225,7 @@ def test_stuck_counter_resets_on_acceptance(
     """
     import pandas as pd
 
-    from autobacktest.evaluator.report import EvaluationReport, WindowReport
+    from autobacktest.evaluator.report import WindowReport
 
     prog_file, strat_dir, conf_dir, repo_root = mock_project
     start_temp = 0.7
@@ -230,7 +233,7 @@ def test_stuck_counter_resets_on_acceptance(
     n_iter = STUCK_THRESHOLD + 4  # 9 iterations total
 
     # Canned evaluation response — used for both baseline and all candidate iterations.
-    def _make_canned_report(sharpe: float = 1.0) -> tuple:
+    def _make_canned_report(sharpe: float = 1.0) -> tuple[EvaluationReport, pd.Series]:
         window = WindowReport(
             start_date="2020-01-01",
             end_date="2020-12-31",
@@ -264,7 +267,7 @@ def test_stuck_counter_resets_on_acceptance(
 
     eval_call_count = [0]
 
-    def patched_evaluate(*_args, **_kwargs):
+    def patched_evaluate(*_args: Any, **_kwargs: Any) -> tuple[EvaluationReport, pd.Series]:
         eval_call_count[0] += 1
         return _make_canned_report(sharpe=1.0)
 
@@ -277,7 +280,7 @@ def test_stuck_counter_resets_on_acceptance(
     # Patch accept() to accept on the STUCK_THRESHOLD+1-th gate call, reject otherwise.
     gate_call_count = [0]
 
-    def patched_accept(*_args, **_kwargs):
+    def patched_accept(*_args: Any, **_kwargs: Any) -> GateResult:
         gate_call_count[0] += 1
         if gate_call_count[0] == STUCK_THRESHOLD + 1:
             return GateResult(accepted=True)
@@ -306,8 +309,7 @@ def test_stuck_counter_resets_on_acceptance(
         decay_factor = i / (n_iter - 1)
         expected = start_temp - decay_factor * (start_temp - min_temp)
         assert provider.recorded_temperatures[i] == pytest.approx(expected), (
-            f"Iteration {i + 1}: expected normal decay {expected:.4f}, "
-            f"got {provider.recorded_temperatures[i]:.4f}"
+            f"Iteration {i + 1}: expected normal decay {expected:.4f}, got {provider.recorded_temperatures[i]:.4f}"
         )
 
     # k=6 (index 5): consecutive_no_accept == 5 >= STUCK_THRESHOLD — escalated.

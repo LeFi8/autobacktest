@@ -9,7 +9,7 @@ import git
 import pytest
 
 from autobacktest.gate import TargetMetric
-from autobacktest.llm.base import AgentEdit
+from autobacktest.llm.base import AgentContext, AgentEdit
 from autobacktest.llm.mock_provider import MockProvider
 from autobacktest.orchestrator import run_optimization
 from tests.test_orchestrator_e2e import (
@@ -82,7 +82,7 @@ def test_lessons_roundtrip_and_rollback(project_root_with_lessons: Path) -> None
     )
 
     class ScriptedMockProvider(MockProvider):
-        def generate_edit(self, context):
+        def generate_edit(self, context: AgentContext) -> AgentEdit:
             self.calls.append(context)
             if context.iteration == 1:
                 # Verify initial lessons were passed to LLM

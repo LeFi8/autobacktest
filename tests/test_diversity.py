@@ -52,6 +52,7 @@ class SequenceProvider(LLMProvider):
         idx = min(len(self.calls) - 1, len(self.responses) - 1)
         return self.responses[idx]
 
+
 # ---------------------------------------------------------------------------
 # Test config YAML strings
 # ---------------------------------------------------------------------------

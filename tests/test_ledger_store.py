@@ -16,7 +16,7 @@ from autobacktest.ledger.store import LedgerStore
 # ---------------------------------------------------------------------------
 
 
-def _make_returns(seed: int = 0, n: int = 50) -> pd.Series:  # type: ignore[type-arg]
+def _make_returns(seed: int = 0, n: int = 50) -> pd.Series:
     """Return a synthetic daily-return Series with a DatetimeIndex."""
     rng = np.random.default_rng(seed)
     dates = pd.date_range("2024-01-01", periods=n, freq="B")
@@ -31,7 +31,7 @@ def _record(
     dataset_hash: str = "hash-abc",
     observed_sharpe: float = 1.2,
     accepted: bool = True,
-    returns: pd.Series | None = None,  # type: ignore[type-arg]
+    returns: pd.Series | None = None,
 ) -> None:
     """Convenience wrapper to record a single attempt."""
     if returns is None:

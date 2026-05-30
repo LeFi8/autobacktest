@@ -5,6 +5,7 @@ Early-stop fires when ``consecutive_no_accept`` reaches ``EARLY_STOP_PATIENCE``
 """
 
 from pathlib import Path
+from typing import Any
 
 import git
 import pandas as pd
@@ -12,7 +13,7 @@ import pytest
 
 from autobacktest.evaluator.report import EvaluationReport, WindowReport
 from autobacktest.gate import GateResult
-from autobacktest.llm.base import AgentEdit
+from autobacktest.llm.base import AgentContext, AgentEdit
 from autobacktest.llm.mock_provider import MockProvider
 from autobacktest.orchestrator import EARLY_STOP_PATIENCE, run_optimization
 
@@ -21,7 +22,7 @@ from autobacktest.orchestrator import EARLY_STOP_PATIENCE, run_optimization
 # ---------------------------------------------------------------------------
 
 
-def _make_canned_report(sharpe: float = 1.0) -> tuple:
+def _make_canned_report(sharpe: float = 1.0) -> tuple[EvaluationReport, pd.Series]:
     window = WindowReport(
         start_date="2020-01-01",
         end_date="2020-12-31",
@@ -117,11 +118,11 @@ params:
 class IterationCountingProvider(MockProvider):
     """Records number of generate_edit calls (outer iteration count)."""
 
-    def __init__(self, **kwargs) -> None:
+    def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self.call_count = 0
 
-    def generate_edit(self, context) -> "AgentEdit":
+    def generate_edit(self, context: AgentContext) -> AgentEdit:
         self.call_count += 1
         return super().generate_edit(context)
 
@@ -145,9 +146,7 @@ def test_early_stop_fires_before_all_iterations(
 
     # Diversity gates always pass so we reach the accept() gate.
     monkeypatch.setattr("autobacktest.orchestrator.max_config_similarity", lambda *_: 0.0)
-    monkeypatch.setattr(
-        "autobacktest.orchestrator.check_returns_correlation", lambda *_: (True, 0.0)
-    )
+    monkeypatch.setattr("autobacktest.orchestrator.check_returns_correlation", lambda *_: (True, 0.0))
 
     # Gate always rejects — consecutive_no_accept will climb every iteration.
     monkeypatch.setattr(
@@ -177,8 +176,7 @@ def test_early_stop_fires_before_all_iterations(
 
     # The loop must have stopped at EARLY_STOP_PATIENCE, not at total_iterations.
     assert provider.call_count == EARLY_STOP_PATIENCE, (
-        f"Expected exactly {EARLY_STOP_PATIENCE} LLM calls (early stop), "
-        f"got {provider.call_count}"
+        f"Expected exactly {EARLY_STOP_PATIENCE} LLM calls (early stop), got {provider.call_count}"
     )
     # No strategies were committed (all rejected).
     assert result.n_committed == 0
@@ -201,14 +199,12 @@ def test_early_stop_counter_resets_on_acceptance(
         lambda *_a, **_kw: _make_canned_report(sharpe=1.0),
     )
     monkeypatch.setattr("autobacktest.orchestrator.max_config_similarity", lambda *_: 0.0)
-    monkeypatch.setattr(
-        "autobacktest.orchestrator.check_returns_correlation", lambda *_: (True, 0.0)
-    )
+    monkeypatch.setattr("autobacktest.orchestrator.check_returns_correlation", lambda *_: (True, 0.0))
 
     accept_at = EARLY_STOP_PATIENCE // 2  # iteration 5 (1-indexed)
     gate_call_count = [0]
 
-    def patched_accept(*_a, **_kw):
+    def patched_accept(*_a: Any, **_kw: Any) -> GateResult:
         gate_call_count[0] += 1
         if gate_call_count[0] == accept_at:
             return GateResult(accepted=True)

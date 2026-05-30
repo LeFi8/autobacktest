@@ -2,6 +2,7 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import Any
 
 from autobacktest.evaluator.report import EvaluationReport
 
@@ -31,7 +32,7 @@ class AgentContext:
     iteration: int
     lessons_text: str = ""
     n_historical_configs: int = 0
-    last_attempt: dict | None = None
+    last_attempt: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
