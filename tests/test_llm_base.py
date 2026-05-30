@@ -17,10 +17,59 @@ def test_agent_context_immutability() -> None:
     assert context.strategy_name == "haa"
     assert context.iteration == 1
     assert context.lessons_text == ""
+    assert context.last_attempt is None
 
     with pytest.raises(FrozenInstanceError):
         # type: ignore
         context.iteration = 2  # type: ignore
+
+
+def test_agent_context_last_attempt_default_is_none() -> None:
+    context = AgentContext(
+        strategy_name="haa",
+        strategy_code="def generate_signals(): pass",
+        config_yaml="universe: [SPY]",
+        program_text="make it conservative",
+        evaluation_report=None,
+        iteration=1,
+    )
+    assert context.last_attempt is None
+
+
+def test_agent_context_last_attempt_populated() -> None:
+    attempt = {
+        "stage": "validation",
+        "error_code": "lookahead_detected",
+        "detail": "shift(-1) found",
+        "candidate_strategy_code": "def generate_signals(): pass",
+        "candidate_config_yaml": "universe: [SPY]",
+    }
+    context = AgentContext(
+        strategy_name="haa",
+        strategy_code="def generate_signals(): pass",
+        config_yaml="universe: [SPY]",
+        program_text="make it conservative",
+        evaluation_report=None,
+        iteration=2,
+        last_attempt=attempt,
+    )
+    assert context.last_attempt is not None
+    assert context.last_attempt["stage"] == "validation"
+    assert context.last_attempt["error_code"] == "lookahead_detected"
+
+
+def test_agent_context_last_attempt_is_immutable() -> None:
+    context = AgentContext(
+        strategy_name="haa",
+        strategy_code="def generate_signals(): pass",
+        config_yaml="universe: [SPY]",
+        program_text="make it conservative",
+        evaluation_report=None,
+        iteration=2,
+        last_attempt={"stage": "gate"},
+    )
+    with pytest.raises(FrozenInstanceError):
+        context.last_attempt = None  # type: ignore
 
 
 def test_agent_edit_immutability() -> None:

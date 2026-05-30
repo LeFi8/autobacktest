@@ -194,6 +194,7 @@ def run_optimization(
         # 8. Optimization loop
         n_committed = 0
         n_llm_ok = 0
+        last_attempt: dict | None = None
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -234,6 +235,7 @@ def run_optimization(
                         iteration=k,
                         lessons_text=lessons_text,
                         n_historical_configs=len(historical_configs),
+                        last_attempt=last_attempt,
                     )
 
                     # 8b. Get LLM edit (with auto-retry on length limit cutoff and transient error backoff)
@@ -323,6 +325,13 @@ def run_optimization(
                         event["gate"] = None
                         event["commit"] = None
                         event_log.write(event)
+                        last_attempt = {
+                            "stage": "validation",
+                            "error_code": error_code,
+                            "detail": detail,
+                            "candidate_strategy_code": edit.strategy_code,
+                            "candidate_config_yaml": edit.config_yaml,
+                        }
                         continue
 
                     event["validation"] = {"passed": True}
@@ -340,6 +349,15 @@ def run_optimization(
                             event["gate"] = None
                             event["commit"] = None
                             event_log.write(event)
+                            last_attempt = {
+                                "stage": "diversity_config",
+                                "detail": (
+                                    f"Config similarity {max_sim:.3f} exceeded threshold "
+                                    f"{DIVERSITY_CONFIG_THRESHOLD}. Your config was too similar "
+                                    f"to a past attempt."
+                                ),
+                                "candidate_config_yaml": edit.config_yaml,
+                            }
                             continue
 
                     # 8d. Apply to real files and 8e. Evaluate — both inside the same
@@ -366,6 +384,12 @@ def run_optimization(
                         event["gate"] = None
                         event["commit"] = None
                         event_log.write(event)
+                        last_attempt = {
+                            "stage": "eval_error",
+                            "detail": str(e),
+                            "candidate_strategy_code": edit.strategy_code,
+                            "candidate_config_yaml": edit.config_yaml,
+                        }
                         continue
 
                     # 8e.5 Tier 2 — Returns correlation diversity gate (post-backtest)
@@ -409,6 +433,19 @@ def run_optimization(
                                 total_tokens=edit.total_tokens,
                                 cost=edit.cost,
                             )
+                            last_attempt = {
+                                "stage": "diversity_returns",
+                                "detail": (
+                                    f"Return correlation {max_corr:.3f} exceeded threshold "
+                                    f"{DIVERSITY_RETURNS_THRESHOLD}. The strategy produces "
+                                    f"returns too similar to past attempts."
+                                ),
+                                "candidate_config_yaml": edit.config_yaml,
+                                "candidate_metrics": {
+                                    "observed_sharpe": report_k.observed_sharpe,
+                                    "holdout_max_drawdown": report_k.holdout_metrics.max_drawdown,
+                                },
+                            }
                             continue
 
                     # 8f. DSR deflation
@@ -469,6 +506,7 @@ def run_optimization(
                         )
                         event["gate"] = {"accepted": True, "reason": None}
                         event["commit"] = {"sha": sha}
+                        last_attempt = None
                     else:
                         git_ledger.rollback_strategy(strategy_name)
                         ledger.record_attempt(
@@ -480,6 +518,20 @@ def run_optimization(
                         )
                         event["gate"] = {"accepted": False, "reason": gate_res.reason}
                         event["commit"] = None
+                        last_attempt = {
+                            "stage": "gate",
+                            "rejection_reason": gate_res.reason,
+                            "failed_gate": gate_res.failed_gate,
+                            "candidate_strategy_code": edit.strategy_code,
+                            "candidate_config_yaml": edit.config_yaml,
+                            "candidate_metrics": {
+                                "observed_sharpe": report_k.observed_sharpe,
+                                "holdout_sharpe": report_k.holdout_metrics.sharpe_ratio,
+                                "holdout_max_drawdown": report_k.holdout_metrics.max_drawdown,
+                                "holdout_turnover": report_k.holdout_metrics.turnover,
+                                "regime_passed": report_k.regime_passed,
+                            },
+                        }
 
                     event_log.write(event)
                 finally:

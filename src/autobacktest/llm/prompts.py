@@ -91,6 +91,119 @@ def build_messages(context: AgentContext) -> list[dict[str, str]]:
             f"proposals with >95% fingerprint overlap.\n"
         )
 
+    # Build the "Previous Attempt Result" section if a failed attempt exists
+    previous_attempt_section = ""
+    if context.last_attempt is not None:
+        attempt = context.last_attempt
+        stage = attempt.get("stage", "unknown")
+        lines: list[str] = [f"## Previous Attempt Result", f"**Stage:** {stage}"]
+
+        if stage == "validation":
+            error_code = attempt.get("error_code", "")
+            detail = attempt.get("detail", "")
+            lines.append(f"**Error:** `{error_code}`")
+            lines.append(f"**Detail:** {detail}")
+            if error_code == "lookahead_detected":
+                lines.append(
+                    "**Explanation:** `lookahead_detected` means the strategy code reads "
+                    "future price rows (e.g. using `.shift(-n)` with a negative shift, or "
+                    "indexing beyond `t` at evaluation time). This is a hard disqualifier."
+                )
+            code = attempt.get("candidate_strategy_code", "")
+            config = attempt.get("candidate_config_yaml", "")
+            if code:
+                lines.append(f"\n**Failed strategy code:**\n```python\n{code}\n```")
+            if config:
+                lines.append(f"\n**Failed config:**\n```yaml\n{config}\n```")
+
+        elif stage == "diversity_config":
+            detail = attempt.get("detail", "")
+            lines.append(f"**Detail:** {detail}")
+            config = attempt.get("candidate_config_yaml", "")
+            if config:
+                lines.append(f"\n**Rejected config:**\n```yaml\n{config}\n```")
+
+        elif stage == "eval_error":
+            detail = attempt.get("detail", "")
+            lines.append(f"**Error:** {detail}")
+            code = attempt.get("candidate_strategy_code", "")
+            config = attempt.get("candidate_config_yaml", "")
+            if code:
+                lines.append(f"\n**Failed strategy code:**\n```python\n{code}\n```")
+            if config:
+                lines.append(f"\n**Failed config:**\n```yaml\n{config}\n```")
+
+        elif stage == "diversity_returns":
+            detail = attempt.get("detail", "")
+            lines.append(f"**Detail:** {detail}")
+            metrics = attempt.get("candidate_metrics", {})
+            if metrics:
+                lines.append("**Observed metrics:**")
+                for k, v in metrics.items():
+                    lines.append(f"  - {k}: {v}")
+            config = attempt.get("candidate_config_yaml", "")
+            if config:
+                lines.append(f"\n**Rejected config:**\n```yaml\n{config}\n```")
+
+        elif stage == "gate":
+            rejection_reason = attempt.get("rejection_reason", "")
+            failed_gate = attempt.get("failed_gate", "")
+            lines.append(f"**Rejection reason:** {rejection_reason}")
+            lines.append(f"**Failed gate:** `{failed_gate}`")
+            metrics = attempt.get("candidate_metrics", {})
+            if metrics:
+                lines.append("**Candidate metrics at rejection:**")
+                for k, v in metrics.items():
+                    lines.append(f"  - {k}: {v}")
+            code = attempt.get("candidate_strategy_code", "")
+            config = attempt.get("candidate_config_yaml", "")
+            if code:
+                lines.append(f"\n**Failed strategy code:**\n```python\n{code}\n```")
+            if config:
+                lines.append(f"\n**Failed config:**\n```yaml\n{config}\n```")
+
+        else:
+            detail = attempt.get("detail", attempt.get("rejection_reason", ""))
+            if detail:
+                lines.append(f"**Detail:** {detail}")
+
+        lines.append(
+            "\n**Diagnose the failure above. Do NOT regenerate the same code or config. "
+            "Your fix must address the specific error shown.**"
+        )
+        previous_attempt_section = "\n".join(lines) + "\n\n"
+
+    # Build the "Performance Target" section
+    if context.evaluation_report is not None:
+        rep = context.evaluation_report
+        incumbent_sharpe = rep.holdout_metrics.sharpe_ratio
+        incumbent_sortino = rep.holdout_metrics.sortino_ratio
+        incumbent_ir = rep.holdout_metrics.information_ratio
+        incumbent_dd = rep.holdout_metrics.max_drawdown
+        incumbent_turnover = rep.holdout_metrics.turnover
+        performance_target_section = (
+            f"## Performance Target\n"
+            f"Incumbent holdout metrics (you must beat these):\n"
+            f"  - Sharpe: {incumbent_sharpe:.4f}\n"
+            f"  - Sortino: {incumbent_sortino:.4f}\n"
+            f"  - Information Ratio: {incumbent_ir:.4f}\n"
+            f"  - Max Drawdown: {incumbent_dd:.4f}\n"
+            f"  - Turnover: {incumbent_turnover:.4f}\n\n"
+            f"Hard gate limits (all must pass):\n"
+            f"  - Holdout max drawdown <= 0.15\n"
+            f"  - Holdout turnover <= 1.0\n"
+            f"  - All historical crisis regime stress tests must pass\n"
+            f"  - Deflated Sharpe Ratio >= 0.95\n"
+            f"  - Target metric must strictly exceed the incumbent value above.\n\n"
+        )
+    else:
+        performance_target_section = (
+            "## Performance Target\n"
+            "No incumbent evaluation yet (first iteration). "
+            "Hard gate limits: drawdown <= 0.15, turnover <= 1.0, "
+            "all regime stress tests must pass, DSR >= 0.95.\n\n"
+        )
+
     user_content = f"""## Iteration
 Current Loop Iteration: {context.iteration}
 
@@ -113,7 +226,7 @@ Current Loop Iteration: {context.iteration}
 ## Latest Evaluation
 {eval_report_str}
 {diversity_warning}
-## Instructions
+{previous_attempt_section}{performance_target_section}## Instructions
 Improve the strategy per the objective. Optimize parameters, signal
 logic, or asset weights.
 Your response must be returned as a JSON object containing the keys:
