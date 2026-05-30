@@ -16,7 +16,7 @@ benchmark: SPY
 
 # Strategy parameterization
 momentum_lookback: 12
-max_drawdown_limit: 0.15
+max_drawdown_limit: 0.20
 turnover_limit: 2.0
 
 # HAA-specific parameters
