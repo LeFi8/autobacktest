@@ -12,6 +12,7 @@ import pytest
 
 from autobacktest.evaluator.report import EvaluationReport, WindowReport
 from autobacktest.gate import GateResult
+from autobacktest.llm.base import AgentEdit
 from autobacktest.llm.mock_provider import MockProvider
 from autobacktest.orchestrator import EARLY_STOP_PATIENCE, run_optimization
 
@@ -120,7 +121,7 @@ class IterationCountingProvider(MockProvider):
         super().__init__(**kwargs)
         self.call_count = 0
 
-    def generate_edit(self, context) -> any:
+    def generate_edit(self, context) -> "AgentEdit":
         self.call_count += 1
         return super().generate_edit(context)
 

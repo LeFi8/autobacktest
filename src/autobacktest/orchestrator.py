@@ -50,7 +50,7 @@ DIVERSITY_RETURNS_THRESHOLD = 0.90
 STUCK_THRESHOLD = 5
 STUCK_ESCALATION_FACTOR = 0.8
 MAX_DIVERSITY_RETRIES = 2
-EARLY_STOP_PATIENCE = 10
+EARLY_STOP_PATIENCE = 10  # counts all non-acceptance outcomes (validation, diversity, gate)
 
 
 @dataclass
