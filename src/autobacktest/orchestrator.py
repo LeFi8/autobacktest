@@ -47,6 +47,7 @@ logger = logging.getLogger(__name__)
 
 DIVERSITY_CONFIG_THRESHOLD = 0.95
 DIVERSITY_RETURNS_THRESHOLD = 0.90
+STUCK_THRESHOLD = 5
 
 
 @dataclass
@@ -195,6 +196,7 @@ def run_optimization(
         n_committed = 0
         n_llm_ok = 0
         last_attempt: dict | None = None
+        consecutive_no_accept: int = 0
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -208,7 +210,10 @@ def run_optimization(
             )
             for k in range(1, iterations + 1):
                 if start_temp is not None:
-                    if iterations > 1:
+                    if consecutive_no_accept >= STUCK_THRESHOLD:
+                        # Stuck: bump temperature back toward start_temp for exploration
+                        provider.temperature = min(start_temp, min_temp + (start_temp - min_temp) * 0.8)
+                    elif iterations > 1:
                         decay_factor = (k - 1) / (iterations - 1)
                         provider.temperature = start_temp - decay_factor * (start_temp - min_temp)
                     else:
@@ -297,6 +302,7 @@ def run_optimization(
                         provider.max_tokens = orig_max_tokens
 
                     if edit is None:
+                        consecutive_no_accept += 1
                         continue
 
                     event["edit"] = {
@@ -332,6 +338,7 @@ def run_optimization(
                             "candidate_strategy_code": edit.strategy_code,
                             "candidate_config_yaml": edit.config_yaml,
                         }
+                        consecutive_no_accept += 1
                         continue
 
                     event["validation"] = {"passed": True}
@@ -358,6 +365,7 @@ def run_optimization(
                                 ),
                                 "candidate_config_yaml": edit.config_yaml,
                             }
+                            consecutive_no_accept += 1
                             continue
 
                     # 8d. Apply to real files and 8e. Evaluate — both inside the same
@@ -390,6 +398,7 @@ def run_optimization(
                             "candidate_strategy_code": edit.strategy_code,
                             "candidate_config_yaml": edit.config_yaml,
                         }
+                        consecutive_no_accept += 1
                         continue
 
                     # 8e.5 Tier 2 — Returns correlation diversity gate (post-backtest)
@@ -446,6 +455,7 @@ def run_optimization(
                                     "holdout_max_drawdown": report_k.holdout_metrics.max_drawdown,
                                 },
                             }
+                            consecutive_no_accept += 1
                             continue
 
                     # 8f. DSR deflation
@@ -507,6 +517,7 @@ def run_optimization(
                         event["gate"] = {"accepted": True, "reason": None}
                         event["commit"] = {"sha": sha}
                         last_attempt = None
+                        consecutive_no_accept = 0
                     else:
                         git_ledger.rollback_strategy(strategy_name)
                         ledger.record_attempt(
@@ -532,6 +543,7 @@ def run_optimization(
                                 "regime_passed": report_k.regime_passed,
                             },
                         }
+                        consecutive_no_accept += 1
 
                     event_log.write(event)
                 finally:
