@@ -229,7 +229,10 @@ def test_build_messages_diversity_config_failure_renders_section() -> None:
         iteration=4,
         last_attempt={
             "stage": "diversity_config",
-            "detail": "Config similarity 0.970 exceeded threshold 0.950. Your config was too similar to a past attempt.",
+            "detail": (
+                "Config similarity 0.970 exceeded threshold 0.950."
+                " Your config was too similar to a past attempt."
+            ),
             "candidate_config_yaml": "universe: [SPY]\nmomentum_windows: [1, 3, 6, 12]",
         },
     )

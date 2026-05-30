@@ -96,7 +96,7 @@ def build_messages(context: AgentContext) -> list[dict[str, str]]:
     if context.last_attempt is not None:
         attempt = context.last_attempt
         stage = attempt.get("stage", "unknown")
-        lines: list[str] = [f"## Previous Attempt Result", f"**Stage:** {stage}"]
+        lines: list[str] = ["## Previous Attempt Result", f"**Stage:** {stage}"]
 
         if stage == "validation":
             error_code = attempt.get("error_code", "")
