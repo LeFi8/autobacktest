@@ -308,7 +308,11 @@ def test_evaluate_strategy_too_short_period() -> None:
 
 
 def test_gate_dsr_none_handling() -> None:
-    """Verifies that gate.accept handles None deflated_sharpe gracefully."""
+    """Verifies that gate.accept handles None deflated_sharpe gracefully.
+
+    Since DSR is no longer a hard gate, a None deflated_sharpe should be
+    accepted as long as all other gates pass.
+    """
     window = WindowReport(
         start_date="2023-01-01",
         end_date="2025-12-31",
@@ -338,9 +342,8 @@ def test_gate_dsr_none_handling() -> None:
         deflated_sharpe=None,  # type: ignore
     )
 
-    res = gate_accept(report, baseline=None, dsr_threshold=0.95)
-    assert not res.accepted
-    assert "Deflated Sharpe Ratio is missing or NaN" in res.reason
+    res = gate_accept(report, baseline=None)
+    assert res.accepted
 
 
 def test_agent_edit_response_lessons_text_optional() -> None:

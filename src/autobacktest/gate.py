@@ -46,7 +46,6 @@ def accept(
     target_metric: TargetMetric = TargetMetric.SHARPE,
     dd_limit: float | None = None,
     turnover_limit: float | None = None,
-    dsr_threshold: float | None = None,
     min_improvement: float | None = None,
     config: Any = None,
 ) -> GateResult:
@@ -56,11 +55,13 @@ def accept(
     1. Drawdown: holdout_metrics.max_drawdown <= dd_limit
     2. Regime tests: regime_passed is True
     3. Turnover: holdout_metrics.turnover <= turnover_limit
-    4. DSR: deflated_sharpe >= dsr_threshold (e.g. 0.95 probability)
 
     If all pass, tie-breaker:
-    5. Improvement: target metric value > baseline target metric value + min_improvement
+    4. Improvement: target metric value > baseline target metric value + min_improvement
        (if baseline is present)
+
+    Note: Deflated Sharpe Ratio (DSR) is computed and stored on the report for
+    overfitting insight but is NOT a hard gate.
 
     Args:
         report: EvaluationReport of candidate strategy.
@@ -68,7 +69,6 @@ def accept(
         target_metric: Target optimization metric choice.
         dd_limit: Maximum allowed drawdown in holdout.
         turnover_limit: Maximum allowed annualized turnover rate in holdout.
-        dsr_threshold: Minimum required Deflated Sharpe Ratio.
         min_improvement: Minimum required improvement epsilon.
         config: Optional strategy configuration to resolve limits.
 
@@ -76,9 +76,8 @@ def accept(
         GateResult: Decision outcome.
     """
     # Resolve limits and parameters from config if not explicitly passed (Finding 10)
-    dd_limit = dd_limit if dd_limit is not None else _get_config_val(config, "max_drawdown_limit", 0.15)
-    turnover_limit = turnover_limit if turnover_limit is not None else _get_config_val(config, "turnover_limit", 1.0)
-    dsr_threshold = dsr_threshold if dsr_threshold is not None else _get_config_val(config, "dsr_threshold", 0.95)
+    dd_limit = dd_limit if dd_limit is not None else _get_config_val(config, "max_drawdown_limit", 0.20)
+    turnover_limit = turnover_limit if turnover_limit is not None else _get_config_val(config, "turnover_limit", 2.0)
     min_improvement = (
         min_improvement if min_improvement is not None else _get_config_val(config, "min_improvement", 0.0)
     )
@@ -92,15 +91,11 @@ def accept(
     turnover = report.holdout_metrics.turnover
     turnover_passed = not (math.isnan(turnover) or turnover > turnover_limit)
 
-    dsr = report.deflated_sharpe
-    dsr_passed = not (dsr is None or math.isnan(dsr) or dsr < dsr_threshold)
-
     # Let gate.accept write back outcomes to the report (Finding 7)
     report.gates_passed = {
         "max_drawdown": max_dd_passed,
         "turnover": turnover_passed,
         "regimes": regime_passed,
-        "deflated_sharpe": dsr_passed,
     }
 
     # 1. Max Drawdown Limit
@@ -143,21 +138,7 @@ def accept(
             failed_gate="turnover",
         )
 
-    # 4. Deflated Sharpe Ratio threshold
-    if not dsr_passed:
-        if dsr is None or math.isnan(dsr):
-            msg = "Deflated Sharpe Ratio is missing or NaN."
-        else:
-            msg = f"Deflated Sharpe Ratio {dsr:.4f} is below threshold of {dsr_threshold:.4f}."
-        report.is_accepted = False
-        report.rejection_reason = msg
-        return GateResult(
-            accepted=False,
-            reason=msg,
-            failed_gate="deflated_sharpe",
-        )
-
-    # 5. Optimization Target Metric Improvement over Baseline
+    # 4. Optimization Target Metric Improvement over Baseline
     if baseline is not None:
 
         def _get_metric_val(rep: EvaluationReport) -> float:

@@ -257,8 +257,8 @@ def test_build_messages_performance_target_with_report() -> None:
     user_msg = messages[1]["content"]
     assert "## Performance Target" in user_msg
     assert "1.2000" in user_msg
-    assert "0.15" in user_msg
-    assert "0.95" in user_msg
+    assert "0.20" in user_msg
+    assert "overfitting insight only" in user_msg
     assert "regime stress tests" in user_msg
 
 
@@ -274,8 +274,8 @@ def test_build_messages_performance_target_no_report() -> None:
     messages = build_messages(context)
     user_msg = messages[1]["content"]
     assert "## Performance Target" in user_msg
-    assert "drawdown <= 0.15" in user_msg
-    assert "DSR >= 0.95" in user_msg
+    assert "drawdown <= 0.20" in user_msg
+    assert "overfitting insight only" in user_msg
 
 
 def test_build_messages_previous_attempt_before_instructions() -> None:

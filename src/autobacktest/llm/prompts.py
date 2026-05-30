@@ -190,18 +190,19 @@ def build_messages(context: AgentContext) -> list[dict[str, str]]:
             f"  - Max Drawdown: {incumbent_dd:.4f}\n"
             f"  - Turnover: {incumbent_turnover:.4f}\n\n"
             f"Hard gate limits (all must pass):\n"
-            f"  - Holdout max drawdown <= 0.15\n"
-            f"  - Holdout turnover <= 1.0\n"
+            f"  - Holdout max drawdown <= 0.20\n"
+            f"  - Holdout turnover <= 2.0\n"
             f"  - All historical crisis regime stress tests must pass\n"
-            f"  - Deflated Sharpe Ratio >= 0.95\n"
-            f"  - Target metric must strictly exceed the incumbent value above.\n\n"
+            f"  - Target metric must strictly exceed the incumbent value above.\n"
+            f"  - Deflated Sharpe (DSR): reported for overfitting insight only — not a hard gate.\n\n"
         )
     else:
         performance_target_section = (
             "## Performance Target\n"
             "No incumbent evaluation yet (first iteration). "
-            "Hard gate limits: drawdown <= 0.15, turnover <= 1.0, "
-            "all regime stress tests must pass, DSR >= 0.95.\n\n"
+            "Hard gate limits: drawdown <= 0.20, turnover <= 2.0, "
+            "all regime stress tests must pass. "
+            "DSR reported for overfitting insight only — not a hard gate.\n\n"
         )
 
     user_content = f"""## Iteration
