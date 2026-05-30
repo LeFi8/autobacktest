@@ -5,8 +5,9 @@ from pathlib import Path
 import git
 import pytest
 
+from autobacktest.gate import GateResult
 from autobacktest.llm.mock_provider import MockProvider
-from autobacktest.orchestrator import STUCK_THRESHOLD, run_optimization
+from autobacktest.orchestrator import STUCK_ESCALATION_FACTOR, STUCK_THRESHOLD, run_optimization
 
 
 class TemperatureTrackingProvider(MockProvider):
@@ -179,52 +180,117 @@ def test_stuck_temperature_escalation(mock_project: tuple[Path, Path, Path, Path
     assert provider.temperature == pytest.approx(start_temp)
 
 
-def test_stuck_counter_resets_on_acceptance() -> None:
+def test_stuck_counter_resets_on_acceptance(
+    mock_project: tuple[Path, Path, Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Counter resets to 0 on acceptance, restoring normal decay for subsequent iterations.
 
-    Direct unit test of the temperature selection state machine: simulate the
-    consecutive_no_accept counter incrementing on rejection, resetting on acceptance,
-    and verify that temperature follows the correct formula at every step.
+    Runs through run_optimization with monkeypatched evaluation, diversity, and gate
+    so that: iterations 1-5 are rejected (escalation kicks in at 6), iteration 6 is
+    accepted (counter resets), then iterations 7-9 return to normal decay.
     """
-    # Unit test: simulate the temperature selection logic directly.
-    start_temp = 0.8
+    import pandas as pd
+
+    from autobacktest.evaluator.report import EvaluationReport, WindowReport
+
+    prog_file, strat_dir, conf_dir, repo_root = mock_project
+    start_temp = 0.7
     min_temp = 0.1
-    total_iters = 12
+    n_iter = STUCK_THRESHOLD + 4  # 9 iterations total
 
-    def compute_temperature(k: int, consecutive: int) -> float:
-        if consecutive >= STUCK_THRESHOLD:
-            return min(start_temp, min_temp + (start_temp - min_temp) * 0.8)
-        if total_iters > 1:
-            decay_factor = (k - 1) / (total_iters - 1)
-            return start_temp - decay_factor * (start_temp - min_temp)
-        return start_temp
+    # Canned evaluation response — used for both baseline and all candidate iterations.
+    def _make_canned_report(sharpe: float = 1.0) -> tuple:
+        window = WindowReport(
+            start_date="2020-01-01",
+            end_date="2020-12-31",
+            annualized_return=0.12,
+            annualized_volatility=0.10,
+            sharpe_ratio=sharpe,
+            sortino_ratio=1.5,
+            max_drawdown=0.10,
+            turnover=0.5,
+            information_ratio=0.4,
+        )
+        report = EvaluationReport(
+            strategy_name="momentum",
+            dataset_hash="testhash",
+            gates_passed={"max_drawdown": True, "turnover": True, "regimes": True},
+            is_accepted=False,
+            rejection_reason=None,
+            holdout_metrics=window,
+            walk_forward_metrics=[window],
+            regime_drawdowns={},
+            regime_passed=True,
+            mc_sharpe_5th=0.8,
+            mc_sharpe_50th=1.0,
+            mc_sharpe_95th=1.2,
+            observed_sharpe=sharpe,
+            effective_trials=1,
+            deflated_sharpe=sharpe,
+        )
+        returns = pd.Series([0.01, -0.005, 0.008], dtype=float)
+        return report, returns
 
-    # Simulate: all-reject for first 6 iterations, accept on 7th, then all-reject again.
-    consecutive = 0
-    temps = []
-    for k in range(1, total_iters + 1):
-        temps.append(compute_temperature(k, consecutive))
-        if k == 7:
-            # acceptance: reset counter
-            consecutive = 0
-        else:
-            consecutive += 1
+    eval_call_count = [0]
 
-    # k=1..5 (index 0..4): consecutive was 0,1,2,3,4 — all < 5, normal decay
+    def patched_evaluate(*_args, **_kwargs):
+        eval_call_count[0] += 1
+        return _make_canned_report(sharpe=1.0)
+
+    monkeypatch.setattr("autobacktest.orchestrator.evaluate_strategy_detailed", patched_evaluate)
+
+    # Patch diversity gates to always pass.
+    monkeypatch.setattr("autobacktest.orchestrator.max_config_similarity", lambda *_: 0.0)
+    monkeypatch.setattr("autobacktest.orchestrator.check_returns_correlation", lambda *_: (True, 0.0))
+
+    # Patch accept() to accept on the STUCK_THRESHOLD+1-th gate call, reject otherwise.
+    gate_call_count = [0]
+
+    def patched_accept(*_args, **_kwargs):
+        gate_call_count[0] += 1
+        if gate_call_count[0] == STUCK_THRESHOLD + 1:
+            return GateResult(accepted=True)
+        return GateResult(accepted=False, reason="test rejection", failed_gate="target_metric_improvement")
+
+    monkeypatch.setattr("autobacktest.orchestrator.accept", patched_accept)
+
+    provider = TemperatureTrackingProvider()
+    provider.temperature = start_temp
+
+    run_optimization(
+        program_path=prog_file,
+        strategy_name="momentum",
+        iterations=n_iter,
+        provider=provider,
+        run_dir=repo_root / "runs",
+        strategies_dir=strat_dir,
+        configs_dir=conf_dir,
+        repo_path=repo_root,
+    )
+
+    assert len(provider.recorded_temperatures) == n_iter
+
+    # k=1..5 (index 0..4): consecutive_no_accept was 0,1,2,3,4 — normal decay.
     for i in range(STUCK_THRESHOLD):
-        decay_factor = i / (total_iters - 1)
+        decay_factor = i / (n_iter - 1)
         expected = start_temp - decay_factor * (start_temp - min_temp)
-        assert temps[i] == pytest.approx(expected)
+        assert provider.recorded_temperatures[i] == pytest.approx(expected), (
+            f"Iteration {i + 1}: expected normal decay {expected:.4f}, "
+            f"got {provider.recorded_temperatures[i]:.4f}"
+        )
 
-    # k=6 (index 5): consecutive was 5 >= STUCK_THRESHOLD — escalated
-    escalated = min(start_temp, min_temp + (start_temp - min_temp) * 0.8)
-    assert temps[5] == pytest.approx(escalated)
+    # k=6 (index 5): consecutive_no_accept == 5 >= STUCK_THRESHOLD — escalated.
+    # This is the iteration that gets accepted, resetting the counter to 0.
+    escalated = min(start_temp, min_temp + (start_temp - min_temp) * STUCK_ESCALATION_FACTOR)
+    assert provider.recorded_temperatures[STUCK_THRESHOLD] == pytest.approx(escalated)
 
-    # k=7 (index 6): consecutive was still 5 at entry (reset happens AFTER compute)
-    assert temps[6] == pytest.approx(escalated)
-
-    # k=8 (index 7): consecutive reset to 0 after k=7 acceptance, so normal decay
-    k = 8
-    decay_factor = (k - 1) / (total_iters - 1)
-    expected_normal = start_temp - decay_factor * (start_temp - min_temp)
-    assert temps[7] == pytest.approx(expected_normal)
+    # k=7..9 (index 6..8): counter reset to 0 after k=6 acceptance — normal decay resumes.
+    for i in range(STUCK_THRESHOLD + 1, n_iter):
+        k = i + 1
+        decay_factor = i / (n_iter - 1)
+        expected = start_temp - decay_factor * (start_temp - min_temp)
+        assert provider.recorded_temperatures[i] == pytest.approx(expected), (
+            f"Iteration {k}: expected normal decay {expected:.4f} after reset, "
+            f"got {provider.recorded_temperatures[i]:.4f}"
+        )

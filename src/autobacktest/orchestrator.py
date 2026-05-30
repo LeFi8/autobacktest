@@ -48,6 +48,7 @@ logger = logging.getLogger(__name__)
 DIVERSITY_CONFIG_THRESHOLD = 0.95
 DIVERSITY_RETURNS_THRESHOLD = 0.90
 STUCK_THRESHOLD = 5
+STUCK_ESCALATION_FACTOR = 0.8
 
 
 @dataclass
@@ -212,7 +213,9 @@ def run_optimization(
                 if start_temp is not None:
                     if consecutive_no_accept >= STUCK_THRESHOLD:
                         # Stuck: bump temperature back toward start_temp for exploration
-                        provider.temperature = min(start_temp, min_temp + (start_temp - min_temp) * 0.8)
+                        provider.temperature = min(
+                            start_temp, min_temp + (start_temp - min_temp) * STUCK_ESCALATION_FACTOR
+                        )
                     elif iterations > 1:
                         decay_factor = (k - 1) / (iterations - 1)
                         provider.temperature = start_temp - decay_factor * (start_temp - min_temp)
