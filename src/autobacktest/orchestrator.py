@@ -50,6 +50,7 @@ DIVERSITY_RETURNS_THRESHOLD = 0.90
 STUCK_THRESHOLD = 5
 STUCK_ESCALATION_FACTOR = 0.8
 MAX_DIVERSITY_RETRIES = 2
+EARLY_STOP_PATIENCE = 10
 
 
 @dataclass
@@ -199,6 +200,7 @@ def run_optimization(
         n_llm_ok = 0
         last_attempt: dict | None = None
         consecutive_no_accept: int = 0
+        _early_stop = False
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -214,6 +216,10 @@ def run_optimization(
                 if start_temp is not None:
                     if consecutive_no_accept >= STUCK_THRESHOLD:
                         # Stuck: bump temperature back toward start_temp for exploration
+                        if consecutive_no_accept == STUCK_THRESHOLD:
+                            logger.info(
+                                f"Stuck for {STUCK_THRESHOLD} iterations, escalating temperature."
+                            )
                         provider.temperature = min(
                             start_temp, min_temp + (start_temp - min_temp) * STUCK_ESCALATION_FACTOR
                         )
@@ -595,6 +601,14 @@ def run_optimization(
                             f"[cyan]Optimizing {strategy_name}... (Incumbent Sharpe: {incumbent.observed_sharpe:.3f})"
                         ),
                     )
+                    if consecutive_no_accept >= EARLY_STOP_PATIENCE:
+                        logger.info(
+                            f"Early stop: no acceptance in {consecutive_no_accept} consecutive iterations. "
+                            f"Stopping at iteration {k}/{iterations}."
+                        )
+                        _early_stop = True
+                if _early_stop:
+                    break
 
         if n_llm_ok == 0:
             raise RuntimeError("Zero successful LLM calls during optimization run. All iterations failed.")
