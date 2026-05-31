@@ -354,7 +354,7 @@ def evaluate_strategy_detailed(
             _code_hash = hash(_strategy_code)
             _config_hash = hash(json.dumps(flat_config, sort_keys=True, default=str))
             _ckey = hash((_code_hash, _config_hash))
-            _eval_cache[_ckey] = (report, holdout_net_returns)
+            _eval_cache[_ckey] = (deepcopy(report), holdout_net_returns.copy())
         except Exception:
             pass
 

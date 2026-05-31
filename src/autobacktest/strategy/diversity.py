@@ -67,7 +67,11 @@ def _parse_config_to_flat(config_yaml: str) -> dict[str, Any]:
     if not config_yaml or not config_yaml.strip():
         return {}
 
-    data = yaml.safe_load(config_yaml)
+    try:
+        data = yaml.safe_load(config_yaml)
+    except Exception:
+        return {}
+
     if not isinstance(data, dict):
         return {}
 
