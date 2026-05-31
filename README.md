@@ -141,10 +141,12 @@ uv run mypy --strict src/
 ```
 
 Detailed developer guides, API specifications, and architectural deep-dives can be found in the [docs/](docs) directory:
-- [Architecture & Design Details](docs/architecture.md)
-- [API Reference Guide](docs/api-reference.md)
-- [Developer Setup Instructions](docs/developer-setup.md)
-- [About Project & Methodology](docs/about-project.md)
+- 🏗️ [Architecture & Design Details](docs/architecture.md)
+- 🔌 [API Reference Guide](docs/api-reference.md)
+- 💻 [Developer Setup Instructions](docs/developer-setup.md)
+- 🎯 [About Project & Methodology](docs/about-project.md)
+
+
 
 ---
 

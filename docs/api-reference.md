@@ -48,12 +48,16 @@ Vectorized daily return computation. Incorporates lookahead-bias protection by l
 def run_vectorized_backtest(
     prices: pd.DataFrame,
     weights: pd.DataFrame,
+    *,
+    asset_returns: pd.DataFrame | None = None,
 ) -> tuple[pd.Series, pd.Series, pd.DataFrame]:
     """Execute a vectorized backtest with lookahead-bias protection.
 
     Args:
         prices: Daily close prices DataFrame (index=DatetimeIndex).
         weights: Portfolio weights DataFrame (index=DatetimeIndex).
+        asset_returns: Pre-computed daily asset returns (prices.pct_change()).
+            When provided, prices.pct_change() is skipped for efficiency.
 
     Returns:
         tuple containing:
@@ -64,21 +68,28 @@ def run_vectorized_backtest(
 ```
 
 ### `calculate_turnover_and_costs`
-Computes daily rebalancing turnover and penalizes returns by transaction costs.
+Computes daily rebalancing turnover and penalizes returns by transaction costs (commissions, bid-ask spreads, and market impact).
 ```python
 def calculate_turnover_and_costs(
-    portfolio_returns: pd.Series,
+    daily_returns: pd.Series,
     daily_weights: pd.DataFrame,
     prices: pd.DataFrame,
-    cost_bps: float = 10.0,
+    commission_bps: float = 5.0,
+    spread_bps: float = 5.0,
+    impact_coef: float = 0.0,
+    *,
+    asset_returns: pd.DataFrame | None = None,
 ) -> tuple[pd.Series, pd.Series, float]:
     """Calculate portfolio turnover and returns adjusted for transaction costs.
 
     Args:
-        portfolio_returns: Raw daily portfolio returns.
+        daily_returns: Daily portfolio gross returns series.
         daily_weights: Aligned daily asset weights.
         prices: Daily asset close prices.
-        cost_bps: Transaction cost penalty in basis points (1 bp = 0.0001).
+        commission_bps: Commission fee in basis points (1 bp = 0.0001).
+        spread_bps: Bid-ask spread in basis points.
+        impact_coef: Market impact parameter (quadratic/linear cost).
+        asset_returns: Pre-computed daily asset returns.
 
     Returns:
         tuple containing:
@@ -195,7 +206,64 @@ Unified configuration validator inheriting from `pydantic.BaseModel`.
 - `from_yaml(path: Path) -> StrategyConfig`: Parses YAML file and instantiates schema.
 - `to_flat_dict() -> dict[str, Any]`: Flattens configurations including sub-parameter schemas to single-depth dictionary.
 
+### Strategy Fingerprint & Diversity Validation (`autobacktest.strategy.diversity`)
+
+#### `ConfigFingerprint`
+Normalised representation of a strategy configuration for structural similarity comparison.
+- `numeric_params`: Dict mapping parameter names to raw float values (e.g. `momentum_lookback`).
+- `set_fields`: Dict mapping field names to sets of string members (e.g. `universe` list).
+
+#### `extract_config_fingerprint`
+Parses a raw YAML configuration string, flattens any nested parameters under the `params` key, and builds a stable `ConfigFingerprint`.
+```python
+def extract_config_fingerprint(config_yaml: str) -> ConfigFingerprint:
+```
+
+#### `config_similarity`
+Calculates a weighted similarity score in `[0.0, 1.0]` between two configuration fingerprints.
+```python
+def config_similarity(a: ConfigFingerprint, b: ConfigFingerprint) -> float:
+```
+Calculates similarity via:
+$$\text{Similarity} = 0.7 \times \text{CosineSimilarity}(\text{numeric\_params}) + 0.3 \times \text{MeanJaccard}(\text{set\_fields})$$
+Aligned numeric vectors are constructed using min-max normalization via `KNOWN_RANGES`. Unmatched keys default to `0.5` to prevent similarity inflation.
+
+#### `max_config_similarity`
+Compares a proposed candidate configuration with a collection of historical configuration strings.
+```python
+def max_config_similarity(
+    candidate_yaml: str,
+    historical_ymls: list[str],
+) -> float:
+```
+Normalizes unknown parameters by establishing dynamic sample-space boundaries across the entire set of compared configurations.
+
+#### `check_returns_correlation`
+Analyzes whether a strategy candidate produces returns that are functionally identical or highly correlated to any previous optimization trial.
+```python
+def check_returns_correlation(
+    candidate_returns: pd.Series,
+    historical_returns_matrix: pd.DataFrame,
+    threshold: float = 0.90,
+    min_overlap_days: int = 60,
+) -> tuple[bool, float]:
+    """Check returns correlation against historical backtests.
+
+    Args:
+        candidate_returns: Daily net returns of the active strategy candidate.
+        historical_returns_matrix: DataFrame containing daily return columns of past attempts.
+        threshold: Maximum permitted Pearson correlation coefficient (default: 0.90).
+        min_overlap_days: Minimum overlapping trading days required to compute correlation.
+
+    Returns:
+        tuple containing:
+            - passed (bool): True if candidate returns are sufficiently unique (all correlations <= threshold).
+            - max_correlation (float): Maximum correlation coefficient observed.
+    """
+```
+
 ---
+
 
 ## 4. Gating Check & Metric Optimization (`autobacktest.gate`)
 
@@ -208,30 +276,31 @@ def accept(
     target_metric: TargetMetric = TargetMetric.SHARPE,
     dd_limit: float | None = None,
     turnover_limit: float | None = None,
-    dsr_threshold: float | None = None,
     min_improvement: float | None = None,
     config: Any = None,
 ) -> GateResult:
     """Evaluate candidate EvaluationReport against lexicographic gates.
 
-    Checked gates in sequence:
-    1. Max Drawdown holdout limit
-    2. Historical stress regime checks
-    3. Annualized rebalancing turnover holdout limit
-    4. Multiple-testing adjusted Deflated Sharpe Ratio (DSR) threshold
+    Hard constraints checked in sequence:
+    1. Drawdown: holdout_metrics.max_drawdown <= dd_limit
+    2. Regime tests: regime_passed is True
+    3. Turnover: holdout_metrics.turnover <= turnover_limit
 
-    Tie-breaker check:
-    5. Target metric improvement over baseline by at least epsilon margin
+    If all pass, tie-breaker check:
+    4. Target metric improvement over baseline by at least epsilon margin
+       (if baseline is present)
+
+    Note: Deflated Sharpe Ratio (DSR) is computed and stored on the report for
+    overfitting insight but is NOT an active hard gate.
 
     Args:
         report: Candidate strategy EvaluationReport.
-        baseline: Baseline comparison EvaluationReport.
+        baseline: Optional baseline comparison EvaluationReport.
         target_metric: Target metric to compare improvement.
         dd_limit: Maximum allowed holdout drawdown.
         turnover_limit: Maximum allowed holdout turnover rate.
-        dsr_threshold: Minimum allowed DSR probability.
         min_improvement: Epsilon required improvement margin.
-        config: Optional configuration model to resolve default gates limits.
+        config: Optional configuration model or dict to resolve default gates limits.
 
     Returns:
         GateResult: Selection outcome specifying acceptance status and failure reasons.
