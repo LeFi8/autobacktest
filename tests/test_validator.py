@@ -300,11 +300,13 @@ def generate_signals(_prices: pd.DataFrame, _config: dict) -> pd.DataFrame:
 
 def test_validator_file_size_limit(mock_dirs: tuple[Path, Path]) -> None:
     """Verifies that strategy files exceeding size limits are rejected."""
+    from autobacktest.config import settings
     strat_dir, conf_dir = mock_dirs
 
     strat_file = strat_dir / "large_file.py"
-    # Write a file exceeding 100KB (e.g. 101KB of comment padding)
-    padding = "#" * (101 * 1024)
+    # Write a file exceeding the configured limit dynamically
+    padding_size = (settings.max_file_size_kb + 1) * 1024
+    padding = "#" * padding_size
     strat_file.write_text(
         f"""
 import pandas as pd
