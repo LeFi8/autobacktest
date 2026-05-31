@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 from typer.testing import CliRunner
@@ -30,7 +31,7 @@ def test_reset_command_flow(tmp_path: Path) -> None:
     with patch("autobacktest.ledger.git_ops.GitLedger") as mock_git_ledger:
         ledger_instance = mock_git_ledger.return_value
 
-        def mock_path(*args):
+        def mock_path(*args: Any) -> Path:
             if not args:
                 return tmp_path
             if args[0] == "lessons.md":

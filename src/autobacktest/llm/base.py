@@ -2,6 +2,7 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import Any
 
 from autobacktest.evaluator.report import EvaluationReport
 
@@ -17,6 +18,10 @@ class AgentContext:
         program_text: Full objective and constraints markdown text.
         evaluation_report: Evaluation report from the previous iteration, if any.
         iteration: The 1-indexed counter of the current optimization loop.
+        last_attempt: Dict describing the most recent failed iteration, if any.
+            Keys vary by failure stage: stage, error_code, detail, rejection_reason,
+            failed_gate, candidate_strategy_code, candidate_config_yaml,
+            candidate_metrics.
     """
 
     strategy_name: str
@@ -26,6 +31,8 @@ class AgentContext:
     evaluation_report: EvaluationReport | None
     iteration: int
     lessons_text: str = ""
+    n_historical_configs: int = 0
+    last_attempt: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)

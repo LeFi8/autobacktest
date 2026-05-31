@@ -26,9 +26,18 @@ You operate in a strict execution loop and MUST adhere to the following rules:
    - Summarize findings of the previous iteration (e.g. if the previous
      edit failed AST checks, execution, or the gate, analyze why and record it).
    - Keep lessons structured, concise, and action-oriented.
-   - If the current lessons exceed the 4096 token limit (~16k characters),
-     you MUST prune, compress, and consolidate older or less useful lessons to fit.
-8. Strict JSON/Formatting Rule: Do not output any conversational text
+    - If the current lessons exceed the 4096 token limit (~16k characters),
+      you MUST prune, compress, and consolidate older or less useful lessons to fit.
+8. Diversity Rule: Your proposed strategy config YAML will be compared
+   against ALL past attempts with the same asset universe. If it has
+    >95% similarity (same params, same asset sets, same structure), the
+   iteration will be rejected WITHOUT backtesting and the iteration
+   budget is consumed. To avoid this, you MUST explore structurally
+   different approaches each time — change the asset universe, swap the
+   momentum metric (e.g., EWMA crossover instead of 13612U), alter the
+   canary logic, or modify the weighting scheme. Stale parameter tweaks
+   (varying hysteresis by ±0.005) will be caught.
+9. Strict JSON/Formatting Rule: Do not output any conversational text
    before or after the JSON payload. For reasoning/thinking models,
    the very first character immediately following the closing </think>
    tag must be the opening {{ of the JSON payload. No markdown
@@ -72,6 +81,130 @@ def build_messages(context: AgentContext) -> list[dict[str, str]]:
             f"to keep them under the cap.\n"
         )
 
+    # Diversity warning section
+    diversity_warning = ""
+    if context.n_historical_configs > 0:
+        diversity_warning = (
+            f"\n## Diversity Warning\n"
+            f"There are {context.n_historical_configs} attempted strategy variants "
+            f"tracked (including rejected ones) for this asset universe. The config "
+            f"similarity gate will reject proposals with >95% fingerprint overlap.\n"
+        )
+
+    # Build the "Previous Attempt Result" section if a failed attempt exists
+    previous_attempt_section = ""
+    if context.last_attempt is not None:
+        attempt = context.last_attempt
+        stage = attempt.get("stage", "unknown")
+        lines: list[str] = ["## Previous Attempt Result", f"**Stage:** {stage}"]
+
+        if stage == "validation":
+            error_code = attempt.get("error_code", "")
+            detail = attempt.get("detail", "")
+            lines.append(f"**Error:** `{error_code}`")
+            lines.append(f"**Detail:** {detail}")
+            if error_code == "lookahead_detected":
+                lines.append(
+                    "**Explanation:** `lookahead_detected` means the strategy code reads "
+                    "future price rows (e.g. using `.shift(-n)` with a negative shift, or "
+                    "indexing beyond `t` at evaluation time). This is a hard disqualifier."
+                )
+            code = attempt.get("candidate_strategy_code", "")
+            config = attempt.get("candidate_config_yaml", "")
+            if code:
+                lines.append(f"\n**Failed strategy code:**\n```python\n{code}\n```")
+            if config:
+                lines.append(f"\n**Failed config:**\n```yaml\n{config}\n```")
+
+        elif stage == "diversity_config":
+            detail = attempt.get("detail", "")
+            lines.append(f"**Detail:** {detail}")
+            config = attempt.get("candidate_config_yaml", "")
+            if config:
+                lines.append(f"\n**Rejected config:**\n```yaml\n{config}\n```")
+
+        elif stage == "eval_error":
+            detail = attempt.get("detail", "")
+            lines.append(f"**Error:** {detail}")
+            code = attempt.get("candidate_strategy_code", "")
+            config = attempt.get("candidate_config_yaml", "")
+            if code:
+                lines.append(f"\n**Failed strategy code:**\n```python\n{code}\n```")
+            if config:
+                lines.append(f"\n**Failed config:**\n```yaml\n{config}\n```")
+
+        elif stage == "diversity_returns":
+            detail = attempt.get("detail", "")
+            lines.append(f"**Detail:** {detail}")
+            metrics = attempt.get("candidate_metrics", {})
+            if metrics:
+                lines.append("**Observed metrics:**")
+                for k, v in metrics.items():
+                    lines.append(f"  - {k}: {v}")
+            config = attempt.get("candidate_config_yaml", "")
+            if config:
+                lines.append(f"\n**Rejected config:**\n```yaml\n{config}\n```")
+
+        elif stage == "gate":
+            rejection_reason = attempt.get("rejection_reason", "")
+            failed_gate = attempt.get("failed_gate", "")
+            lines.append(f"**Rejection reason:** {rejection_reason}")
+            lines.append(f"**Failed gate:** `{failed_gate}`")
+            metrics = attempt.get("candidate_metrics", {})
+            if metrics:
+                lines.append("**Candidate metrics at rejection:**")
+                for k, v in metrics.items():
+                    lines.append(f"  - {k}: {v}")
+            code = attempt.get("candidate_strategy_code", "")
+            config = attempt.get("candidate_config_yaml", "")
+            if code:
+                lines.append(f"\n**Failed strategy code:**\n```python\n{code}\n```")
+            if config:
+                lines.append(f"\n**Failed config:**\n```yaml\n{config}\n```")
+
+        else:
+            detail = attempt.get("detail", attempt.get("rejection_reason", ""))
+            if detail:
+                lines.append(f"**Detail:** {detail}")
+
+        lines.append(
+            "\n**Diagnose the failure above. Do NOT regenerate the same code or config. "
+            "Your fix must address the specific error shown.**"
+        )
+        previous_attempt_section = "\n".join(lines) + "\n\n"
+
+    # Build the "Performance Target" section
+    if context.evaluation_report is not None:
+        rep = context.evaluation_report
+        incumbent_sharpe = rep.holdout_metrics.sharpe_ratio
+        incumbent_sortino = rep.holdout_metrics.sortino_ratio
+        incumbent_ir = rep.holdout_metrics.information_ratio
+        incumbent_dd = rep.holdout_metrics.max_drawdown
+        incumbent_turnover = rep.holdout_metrics.turnover
+        performance_target_section = (
+            f"## Performance Target\n"
+            f"Incumbent holdout metrics (you must beat these):\n"
+            f"  - Sharpe: {incumbent_sharpe:.4f}\n"
+            f"  - Sortino: {incumbent_sortino:.4f}\n"
+            f"  - Information Ratio: {incumbent_ir:.4f}\n"
+            f"  - Max Drawdown: {incumbent_dd:.4f}\n"
+            f"  - Turnover: {incumbent_turnover:.4f}\n\n"
+            f"Hard gate limits (all must pass):\n"
+            f"  - Holdout max drawdown <= 0.20\n"
+            f"  - Holdout turnover <= 2.0\n"
+            f"  - All historical crisis regime stress tests must pass\n"
+            f"  - Target metric must strictly exceed the incumbent value above.\n"
+            f"  - Deflated Sharpe (DSR): reported for overfitting insight only — not a hard gate.\n\n"
+        )
+    else:
+        performance_target_section = (
+            "## Performance Target\n"
+            "No incumbent evaluation yet (first iteration). "
+            "Hard gate limits: drawdown <= 0.20, turnover <= 2.0, "
+            "all regime stress tests must pass. "
+            "DSR reported for overfitting insight only — not a hard gate.\n\n"
+        )
+
     user_content = f"""## Iteration
 Current Loop Iteration: {context.iteration}
 
@@ -93,8 +226,8 @@ Current Loop Iteration: {context.iteration}
 
 ## Latest Evaluation
 {eval_report_str}
-
-## Instructions
+{diversity_warning}
+{previous_attempt_section}{performance_target_section}## Instructions
 Improve the strategy per the objective. Optimize parameters, signal
 logic, or asset weights.
 Your response must be returned as a JSON object containing the keys:

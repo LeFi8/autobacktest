@@ -166,7 +166,7 @@ def test_litellm_provider_error_classification(mock_completion: MagicMock) -> No
     import litellm
 
     # 1. Non-retryable (BadRequestError)
-    mock_completion.side_effect = litellm.BadRequestError(
+    mock_completion.side_effect = litellm.BadRequestError(  # type: ignore[attr-defined]
         message="Bad request",
         model="gpt-4o",
         response=MagicMock(),

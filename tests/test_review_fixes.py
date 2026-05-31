@@ -2,6 +2,7 @@
 
 import time
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import pytest
@@ -9,6 +10,7 @@ from pydantic import ValidationError as PydanticValidationError
 
 from autobacktest.evaluator.report import EvaluationReport, WindowReport
 from autobacktest.gate import accept as gate_accept
+from autobacktest.llm.base import AgentContext
 from autobacktest.strategy.config_schema import StrategyConfig
 from autobacktest.strategy.contract import validate_output, validate_signature
 from autobacktest.strategy.validator import ValidationError, _check_ast, preflight
@@ -142,20 +144,21 @@ def test_signature_var_positional_rejection() -> None:
     mod = MockModule()
 
     # 1. Positional *args as the second argument must be rejected
-    def generate_signals_bad(prices, *args):
+    def generate_signals_bad(prices: Any, *args: Any) -> None:
         pass
 
-    mod.generate_signals = generate_signals_bad
-    ok, err = validate_signature(mod)
+    mod.generate_signals = generate_signals_bad  # type: ignore[attr-defined]
+    ok, err = validate_signature(mod)  # type: ignore[arg-type]
     assert not ok
+    assert err is not None
     assert "Second parameter must be positional" in err
 
     # 2. Positional *args as the third argument is allowed if defaults exist
-    def generate_signals_ok(prices, config, *args):
+    def generate_signals_ok(prices: Any, config: Any, *args: Any) -> None:
         pass
 
-    mod.generate_signals = generate_signals_ok
-    ok, err = validate_signature(mod)
+    mod.generate_signals = generate_signals_ok  # type: ignore[attr-defined]
+    ok, err = validate_signature(mod)  # type: ignore[arg-type]
     assert ok
 
 
@@ -174,6 +177,7 @@ def test_output_index_validation() -> None:
     weights_bad = pd.DataFrame({"SPY": [0.5]}, index=[bad_date])
     ok, err = validate_output(weights_bad, ["SPY"], expected_index=prices_index)
     assert not ok
+    assert err is not None
     assert "contains dates not in the price history" in err
 
 
@@ -211,6 +215,7 @@ def test_gate_nan_error_message_formatting() -> None:
     # 1. Clean float breach
     res = gate_accept(report, baseline=None, dd_limit=0.15)
     assert not res.accepted
+    assert res.reason is not None
     assert "exceeds limit of 0.1500" in res.reason
     assert "NaN" not in res.reason
 
@@ -218,6 +223,7 @@ def test_gate_nan_error_message_formatting() -> None:
     window.max_drawdown = float("nan")
     res_nan = gate_accept(report, baseline=None, dd_limit=0.15)
     assert not res_nan.accepted
+    assert res_nan.reason is not None
     assert "drawdown is NaN" in res_nan.reason
 
 
@@ -254,7 +260,7 @@ def test_timeout_sandbox_non_main_thread() -> None:
 
     errors = []
 
-    def run_in_thread():
+    def run_in_thread() -> None:
         try:
             with timeout_sandbox(seconds=2):
                 pass
@@ -273,6 +279,7 @@ def test_validate_output_duplicate_columns() -> None:
     weights = pd.DataFrame([[0.5, 0.5]], index=[dates[0]], columns=["SPY", "SPY"])
     ok, err = validate_output(weights, ["SPY"])
     assert not ok
+    assert err is not None
     assert "duplicate columns" in err
 
 
@@ -282,6 +289,7 @@ def test_validate_output_non_numeric() -> None:
     weights = pd.DataFrame([["0.5", 0.5]], index=[dates[0]], columns=["SPY", "QQQ"])
     ok, err = validate_output(weights, ["SPY", "QQQ"])
     assert not ok
+    assert err is not None
     assert "must be numeric" in err
 
 
@@ -291,7 +299,7 @@ def test_evaluate_strategy_too_short_period() -> None:
     """
     from autobacktest.evaluator.evaluate import evaluate_strategy
 
-    def dummy_generate_signals(prices, _config):
+    def dummy_generate_signals(prices: pd.DataFrame, _config: dict[str, Any]) -> pd.DataFrame:
         return pd.DataFrame(0.5, index=prices.index, columns=prices.columns)
 
     config = {"universe": ["SPY"], "benchmark": "SPY"}
@@ -308,7 +316,11 @@ def test_evaluate_strategy_too_short_period() -> None:
 
 
 def test_gate_dsr_none_handling() -> None:
-    """Verifies that gate.accept handles None deflated_sharpe gracefully."""
+    """Verifies that gate.accept handles None deflated_sharpe gracefully.
+
+    Since DSR is no longer a hard gate, a None deflated_sharpe should be
+    accepted as long as all other gates pass.
+    """
     window = WindowReport(
         start_date="2023-01-01",
         end_date="2025-12-31",
@@ -338,9 +350,8 @@ def test_gate_dsr_none_handling() -> None:
         deflated_sharpe=None,  # type: ignore
     )
 
-    res = gate_accept(report, baseline=None, dsr_threshold=0.95)
-    assert not res.accepted
-    assert "Deflated Sharpe Ratio is missing or NaN" in res.reason
+    res = gate_accept(report, baseline=None)
+    assert res.accepted
 
 
 def test_agent_edit_response_lessons_text_optional() -> None:
@@ -560,7 +571,7 @@ def test_orchestrator_lessons_persistence(tmp_path: Path) -> None:
     import git
 
     from autobacktest.gate import TargetMetric
-    from autobacktest.llm.base import AgentContext, AgentEdit, LLMProvider
+    from autobacktest.llm.base import AgentEdit, LLMProvider
     from autobacktest.orchestrator import run_optimization
 
     # 1. Create a dummy git repo with project structure
@@ -646,7 +657,12 @@ def test_orchestrator_lessons_persistence(tmp_path: Path) -> None:
 
     # Verify that:
     # 1. At the start of Iteration 2, the context received updated lessons!
-    assert len(called_contexts) == 2
+    # Iteration 1 produces 1 call (validation failure — no diversity check reached).
+    # Iteration 2 produces 1 initial call + up to MAX_DIVERSITY_RETRIES retries (because
+    # STRATEGY_CONFIG is identical to the baseline → diversity rejected each time).
+    from autobacktest.orchestrator import MAX_DIVERSITY_RETRIES
+
+    assert len(called_contexts) == 1 + (1 + MAX_DIVERSITY_RETRIES)
     assert called_contexts[0].lessons_text == "# Initial Lessons\n"
     assert called_contexts[1].lessons_text == "# Lessons: validation failed because of os import."
 
@@ -684,7 +700,7 @@ def test_cli_reset_safe_abort(tmp_path: Path) -> None:
         # Force an exception during git reset
         ledger_instance.reset_to_main.side_effect = RuntimeError("Dirty working tree conflict")
 
-        def mock_path(*args):
+        def mock_path(*args: Any) -> Path:
             if not args:
                 return tmp_path
             if args[0] == "lessons.md":

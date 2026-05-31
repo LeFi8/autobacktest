@@ -76,12 +76,11 @@ def test_gate_rejects_excessive_turnover() -> None:
     assert res.failed_gate == "turnover"
 
 
-def test_gate_rejects_sub_threshold_dsr() -> None:
-    """Verifies Deflated Sharpe Ratio statistical threshold constraint."""
-    rep = _create_mock_report(deflated_sharpe=0.90)
-    res = accept(rep, baseline=None, dsr_threshold=0.95)
-    assert not res.accepted
-    assert res.failed_gate == "deflated_sharpe"
+def test_gate_dsr_not_a_hard_gate() -> None:
+    """Verifies Deflated Sharpe Ratio is no longer a hard gate."""
+    rep = _create_mock_report(deflated_sharpe=0.10)
+    res = accept(rep, baseline=None)
+    assert res.accepted
 
 
 def test_gate_lexicographic_ordering() -> None:
@@ -142,11 +141,10 @@ def test_gate_rejects_nan_metrics() -> None:
     assert not res.accepted
     assert res.failed_gate == "turnover"
 
-    # 3. NaN DSR
+    # 3. NaN DSR — accepted since DSR is no longer a hard gate
     rep_nan_dsr = _create_mock_report(deflated_sharpe=float("nan"))
     res = accept(rep_nan_dsr, baseline=None)
-    assert not res.accepted
-    assert res.failed_gate == "deflated_sharpe"
+    assert res.accepted
 
     # 4. NaN Target Metric
     base = _create_mock_report(sharpe=1.2)
@@ -162,7 +160,7 @@ def test_gate_resolves_limits_from_config() -> None:
     config_dict = {"max_drawdown_limit": 0.08, "turnover_limit": 0.3}
     rep = _create_mock_report(max_drawdown=0.09, turnover=0.25)
 
-    # Passes with standard defaults (0.15 / 1.0)
+    # Passes with standard defaults (0.20 / 2.0)
     res_default = accept(rep, baseline=None)
     assert res_default.accepted
 

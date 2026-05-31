@@ -13,7 +13,7 @@ import pandas as pd
 import pytest
 
 from autobacktest.gate import TargetMetric
-from autobacktest.llm.base import AgentEdit
+from autobacktest.llm.base import AgentContext, AgentEdit
 from autobacktest.llm.mock_provider import MockProvider
 from autobacktest.orchestrator import OrchestratorResult, run_optimization
 
@@ -112,6 +112,18 @@ max_drawdown_limit: 0.50
 turnover_limit: 5.0
 """
 
+# Improved config differs enough from STRATEGY_CONFIG to pass the diversity gate
+# (config similarity < 0.95 threshold).
+IMPROVED_CONFIG = """\
+universe:
+  - HIGH
+  - LOW
+benchmark: HIGH
+momentum_lookback: 1
+max_drawdown_limit: 0.30
+turnover_limit: 10.0
+"""
+
 PROGRAM_MD = """\
 # Objective
 Maximize risk-adjusted returns on the toy universe.
@@ -195,7 +207,7 @@ def test_e2e_full_run_commits_improved_strategy(project_root: Path) -> None:
 
     scripted_edit = AgentEdit(
         strategy_code=IMPROVED_STRATEGY,
-        config_yaml=STRATEGY_CONFIG,
+        config_yaml=IMPROVED_CONFIG,
         reasoning="Switch allocation to HIGH asset for better risk-adjusted returns",
         raw_response="{}",
     )
@@ -268,8 +280,15 @@ def test_e2e_full_run_commits_improved_strategy(project_root: Path) -> None:
     # Initial commit + at least one accepted-edit commit
     assert len(branch_commits) >= 2, f"Expected ≥2 commits on {run_branch}, got {len(branch_commits)}"
 
-    # --- MockProvider was called 3 times (one per iteration) ---
-    assert len(mock_provider.calls) == 3
+    # --- MockProvider call count ---
+    # Iteration 1: IMPROVED_CONFIG passes diversity on first try (1 call).
+    # Iterations 2-3: IMPROVED_CONFIG is already in history → diversity rejected,
+    # bounded retry fires up to MAX_DIVERSITY_RETRIES additional times before
+    # consuming the iteration.  Total = 1 + (1 + MAX_DIVERSITY_RETRIES) * 2.
+    from autobacktest.orchestrator import MAX_DIVERSITY_RETRIES
+
+    expected_calls = 1 + (1 + MAX_DIVERSITY_RETRIES) * 2
+    assert len(mock_provider.calls) == expected_calls
 
 
 def test_e2e_validation_failure_continues(project_root: Path) -> None:
@@ -335,7 +354,7 @@ def test_orchestrator_fail_fast_on_non_retryable_error(project_root: Path) -> No
     from autobacktest.llm.mock_provider import MockProvider
 
     class FailingProvider(MockProvider):
-        def generate_edit(self, _context):
+        def generate_edit(self, _context: AgentContext) -> AgentEdit:
             raise LLMError(provider="mock", model="m", detail="Non-retryable config error", retryable=False)
 
     provider = FailingProvider()
@@ -360,7 +379,7 @@ def test_orchestrator_continues_on_retryable_error(_mock_sleep: MagicMock, proje
     from autobacktest.llm.mock_provider import MockProvider
 
     class RetryableProvider(MockProvider):
-        def generate_edit(self, _context):
+        def generate_edit(self, _context: AgentContext) -> AgentEdit:
             raise LLMError(provider="mock", model="m", detail="Transient timeout", retryable=True)
 
     provider = RetryableProvider()
@@ -389,7 +408,7 @@ def test_orchestrator_retries_transient_error_with_backoff(mock_sleep: MagicMock
     call_count = 0
 
     class FlakyProvider(MockProvider):
-        def generate_edit(self, _context):
+        def generate_edit(self, _context: AgentContext) -> AgentEdit:
             nonlocal call_count
             call_count += 1
             if call_count <= 2:
@@ -418,8 +437,13 @@ def test_orchestrator_retries_transient_error_with_backoff(mock_sleep: MagicMock
         end_date="2025-01-01",
     )
 
-    # 3 total calls to FlakyProvider.generate_edit
-    assert call_count == 3
+    # Calls 1-2: transient LLMError → retried with backoff.
+    # Call 3: succeeds, returns STRATEGY_CONFIG (identical to baseline).
+    # Diversity gate fires: STRATEGY_CONFIG == baseline → retry up to MAX_DIVERSITY_RETRIES.
+    # Calls 4 to (3 + MAX_DIVERSITY_RETRIES): each returns STRATEGY_CONFIG → diversity rejected.
+    from autobacktest.orchestrator import MAX_DIVERSITY_RETRIES
+
+    assert call_count == 3 + MAX_DIVERSITY_RETRIES
     # time.sleep called twice with exponential backoff: 2.0 ** 1 = 2.0s, and 2.0 ** 2 = 4.0s
     assert mock_sleep.call_count == 2
     mock_sleep.assert_any_call(2.0)

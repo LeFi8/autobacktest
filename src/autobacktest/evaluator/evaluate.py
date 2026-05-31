@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from copy import deepcopy
 from typing import Any
 
 import numpy as np
@@ -60,15 +63,26 @@ def generate_window_report(
     start: pd.Timestamp,
     end: pd.Timestamp,
     benchmark_returns: pd.Series | None = None,
+    *,
+    asset_returns: pd.DataFrame | None = None,
 ) -> WindowReport:
     """Run backtest and cost assessment for a specific date window."""
     window_prices = prices.loc[start:end]
     window_weights = weights.loc[start:end]
 
-    portfolio_returns, _, daily_weights = run_vectorized_backtest(window_prices, window_weights)
+    portfolio_returns, _, daily_weights = run_vectorized_backtest(
+        window_prices,
+        window_weights,
+        asset_returns=asset_returns,
+    )
 
     # Compute net returns and turnover
-    net_returns, net_equity, turnover = calculate_turnover_and_costs(portfolio_returns, daily_weights, window_prices)
+    net_returns, net_equity, turnover = calculate_turnover_and_costs(
+        portfolio_returns,
+        daily_weights,
+        window_prices,
+        asset_returns=asset_returns,
+    )
 
     # Standard performance metrics
     mean_ret = net_returns.mean() if not net_returns.empty else 0.0
@@ -106,16 +120,76 @@ def generate_window_report(
     )
 
 
+def _run_walk_forward_windows(
+    prices: pd.DataFrame,
+    weights: pd.DataFrame,
+    wf_windows: list[tuple[pd.Timestamp, pd.Timestamp, pd.Timestamp, pd.Timestamp]],
+    bench_returns: pd.Series | None = None,
+    *,
+    asset_returns: pd.DataFrame | None = None,
+) -> list[WindowReport]:
+    """Run walk-forward window evaluations in parallel via thread pool.
+
+    Each window is fully independent (read-only access to ``prices`` /
+    ``weights``), so we evaluate them concurrently for a modest speedup
+    on multi-core machines.
+    """
+    n_windows = len(wf_windows)
+    if n_windows == 0:
+        return []
+
+    max_workers = min(4, n_windows)
+    reports: list[WindowReport | None] = [None] * n_windows
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map: dict[Any, int] = {}
+        for i, (_, _, test_start, test_end) in enumerate(wf_windows):
+            future = executor.submit(
+                generate_window_report,
+                prices,
+                weights,
+                test_start,
+                test_end,
+                bench_returns,
+                asset_returns=asset_returns,
+            )
+            future_map[future] = i
+
+        for future in as_completed(future_map):
+            idx = future_map[future]
+            try:
+                reports[idx] = future.result()
+            except Exception as e:
+                raise RuntimeError(f"Walk-forward window {idx} failed: {e}") from e
+
+    return [r for r in reports if r is not None]
+
+
 def evaluate_strategy_detailed(
     strategy_name: str,
     generate_signals_fn: Any,
     config: dict[str, Any] | StrategyConfig,
     start_date: str = settings.default_start_date,
     end_date: str = settings.default_end_date,
+    *,
+    _prices: pd.DataFrame | None = None,
+    _bench_returns: pd.Series | None = None,
+    _eval_cache: dict[int, tuple[EvaluationReport, pd.Series]] | None = None,
+    _strategy_code: str | None = None,
 ) -> tuple[EvaluationReport, pd.Series[Any]]:
     """Run full deterministic walk-forward & holdout evaluation lifecycle.
 
     Returns a tuple of (EvaluationReport, holdout_net_returns Series).
+
+    Parameters prefixed with ``_`` are internal optimisations:
+
+    * ``_prices`` / ``_bench_returns`` — pre-fetched price data reused
+      across iterations within a single run.
+    * ``_eval_cache`` — memoization dict keyed by
+      ``hash((hash(strategy_code), hash(json(config))))``.  When the same
+      edit is proposed twice the full evaluation is skipped.
+    * ``_strategy_code`` — source text of the strategy being evaluated,
+      required for the eval cache key.
     """
     if isinstance(config, StrategyConfig):
         flat_config = config.to_flat_dict()
@@ -127,23 +201,43 @@ def evaluate_strategy_detailed(
                 if k not in flat_config:
                     flat_config[k] = v
 
+    # ---- Evaluation cache check (Opt 4) ----
+    if _eval_cache is not None and _strategy_code is not None:
+        try:
+            _code_hash = hash(_strategy_code)
+            _config_hash = hash(json.dumps(flat_config, sort_keys=True, default=str))
+            _ckey = hash((_code_hash, _config_hash))
+            cached = _eval_cache.get(_ckey)
+            if cached is not None:
+                cached_report, cached_returns = cached
+                return deepcopy(cached_report), cached_returns.copy()
+        except Exception:
+            pass
+
     tickers = flat_config.get("universe", [])
     benchmark_ticker = flat_config.get("benchmark", "SPY")
 
-    # Fetch daily price series
-    raw_provider = YFinanceProvider()
-    provider = CachedDataProvider(raw_provider, cache_dir=str(settings.cache_dir))
+    if _prices is not None and _bench_returns is not None:
+        missing_assets = [t for t in tickers if t not in _prices.columns]
+        if missing_assets:
+            raise ValueError(f"Cached prices missing tickers: {missing_assets}")
+        if benchmark_ticker not in _prices.columns:
+            raise ValueError(f"Cached prices missing benchmark ticker: {benchmark_ticker}")
+        prices = _prices
+        bench_returns = _bench_returns
+    else:
+        raw_provider = YFinanceProvider()
+        provider = CachedDataProvider(raw_provider, cache_dir=str(settings.cache_dir))
+        prices = provider.get_prices(tickers, start_date, end_date)
+        benchmark_prices = provider.get_prices([benchmark_ticker], start_date, end_date)
+        if prices.empty:
+            raise ValueError("No price history returned for requested strategy universe.")
+        if benchmark_prices.empty or benchmark_ticker not in benchmark_prices.columns:
+            raise ValueError(f"No price history returned for benchmark ticker: {benchmark_ticker}")
+        bench_returns = benchmark_prices[benchmark_ticker].pct_change().fillna(0.0)
 
-    prices = provider.get_prices(tickers, start_date, end_date)
-    benchmark_prices = provider.get_prices([benchmark_ticker], start_date, end_date)
-
-    if prices.empty:
-        raise ValueError("No price history returned for requested strategy universe.")
-    if benchmark_prices.empty or benchmark_ticker not in benchmark_prices.columns:
-        raise ValueError(f"No price history returned for benchmark ticker: {benchmark_ticker}")
-
-    # Calculate daily percentage returns of the benchmark
-    bench_returns = benchmark_prices[benchmark_ticker].pct_change().fillna(0.0)
+    # Pre-compute asset returns once — reused across all window evaluations (Opt 2)
+    _asset_returns = prices.pct_change().fillna(0.0)
 
     # Dynamic dynamic weights generation from custom strategy function
     weights = generate_signals_fn(prices, flat_config)
@@ -160,28 +254,55 @@ def evaluate_strategy_detailed(
     if in_sample_idx.empty or holdout_idx.empty:
         raise ValueError("In-sample or holdout period is empty. Ensure the backtest period is sufficiently long.")
 
-    # Walk-forward on In-Sample index
     wf_windows = generate_walk_forward_windows(in_sample_idx, train_years=5, test_years=1)
-    wf_reports = []
-
-    for _, _, test_start, test_end in wf_windows:
-        wf_reports.append(generate_window_report(prices, weights, test_start, test_end, bench_returns))
+    wf_reports = _run_walk_forward_windows(
+        prices,
+        weights,
+        wf_windows,
+        bench_returns,
+        asset_returns=_asset_returns,
+    )
 
     # Evaluate holdout window
     holdout_start = holdout_idx.min()
     holdout_end = holdout_idx.max()
-    holdout_report = generate_window_report(prices, weights, holdout_start, holdout_end, bench_returns)
+    holdout_report = generate_window_report(
+        prices,
+        weights,
+        holdout_start,
+        holdout_end,
+        bench_returns,
+        asset_returns=_asset_returns,
+    )
 
     # Compute holdout net returns from the same window backtest used for holdout_report
     # (consistent source for both observed_sharpe and the DSR test statistic)
     holdout_prices = prices.loc[holdout_start:holdout_end]
     holdout_weights = weights.loc[holdout_start:holdout_end]
-    h_portfolio_returns, _, h_daily_weights = run_vectorized_backtest(holdout_prices, holdout_weights)
-    holdout_net_returns, _, _ = calculate_turnover_and_costs(h_portfolio_returns, h_daily_weights, holdout_prices)
+    h_portfolio_returns, _, h_daily_weights = run_vectorized_backtest(
+        holdout_prices,
+        holdout_weights,
+        asset_returns=_asset_returns,
+    )
+    holdout_net_returns, _, _ = calculate_turnover_and_costs(
+        h_portfolio_returns,
+        h_daily_weights,
+        holdout_prices,
+        asset_returns=_asset_returns,
+    )
 
     # Evaluate full period net returns for Monte Carlo and Regime tests
-    full_returns, _, daily_weights = run_vectorized_backtest(prices, weights)
-    net_returns, _, _ = calculate_turnover_and_costs(full_returns, daily_weights, prices)
+    full_returns, _, daily_weights = run_vectorized_backtest(
+        prices,
+        weights,
+        asset_returns=_asset_returns,
+    )
+    net_returns, _, _ = calculate_turnover_and_costs(
+        full_returns,
+        daily_weights,
+        prices,
+        asset_returns=_asset_returns,
+    )
 
     # Labeled stress testing regimes
     regime_drawdowns, regime_passed = evaluate_stress_regimes(net_returns)
@@ -228,6 +349,15 @@ def evaluate_strategy_detailed(
 
     gate_accept(report, baseline=None, config=flat_config)
 
+    if _eval_cache is not None and _strategy_code is not None:
+        try:
+            _code_hash = hash(_strategy_code)
+            _config_hash = hash(json.dumps(flat_config, sort_keys=True, default=str))
+            _ckey = hash((_code_hash, _config_hash))
+            _eval_cache[_ckey] = (deepcopy(report), holdout_net_returns.copy())
+        except Exception:
+            pass
+
     return report, holdout_net_returns
 
 
@@ -237,10 +367,18 @@ def evaluate_strategy(
     config: dict[str, Any] | StrategyConfig,
     start_date: str = settings.default_start_date,
     end_date: str = settings.default_end_date,
+    **kwargs: Any,
 ) -> EvaluationReport:
     """Run full deterministic walk-forward & holdout evaluation lifecycle.
 
     Thin wrapper around evaluate_strategy_detailed that returns only the report.
     """
-    report, _ = evaluate_strategy_detailed(strategy_name, generate_signals_fn, config, start_date, end_date)
+    report, _ = evaluate_strategy_detailed(
+        strategy_name,
+        generate_signals_fn,
+        config,
+        start_date,
+        end_date,
+        **kwargs,
+    )
     return report

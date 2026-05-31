@@ -16,7 +16,7 @@ from autobacktest.ledger.store import LedgerStore
 # ---------------------------------------------------------------------------
 
 
-def _make_returns(seed: int = 0, n: int = 50) -> pd.Series:  # type: ignore[type-arg]
+def _make_returns(seed: int = 0, n: int = 50) -> pd.Series:
     """Return a synthetic daily-return Series with a DatetimeIndex."""
     rng = np.random.default_rng(seed)
     dates = pd.date_range("2024-01-01", periods=n, freq="B")
@@ -31,7 +31,7 @@ def _record(
     dataset_hash: str = "hash-abc",
     observed_sharpe: float = 1.2,
     accepted: bool = True,
-    returns: pd.Series | None = None,  # type: ignore[type-arg]
+    returns: pd.Series | None = None,
 ) -> None:
     """Convenience wrapper to record a single attempt."""
     if returns is None:
@@ -262,3 +262,114 @@ def test_run_scoped_attempts_and_leaderboard(tmp_path: Path) -> None:
     assert latest_board[0]["observed_sharpe"] == pytest.approx(0.5)
     assert all_time_board[0]["run_id"] == "run-old"
     assert all_time_board[0]["observed_sharpe"] == pytest.approx(2.0)
+
+
+def test_fetch_configs_returns_committed_and_rejected(tmp_path: Path) -> None:
+    """fetch_configs returns ALL attempts (committed and rejected), not just committed."""
+    db = tmp_path / "ledger.db"
+    store = LedgerStore(db)
+
+    # committed=True → simulates a successful commit
+    store.record_attempt(
+        run_id="run-1",
+        iteration=1,
+        strategy_name="strat_a",
+        dataset_hash="hash-abc",
+        config_yaml="param: committed_value",
+        observed_sharpe=1.2,
+        deflated_sharpe=1.1,
+        target_metric="sharpe",
+        target_metric_value=1.2,
+        holdout_max_drawdown=0.05,
+        holdout_turnover=0.3,
+        regime_passed=True,
+        accepted=True,
+        committed=True,
+        commit_sha="abc123",
+        rejection_reason=None,
+        report_json="{}",
+        holdout_returns=_make_returns(seed=0),
+    )
+
+    # committed=False → rejected attempt (diversity or gate rejection)
+    store.record_attempt(
+        run_id="run-1",
+        iteration=2,
+        strategy_name="strat_a",
+        dataset_hash="hash-abc",
+        config_yaml="param: rejected_value",
+        observed_sharpe=0.5,
+        deflated_sharpe=0.4,
+        target_metric="sharpe",
+        target_metric_value=0.5,
+        holdout_max_drawdown=0.10,
+        holdout_turnover=0.5,
+        regime_passed=True,
+        accepted=False,
+        committed=False,
+        commit_sha=None,
+        rejection_reason="diversity_config",
+        report_json="{}",
+        holdout_returns=_make_returns(seed=1),
+    )
+
+    configs = store.fetch_configs("hash-abc")
+    store.close()
+
+    # Both committed and rejected configs must be returned
+    assert len(configs) == 2
+    assert "committed_value" in configs[0]
+    assert "rejected_value" in configs[1]
+
+
+def test_fetch_configs_excludes_other_hashes(tmp_path: Path) -> None:
+    """fetch_configs only returns configs for the requested dataset_hash."""
+    db = tmp_path / "ledger.db"
+    store = LedgerStore(db)
+
+    store.record_attempt(
+        run_id="run-1",
+        iteration=1,
+        strategy_name="strat_a",
+        dataset_hash="hash-abc",
+        config_yaml="param: abc_value",
+        observed_sharpe=1.0,
+        deflated_sharpe=0.9,
+        target_metric="sharpe",
+        target_metric_value=1.0,
+        holdout_max_drawdown=0.05,
+        holdout_turnover=0.3,
+        regime_passed=True,
+        accepted=True,
+        committed=False,
+        commit_sha=None,
+        rejection_reason=None,
+        report_json="{}",
+        holdout_returns=_make_returns(seed=0),
+    )
+    store.record_attempt(
+        run_id="run-1",
+        iteration=2,
+        strategy_name="strat_a",
+        dataset_hash="hash-xyz",
+        config_yaml="param: xyz_value",
+        observed_sharpe=1.0,
+        deflated_sharpe=0.9,
+        target_metric="sharpe",
+        target_metric_value=1.0,
+        holdout_max_drawdown=0.05,
+        holdout_turnover=0.3,
+        regime_passed=True,
+        accepted=True,
+        committed=False,
+        commit_sha=None,
+        rejection_reason=None,
+        report_json="{}",
+        holdout_returns=_make_returns(seed=1),
+    )
+
+    configs = store.fetch_configs("hash-abc")
+    store.close()
+
+    assert len(configs) == 1
+    assert "abc_value" in configs[0]
