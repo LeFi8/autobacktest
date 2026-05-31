@@ -5,7 +5,7 @@
   ```bash
   uv run mypy --strict src/
   ```
-- **Ruff Compliance**: Line length limits are set to `120` (as defined in `pyproject.toml`). All code changes must be formatted and checked:
+- **Ruff Compliance**: Line length limits are set to `120`. All code changes must be formatted and checked:
   ```bash
   uv run ruff check . --fix
   ```
