@@ -1,13 +1,4 @@
-"""Hybrid Asset Allocation (HAA) Trend strategy with composite canary.
-
-Reference: Keller & Keuning (2023) — "Dual and Canary Momentum with Rising Yields/Inflation", SSRN 4346906.
-
-Enhancements:
-- Removes IEF from offensive universe to avoid dual role.
-- Composite canary (TIP + DBC) smoothed with SMA(12) and hysteresis to reduce whipsaw.
-- Rebalances only on canary state change, with optional periodic offensive refresh.
-- Monthly rebalancing on last trading day, output aligned to daily index.
-"""
+"""Vol-targeted risk parity strategy."""
 
 from typing import Any
 
@@ -16,135 +7,77 @@ import pandas as pd
 
 
 def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFrame:
-    """Generate HAA Trend weights with composite canary and state-change rebalancing.
+    """Generate volatility-targeted equal risk contribution weights.
 
     Args:
         prices: Daily prices DataFrame (DatetimeIndex).
-        config: Configuration dictionary.
+        config: Strategy configuration with keys:
+            - risky_assets: list of tickers for the risk portfolio
+            - cash_asset: ticker of the cash/defensive asset
+            - target_vol: annualized target volatility (e.g., 0.15)
+            - vol_span: EWMA span for volatility estimation (e.g., 126)
 
     Returns:
-        Daily weights DataFrame matching the input index.
+        pd.DataFrame: Weights indexed by rebalance dates.
     """
-    # --- Parameters from config ---
-    mom_lookback = int(config.get("momentum_lookback", 12))
-    top_x = int(config.get("top_x", 4))
+    risky_assets = config.get("risky_assets", [])
+    cash_asset = config.get("cash_asset", "BIL")
+    target_vol = config.get("target_vol", 0.15)
+    vol_span = config.get("vol_span", 126)
 
-    offensive_universe = config.get("offensive_universe")
-    defensive_universe = config.get("defensive_universe")
-    canary_assets = config.get("canary_assets", ["TIP"])
-    canary_smoothing_window = int(config.get("canary_smoothing_window", 12))
-    canary_hysteresis = float(config.get("canary_hysteresis", 0.02))
-    min_canary_period = int(config.get("min_canary_period", 12))
-    offensive_rebalance_months = int(config.get("offensive_rebalance_months", 3))
+    # Ensure all assets exist in prices
+    available = set(prices.columns)
+    risky_assets = [a for a in risky_assets if a in available]
+    if cash_asset not in available:
+        raise ValueError(f"Cash asset {cash_asset} not in price data")
 
-    # Validate required assets are present in price data
-    all_assets = canary_assets + offensive_universe + defensive_universe
-    missing = [a for a in all_assets if a not in prices.columns]
-    if missing:
-        raise ValueError(f"Missing assets in price data: {missing}")
+    # Compute daily returns (simple percentage)
+    returns = prices.pct_change().dropna(how='all')
 
-    # --- Extract last trading day of each month ---
-    monthly_mask = prices.groupby(prices.index.to_period("M")).apply(lambda x: x.index[-1])
-    monthly_prices = prices.loc[monthly_mask]
+    # Rebalance schedule: last trading day of each month
+    monthly_dates = prices.groupby(prices.index.to_period("M")).tail(1).index
+    monthly_dates = monthly_dates[monthly_dates >= returns.index[0]]  # start after some data
 
-    # --- Monthly momentum scores (13612U) ---
-    # r1m, r3m, r6m, r12m
-    def calc_momentum(p: pd.DataFrame) -> pd.DataFrame:
-        # Return momentum as average of 1,3,6,12-month total returns
-        p0 = p
-        p1 = p.shift(1)
-        p3 = p.shift(3)
-        p6 = p.shift(6)
-        p12 = p.shift(mom_lookback)
+    weights = pd.DataFrame(0.0, index=monthly_dates, columns=prices.columns)
 
-        # Avoid division by zero; replace 0 with np.nan and fill after division
-        r1 = p0.div(p1.replace(0.0, np.nan)).fillna(1.0) - 1.0
-        r3 = p0.div(p3.replace(0.0, np.nan)).fillna(1.0) - 1.0
-        r6 = p0.div(p6.replace(0.0, np.nan)).fillna(1.0) - 1.0
-        r12 = p0.div(p12.replace(0.0, np.nan)).fillna(1.0) - 1.0
-        return (r1 + r3 + r6 + r12) / 4.0
+    for date in monthly_dates:
+        # Slice returns up to current date
+        hist_ret = returns.loc[:date, risky_assets].copy()
+        if hist_ret.empty:
+            continue
 
-    mom_scores = calc_momentum(monthly_prices)
-    # Start after enough history for longest lookback
-    mom_scores = mom_scores.iloc[mom_lookback:]
+        # Compute EWMA volatility for each risky asset (annualized by sqrt(252))
+        daily_vol = hist_ret.ewm(span=vol_span, min_periods=10).std().iloc[-1]
+        ann_vol = daily_vol * np.sqrt(252)
 
-    # --- Composite canary: average momentum of canary assets ---
-    comp_canary = mom_scores[canary_assets].mean(axis=1)
+        # Replace NaN/inf with a large value to effectively set weight to zero
+        ann_vol = ann_vol.replace(0, np.nan).fillna(1e6)
 
-    # --- Smooth canary with SMA ---
-    smoothed = comp_canary.rolling(window=canary_smoothing_window, min_periods=min_canary_period).mean()
-    # Drop periods where smoothed is NaN (insufficient history)
-    smoothed = smoothed.dropna()
+        # Inverse volatility weights (raw)
+        inv_vol = 1.0 / ann_vol
+        total_inv_vol = inv_vol.sum()
 
-    # --- Determine canary state with hysteresis ---
-    all_dates = mom_scores.index
-    states = pd.Series("defensive", index=all_dates)
-    prev_state = "defensive"
-    for _i, date in enumerate(all_dates):
-        if date in smoothed.index:
-            val = smoothed.loc[date]
-            if val > canary_hysteresis:
-                curr = "offensive"
-            elif val < -canary_hysteresis:
-                curr = "defensive"
-            else:
-                curr = prev_state  # keep previous if within band
+        if total_inv_vol > 1e-8:
+            w_raw = inv_vol / total_inv_vol
         else:
-            curr = "defensive"  # default before enough history
-        states[date] = curr
-        prev_state = curr
+            w_raw = pd.Series(0.0, index=risky_assets)
 
-    # --- Generate monthly weights (only on state changes or periodic offense rebalance) ---
-    w_monthly = pd.DataFrame(0.0, index=all_dates, columns=prices.columns)
-    last_weight = pd.Series(0.0, index=prices.columns)
-    last_off_rebalance_idx = -9999  # month index when last offensive rebalance occurred
+        # Estimate portfolio volatility under zero correlation assumption
+        port_var = (w_raw**2 * ann_vol**2).sum()
+        port_vol = np.sqrt(port_var) if port_var > 0 else 0.0
 
-    for i, date in enumerate(all_dates):
-        state_now = states.loc[date]
-        rebalance = False
-        if i == 0:
-            rebalance = True
+        # Scale to target volatility; cap at 1.0
+        if port_vol > 1e-8:
+            leverage = min(1.0, target_vol / port_vol)
         else:
-            prev_date = all_dates[i - 1]
-            state_prev = states.loc[prev_date]
-            if state_now != state_prev or (
-                state_now == "offensive" and (i - last_off_rebalance_idx) >= offensive_rebalance_months
-            ):
-                rebalance = True
+            leverage = 0.0
 
-        if rebalance:
-            target_w = pd.Series(0.0, index=prices.columns)
-            if state_now == "defensive":
-                # Pick best defensive asset
-                def_scores = mom_scores.loc[date, defensive_universe].dropna()
-                best = def_scores.idxmax() if not def_scores.empty else defensive_universe[0]
-                target_w[best] = 1.0
-            else:  # offensive
-                # Top-X selection from offensive universe
-                off_scores = mom_scores.loc[date, offensive_universe].dropna()
-                ranked = off_scores.sort_values(ascending=False)
-                selected = ranked.head(top_x)
+        # Final risky weights
+        w_risky = w_raw * leverage
 
-                # Best defensive substitute
-                def_scores = mom_scores.loc[date, defensive_universe].dropna()
-                best_def = def_scores.idxmax() if not def_scores.empty else defensive_universe[0]
+        # Assign to output
+        for asset in risky_assets:
+            weights.loc[date, asset] = w_risky.get(asset, 0.0)
+        weights.loc[date, cash_asset] = 1.0 - leverage
 
-                slot_weight = 1.0 / top_x
-                for asset in selected.index:
-                    if selected[asset] > 0.0:
-                        target_w[asset] = slot_weight
-                    else:
-                        target_w[best_def] += slot_weight
-
-            w_monthly.loc[date] = target_w
-            last_weight = target_w
-            if state_now == "offensive":
-                last_off_rebalance_idx = i
-        else:
-            w_monthly.loc[date] = last_weight
-
-    # --- Forward-fill to daily index ---
-    daily_weights = w_monthly.reindex(prices.index, method="ffill").fillna(0.0)
-    daily_weights = daily_weights.clip(lower=0.0)
-
-    return daily_weights
+    return weights

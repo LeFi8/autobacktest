@@ -1,53 +1,23 @@
-# HAA-Balanced Configuration (optimized for reduced turnover and improved Sharpe)
-# Enhanced with composite canary, smoothing, hysteresis, and periodic offensive refresh.
 universe:
-  - SPY   # US Large Cap
-  - IWM   # US Small Cap
-  - VEA   # Developed Markets ex-US
-  - VWO   # Emerging Markets
-  - VNQ   # US Real Estate
-  - DBC   # Commodities
-  - TLT   # US 20Y+ Treasury
-  - BIL   # US 1-3M Treasury (Defensive)
-  - IEF   # US 10Y Treasury (Defensive only)
-  - TIP   # Inflation Protected Bonds (Canary)
-
-benchmark: SPY
-
-# Strategy parameterization
-momentum_lookback: 12
-max_drawdown_limit: 0.20
-turnover_limit: 2.0
-
-# HAA-specific parameters
-variant: balanced
-top_x: 4
-
-# Universe definitions – IEF removed from offense to eliminate dual‑role conflict
-offensive_universe:
   - SPY
   - IWM
-  - VEA
+  - QQQ
+  - VGK
+  - EWJ
   - VWO
   - VNQ
   - DBC
-  - TLT
-defensive_universe:
-  - BIL
   - IEF
-
-# Canary config – composite TIP + DBC reduces reliance on single asset
-canary_assets:
+  - BIL
   - TIP
+benchmark: SPY
+risky_assets:
+  - SPY
+  - QQQ
+  - IEF
   - DBC
-canary_smoothing_window: 12   # SMA window for canary momentum
-canary_hysteresis: 0.02       # dead‑band to prevent whipsaws
-min_canary_period: 12         # months before canary becomes active
-
-# Offensive regime refresh – reduce turnover while staying current
-offensive_rebalance_months: 3
-
-# Unused legacy parameters (set to zero for compatibility)
-smoothing_factor: 0.0
-hysteresis_threshold: 0.0
-momentum_buffer: 0.0
+cash_asset: BIL
+target_vol: 0.12
+vol_span: 126
+max_drawdown_limit: 0.20
+turnover_limit: 2.0
