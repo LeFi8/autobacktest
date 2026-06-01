@@ -34,6 +34,10 @@ graph TD
         WF[evaluator/walk_forward.py]
     end
 
+    subgraph Reporting Layer
+        REP[reports/generator.py]
+    end
+
     subgraph Data Layer
         CACHE[data/cache.py]
         YF[data/yfinance_provider.py]
@@ -48,6 +52,7 @@ graph TD
     end
 
     CLI --> ORCH
+    CLI --> REP
     ORCH --> EVAL
     ORCH --> GATE
     ORCH --> LEDG
@@ -72,26 +77,18 @@ graph TD
 
 ### 1. Command-Line Interface (`cli.py`)
 Provides user subcommands utilizing `typer` and formats leaderboard responses via `rich`.
-- `run`: Executes the iterative LLM optimization loop.
+- `run`: Executes the iterative LLM optimization loop. Supports rendering a side-by-side Rich console summary comparison of baseline vs. optimized metrics, or falling back to raw JSON printout using the `--json` option.
 - `report`: Displays runs leaderboard from SQLite tracking ledger.
 - `reset`: Reverts strategy codes to baseline states and purges run logs.
 - `evaluate`: Evaluates a standalone strategy directly without the optimization loop.
 
 ### 2. Data Provider (`data/`)
-Fetches and caches market close prices in Apache Parquet files.
-- `yfinance_provider.py`: Communicates with Yahoo Finance using `yfinance` to download prices.
-- `cache.py`: Intercepts calls, managing prepending/appending incremental date ranges locally to avoid redundant API downloads.
+Provides historical close price histories with Parquet caching.
 
 ### 3. Backtest Evaluator (`evaluator/`)
-Consumes daily price data and strategy allocation weights to compute risk/return metrics.
-- `backtest.py`: Fast vectorized backtest holding weights for $t$ based on close of $t-1$ (prevents lookahead-bias).
-- `costs.py`: Applies turnover penalties (e.g. bid-ask spreads, commissions) on weight rebalancing changes.
-- `deflated_sharpe.py`: Computes the Deflated Sharpe Ratio (DSR) to calculate statistical confidence while adjusting for multiple trials.
-- `monte_carlo.py`: Runs a stationary block bootstrap (1000 paths) on historical returns to calculate significance thresholds.
-- `regime.py`: Checks maximum drawdowns over historical stress periods (e.g. dot-com crash, 2008 crisis, 2020 covid crash).
+Consumes prices and strategy signals to compute detailed performance metrics.
 
 ### 4. Git & SQLite Ledger (`ledger/`)
-Tracks strategy iterations.
 - `store.py`: Relational database storing every iteration's parameters, Sharpe, Sortino, max drawdown, and gating outcomes.
 - `git_ops.py`: Commits valid strategy code changes. Reverts failures back to last known passing revision automatically.
 - `event_log.py`: Manages the structured JSON events logging history.

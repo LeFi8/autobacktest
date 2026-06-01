@@ -99,6 +99,7 @@ Starts the autonomous optimization loop.
 - `--model`: LLM model identifier (e.g. `gpt-4o`, `claude-3-5-sonnet-20241022`).
 - `--run-dir`: Output run directory (default: `runs/`).
 - `--target-metric`: Target metric for optimization: `sharpe` (default), `sortino`, or `information_ratio`.
+- `--json`: Output raw JSON to stdout instead of the Rich terminal summary dashboard.
 
 ### `report`
 Pretty-prints the run leaderboard sorted by observed Sharpe ratio.
@@ -116,6 +117,15 @@ Cleans the working directories and baseline files.
 Runs walk-forward and holdout evaluation on a single strategy file standalone.
 - `--strategy` / `-s`: Path to the target strategy file (e.g. `strategies/haa.py`).
 - `--start-date` / `--end-date`: Configure custom historical backtest backdrops.
+
+---
+
+## 📊 Institutional Reports & Visual Summaries
+
+On optimization completion, AutoBacktest generates high-fidelity visual outputs inside `runs/{run_id}/`:
+- **Rich Terminal Dashboard**: A structured console dashboard showing Baseline vs. Optimized metrics side-by-side, color-coded gates, failure breakdowns, and run costs.
+- **Compiled Strategy Report (`strategy_report.md`)**: A self-contained, publication-grade Markdown report containing the executive summary, configuration yaml, objectives, robustness checks, and finalized strategy code.
+- **Performance Curves (`equity_curves.png`)**: A Matplotlib-generated chart comparing cumulative returns of the baseline and optimized portfolios.
 
 ---
 
