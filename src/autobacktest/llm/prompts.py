@@ -98,6 +98,12 @@ def build_messages(context: AgentContext) -> list[dict[str, str]]:
         displayed_non_committed = non_committed_rows[-25:] if omitted_count > 0 else non_committed_rows
         rows_to_render = committed_rows + displayed_non_committed
 
+        def _fmt(val: Any, default: float = 0.0) -> str:
+            try:
+                return f"{float(val if val is not None else default):.4f}"
+            except (TypeError, ValueError):
+                return "-"
+
         def _outcome(r: dict[str, Any]) -> str:
             if r.get("committed"):
                 return "✓ committed"
@@ -120,11 +126,11 @@ def build_messages(context: AgentContext) -> list[dict[str, str]]:
             row = (
                 f"| {r.get('iteration', '')} "
                 f"| {_outcome(r)} "
-                f"| {r.get('target_metric_value', 0.0):.4f} "
-                f"| {r.get('deflated_sharpe', 0.0):.4f} "
-                f"| {r.get('holdout_max_drawdown', 0.0):.4f} "
-                f"| {r.get('holdout_turnover', 0.0):.4f} "
-                f"| {'pass' if r.get('regime_passed') else 'FAIL'} "
+                f"| {_fmt(r.get('target_metric_value'))} "
+                f"| {_fmt(r.get('deflated_sharpe'))} "
+                f"| {_fmt(r.get('holdout_max_drawdown'))} "
+                f"| {_fmt(r.get('holdout_turnover'))} "
+                f"| {'pass' if r.get('regime_passed') else ('FAIL' if 'regime_passed' in r else '-')} "
                 f"| {reason_col} "
                 f"| {_fingerprint_repr(r)} |"
             )
