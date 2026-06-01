@@ -144,23 +144,31 @@ class LessonStore:
         target_type = _stage_to_type(context_stage)
 
         if target_type:
-            rows = self._conn().execute(
-                """
+            rows = (
+                self._conn()
+                .execute(
+                    """
                 SELECT title, body FROM lessons
                 WHERE strategy = ? AND (type = ? OR type = 'STRUCTURAL')
                 ORDER BY id ASC
                 """,
-                (strategy, target_type),
-            ).fetchall()
+                    (strategy, target_type),
+                )
+                .fetchall()
+            )
         else:
-            rows = self._conn().execute(
-                """
+            rows = (
+                self._conn()
+                .execute(
+                    """
                 SELECT title, body FROM lessons
                 WHERE strategy = ?
                 ORDER BY id ASC
                 """,
-                (strategy,),
-            ).fetchall()
+                    (strategy,),
+                )
+                .fetchall()
+            )
 
         if not rows:
             return "No lessons recorded yet."
@@ -173,9 +181,7 @@ class LessonStore:
     def count(self, strategy: str | None = None) -> int:
         """Return total number of lessons, optionally filtered by *strategy*."""
         if strategy:
-            row = self._conn().execute(
-                "SELECT COUNT(*) FROM lessons WHERE strategy = ?", (strategy,)
-            ).fetchone()
+            row = self._conn().execute("SELECT COUNT(*) FROM lessons WHERE strategy = ?", (strategy,)).fetchone()
         else:
             row = self._conn().execute("SELECT COUNT(*) FROM lessons").fetchone()
         return row[0] if row else 0
@@ -183,21 +189,29 @@ class LessonStore:
     def all_lessons(self, strategy: str | None = None) -> list[dict[str, Any]]:
         """Return all lessons as dicts, optionally filtered by *strategy*."""
         if strategy:
-            rows = self._conn().execute(
-                """
+            rows = (
+                self._conn()
+                .execute(
+                    """
                 SELECT strategy, type, title, body, source, created_at
                 FROM lessons WHERE strategy = ?
                 ORDER BY id ASC
                 """,
-                (strategy,),
-            ).fetchall()
+                    (strategy,),
+                )
+                .fetchall()
+            )
         else:
-            rows = self._conn().execute(
-                """
+            rows = (
+                self._conn()
+                .execute(
+                    """
                 SELECT strategy, type, title, body, source, created_at
                 FROM lessons ORDER BY id ASC
                 """
-            ).fetchall()
+                )
+                .fetchall()
+            )
 
         return [
             {
@@ -235,6 +249,7 @@ def _hash_body(body: str) -> str:
 def _current_thread_id() -> int:
     """Return a hashable id for the current thread."""
     import threading
+
     return threading.get_ident()
 
 

@@ -34,9 +34,7 @@ def test_lessons_roundtrip_and_rollback(project_root_with_lessons: Path) -> None
         reasoning="Switch to HIGH asset.",
         raw_response="{}",
         lessons_text=(
-            "### Switched to HIGH asset\n"
-            "- **Type:** PERFORMANCE_INSIGHT\n"
-            "- Switched to HIGH asset and succeeded.\n"
+            "### Switched to HIGH asset\n- **Type:** PERFORMANCE_INSIGHT\n- Switched to HIGH asset and succeeded.\n"
         ),
     )
 
@@ -46,11 +44,7 @@ def test_lessons_roundtrip_and_rollback(project_root_with_lessons: Path) -> None
         config_yaml=STRATEGY_CONFIG,
         reasoning="Bad edit.",
         raw_response="{}",
-        lessons_text=(
-            "### Validation failure example\n"
-            "- **Type:** BUG\n"
-            "- This failed validation.\n"
-        ),
+        lessons_text=("### Validation failure example\n- **Type:** BUG\n- This failed validation.\n"),
     )
 
     class ScriptedMockProvider(MockProvider):
@@ -89,8 +83,7 @@ def test_lessons_roundtrip_and_rollback(project_root_with_lessons: Path) -> None
     # Verify both lessons are stored in the DB (lessons persist regardless of rollback)
     store = LessonStore(project_root_with_lessons / "runs" / "lessons.db")
     all_lessons = store.all_lessons(strategy="toy")
-    titles = [l["title"] for l in all_lessons]
-    bodies = [l["body"] for l in all_lessons]
+    bodies = [lesson["body"] for lesson in all_lessons]
 
     assert any("Switched to HIGH asset" in b for b in bodies)
     assert any("This failed validation" in b for b in bodies)
@@ -141,7 +134,7 @@ def test_orchestrator_preserves_lessons_when_update_missing_or_blank(
     # Verify the originally migrated lessons are still intact
     store = LessonStore(project_root_with_lessons / "runs" / "lessons.db")
     all_lessons = store.all_lessons(strategy="toy")
-    bodies = [l["body"] for l in all_lessons]
+    bodies = [lesson["body"] for lesson in all_lessons]
     assert any("Baseline strategy loaded" in b for b in bodies)
     blank_body = "Invalid edit without a lessons update."
     assert not any(blank_body in b for b in bodies)

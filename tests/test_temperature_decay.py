@@ -79,7 +79,6 @@ params:
 
 def test_adaptive_temperature_on_continuous_failures(
     mock_project: tuple[Path, Path, Path, Path],
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Verifies that in explore mode temperature scales continuously based on rolling failures."""
     prog_file, strat_dir, conf_dir, repo_root = mock_project
@@ -97,7 +96,7 @@ def test_adaptive_temperature_on_continuous_failures(
         repo_path=repo_root,
     )
 
-    # 3 iterations × 3 candidates each = 9 LLM calls. All 3 calls in an
+    # 3 iterations x 3 candidates each = 9 LLM calls. All 3 calls in an
     # iteration share the same temperature (set once per iteration).
     assert len(provider.recorded_temperatures) == 9
 

@@ -483,13 +483,7 @@ class TestDiversityGateIntegration:
         events_path = project_root / "runs" / result.run_id / "events.jsonl"
         events = [json.loads(ln) for ln in events_path.read_text().strip().split("\n") if ln]
         # Find the diversity-rejected event
-        rejected = [
-            e for e in events
-            if any(
-                c.get("stage") == "diversity_config"
-                for c in e.get("candidates", [])
-            )
-        ]
+        rejected = [e for e in events if any(c.get("stage") == "diversity_config" for c in e.get("candidates", []))]
         assert len(rejected) >= 1
 
         # Provider was called exactly 1 time (3 candidates generated in parallel)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import git
 import numpy as np
@@ -281,7 +281,7 @@ def test_e2e_full_run_commits_improved_strategy(project_root: Path) -> None:
     assert len(branch_commits) >= 2, f"Expected ≥2 commits on {run_branch}, got {len(branch_commits)}"
 
     # --- MockProvider call count ---
-    # 3 candidates per iteration × 3 iterations = 9 calls
+    # 3 candidates per iteration x 3 iterations = 9 calls
     expected_calls = 9
     assert len(mock_provider.calls) == expected_calls
 
@@ -341,7 +341,7 @@ def test_e2e_validation_failure_continues(project_root: Path) -> None:
             assert c["passed"] is False, f"Expected candidate passed=False, got: {c}"
             assert c["stage"] == "validation", f"Expected stage='validation', got: {c}"
 
-    # 3 candidates per iteration × 2 iterations = 6 calls
+    # 3 candidates per iteration x 2 iterations = 6 calls
     assert len(mock_provider.calls) == 6
 
 
@@ -369,8 +369,7 @@ def test_orchestrator_fail_fast_on_non_retryable_error(project_root: Path) -> No
     assert "Non-retryable config error" in str(exc_info.value)
 
 
-@patch("autobacktest.orchestrator.sleep")
-def test_orchestrator_continues_on_retryable_error(_mock_sleep: MagicMock, project_root: Path) -> None:
+def test_orchestrator_continues_on_retryable_error(project_root: Path) -> None:
     """When a retryable LLMError is raised, the orchestrator logs and continues."""
     from autobacktest.llm.base import LLMError
     from autobacktest.llm.mock_provider import MockProvider
@@ -398,7 +397,6 @@ def test_orchestrator_continues_on_retryable_error(_mock_sleep: MagicMock, proje
 
 def test_orchestrator_transient_errors_become_none_candidates(
     project_root: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """When a retryable LLMError is raised, the candidate is skipped (no retry).
 
@@ -497,9 +495,9 @@ def test_exploit_mode_skips_diversity_gates(project_root: Path) -> None:
     assert result.n_committed >= 1
 
     # Diversity config gate called only for iter 1 (EXPLORE), once per candidate
-    assert len(diversity_config_calls) <= 3  # 3 candidates × 1 iteration
+    assert len(diversity_config_calls) <= 3  # 3 candidates x 1 iteration
     # Diversity returns gate called only for iter 1 (EXPLORE), once per candidate
-    assert len(diversity_returns_calls) <= 3  # 3 candidates × 1 iteration
+    assert len(diversity_returns_calls) <= 3  # 3 candidates x 1 iteration
 
 
 def test_mode_logged_in_events(project_root: Path) -> None:

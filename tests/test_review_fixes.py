@@ -630,9 +630,7 @@ def test_orchestrator_lessons_persistence(tmp_path: Path) -> None:
                     reasoning="Bad edit with os import.",
                     raw_response="{}",
                     lessons_text=(
-                        "### Validation failed\n"
-                        "- **Type:** BUG\n"
-                        "- validation failed because of os import.\n"
+                        "### Validation failed\n- **Type:** BUG\n- validation failed because of os import.\n"
                     ),
                 )
             else:
@@ -641,11 +639,7 @@ def test_orchestrator_lessons_persistence(tmp_path: Path) -> None:
                     config_yaml=STRATEGY_CONFIG,
                     reasoning="No changes reasoning.",
                     raw_response="{}",
-                    lessons_text=(
-                        "### Rejected\n"
-                        "- **Type:** GATE_REJECTION\n"
-                        "- rejected because no improvement.\n"
-                    ),
+                    lessons_text=("### Rejected\n- **Type:** GATE_REJECTION\n- rejected because no improvement.\n"),
                 )
 
     provider = ScriptedLLMProvider()
@@ -673,7 +667,7 @@ def test_orchestrator_lessons_persistence(tmp_path: Path) -> None:
     # Verify that:
     # 1. At the start, the context received lessons from the DB (migrated from .md).
     n_cand = settings.n_candidates
-    assert len(called_contexts) == 2 * n_cand  # n_cand calls per iteration × 2 iterations
+    assert len(called_contexts) == 2 * n_cand  # n_cand calls per iteration x 2 iterations
     assert "Initial Lessons" in called_contexts[0].lessons_text
     # 2. At the start of Iteration 2, the context contains both the migrated lesson
     #    AND the lesson from iteration 1, stored/retrieved from the DB.

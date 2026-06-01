@@ -43,6 +43,10 @@ from autobacktest.strategy.diversity import (
     check_returns_correlation,
     max_config_similarity,
 )
+from autobacktest.strategy.parameter_importance import (
+    compute_parameter_importance,
+    format_importance_lessons,
+)
 from autobacktest.strategy.validator import preflight
 
 logger = logging.getLogger(__name__)
@@ -380,9 +384,9 @@ def run_optimization(
                     raw_edits = _generate_candidates(provider, ctx, n)
 
                     # Filter out None (LLM failures) and process each candidate
-                    candidate_results = []
+                    candidate_results: list[dict[str, Any]] = []
                     for edit in raw_edits:
-                        ev = {"edit": edit}
+                        ev: dict[str, Any] = {"edit": edit}
                         if edit is None:
                             ev["llm_error"] = True
                         else:
@@ -431,8 +435,7 @@ def run_optimization(
                                 ev["valid"] = False
                                 ev["validation_stage"] = "diversity_config"
                                 ev["detail"] = (
-                                    f"Config similarity {max_sim:.3f} exceeded threshold "
-                                    f"{DIVERSITY_CONFIG_THRESHOLD}."
+                                    f"Config similarity {max_sim:.3f} exceeded threshold {DIVERSITY_CONFIG_THRESHOLD}."
                                 )
                         valid_candidates.append(ev)
 
@@ -442,7 +445,7 @@ def run_optimization(
                     # Phase: evaluate all valid candidates in parallel on temp files
                     if to_eval:
                         # Ensure single-threaded eval cache creation
-                        def _eval_one(ev: dict) -> dict:
+                        def _eval_one(ev: dict[str, Any]) -> dict[str, Any]:
                             r, ret, cfg, err = _eval_single_candidate(
                                 strategy_name,
                                 ev["strategy_code"],
@@ -469,9 +472,8 @@ def run_optimization(
                                 future.result()
 
                     # Gate phase + winner selection (main thread, sequential)
-                    winner: dict | None = None
-                    sel_reason: str | None = None
-                    cnf_reason: str | None = None
+                    winner: dict[str, Any] | None = None
+                    sha: str | None = None
                     best_metric: float = -float("inf")
 
                     for ev in candidate_results:
@@ -542,13 +544,11 @@ def run_optimization(
                                 ev["validation_stage"] = "gate"
                                 ev["detail"] = cnf.reason
                                 ev["_failed_gate"] = cnf.failed_gate
-                                cnf_reason = cnf.reason
                         else:
                             ev["valid"] = False
                             ev["validation_stage"] = "gate"
                             ev["detail"] = sel.reason
                             ev["_failed_gate"] = sel.failed_gate
-                            sel_reason = sel.reason
 
                     # --- Commit winner (if any) ---
                     if winner is not None:
@@ -570,7 +570,7 @@ def run_optimization(
                         exploit_stall = 0
 
                     # --- Record ALL candidates in ledger ---
-                    _REJECTION_REASON_MAP = {
+                    rejection_reason_map = {
                         "diversity_config": "diversity_tier1_config",
                         "diversity_returns": "diversity_tier2_returns",
                         "validation": None,
@@ -578,17 +578,26 @@ def run_optimization(
                         "gate": None,
                     }
 
-                    def _rejection_reason(ev: dict) -> str | None:
+                    def _rejection_reason(
+                        ev: dict[str, Any],
+                        _map: dict[str, str | None] = rejection_reason_map,
+                    ) -> str | None:
                         stage = ev.get("validation_stage")
-                        if stage in _REJECTION_REASON_MAP:
-                            return _REJECTION_REASON_MAP[stage] or ev.get("detail")
+                        if stage in _map:
+                            return _map[stage] or ev.get("detail")
                         if stage == "holdout_peek_limit":
                             return "holdout_peek_limit_exceeded"
                         if stage == "gate":
                             return ev.get("detail") or ev.get("_failed_gate")
                         return ev.get("detail") or stage
 
-                    def _record(ev: dict, accepted: bool, committed: bool) -> None:
+                    def _record(
+                        ev: dict[str, Any],
+                        accepted: bool,
+                        committed: bool,
+                        _k: int = k,
+                        _sha: str | None = sha,
+                    ) -> None:
                         rp = ev.get("_report")
                         rt = ev.get("_returns")
                         edit = ev.get("edit")
@@ -597,7 +606,7 @@ def run_optimization(
                         ho_evaluated = ev.get("_cnf") is not None
                         ledger.record_attempt(
                             run_id=run_id,
-                            iteration=k,
+                            iteration=_k,
                             strategy_name=strategy_name,
                             dataset_hash=dataset_hash,
                             config_yaml=ev.get("config_yaml", ""),
@@ -610,7 +619,7 @@ def run_optimization(
                             regime_passed=rp.regime_passed,
                             accepted=accepted,
                             committed=committed,
-                            commit_sha=sha if committed else None,
+                            commit_sha=_sha if committed else None,
                             rejection_reason=None if accepted else _rejection_reason(ev),
                             report_json=rp.to_json(),
                             selection_returns=rt,
@@ -630,24 +639,44 @@ def run_optimization(
                         elif ev.get("llm_error"):
                             pass  # No report to record for LLM failures
 
+                    # --- Compute parameter importance ---
+                    try:
+                        imp_configs, imp_metrics = ledger.fetch_param_importance_data(dataset_hash)
+                        importance = compute_parameter_importance(
+                            imp_configs,
+                            imp_metrics,
+                            min_attempts=settings.importance_min_attempts,
+                            p_threshold=settings.importance_p_threshold,
+                        )
+                        if importance:
+                            imp_text = format_importance_lessons(importance)
+                            if imp_text:
+                                lesson_store.ingest_markdown(imp_text, strategy_name)
+                                lessons_text = lesson_store.get_filtered_markdown(strategy_name)
+                            event["parameter_importance"] = importance
+                    except Exception:
+                        logger.warning("Parameter importance computation failed", exc_info=True)
+
                     # --- Build consolidated event ---
                     candidates_summary = []
                     for ev in candidate_results:
                         if ev.get("llm_error"):
                             candidates_summary.append({"llm_error": True})
                         elif not ev.get("valid"):
-                            candidates_summary.append({
+                            fail_item: dict[str, Any] = {
                                 "passed": False,
                                 "stage": ev.get("validation_stage"),
                                 "detail": ev.get("detail"),
-                            })
+                            }
+                            candidates_summary.append(fail_item)
                         else:
                             rp = ev.get("_report")
-                            candidates_summary.append({
+                            pass_item: dict[str, Any] = {
                                 "passed": True,
                                 "accepted": ev is winner,
                                 "observed_sharpe": rp.observed_sharpe if rp else None,
-                            })
+                            }
+                            candidates_summary.append(pass_item)
                     event["candidates"] = candidates_summary
                     if winner is not None:
                         winner_idx = next(i for i, e in enumerate(candidate_results) if e is winner)
@@ -655,7 +684,11 @@ def run_optimization(
                         event["gate"] = {"stage": "select", "accepted": True}
                         event["commit"] = {"sha": sha}
                     else:
-                        event["gate"] = {"stage": "select", "accepted": False, "reason": "No candidate passed all gates"}
+                        event["gate"] = {
+                            "stage": "select",
+                            "accepted": False,
+                            "reason": "No candidate passed all gates",
+                        }
                         event["commit"] = None
                         consecutive_no_accept += 1
                         if mode == "exploit":
@@ -790,6 +823,7 @@ def _generate_candidates(
 
     Non-retryable errors (e.g. auth failures) are raised immediately.
     """
+
     def _try() -> AgentEdit | None:
         try:
             return provider.generate_edit(ctx)
@@ -819,8 +853,8 @@ def _eval_single_candidate(
     configs_dir: Path,
     start_date: str,
     end_date: str,
-    _eval_cache: dict,
-) -> tuple:
+    _eval_cache: dict[int, tuple[EvaluationReport, pd.Series]],
+) -> tuple[EvaluationReport | None, pd.Series[Any] | None, dict[str, Any] | None, str | None]:
     """Evaluate one candidate via temp files.
 
     Returns ``(report, returns, new_config, error_str)``.  When evaluation
