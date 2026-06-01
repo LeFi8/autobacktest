@@ -635,9 +635,7 @@ def _check_ast(content: str) -> ValidationResult:
             val: str = node.value
             if "{" in val and "__" in val:
                 # Detect patterns like "{0.__class__}" or "{__import__}"
-                import re as _re
-
-                brace_contents = _re.findall(r"\{[^}]*\}", val)
+                brace_contents = re.findall(r"\{[^}]*\}", val)
                 for brace in brace_contents:
                     if "__" in brace:
                         msg = f"String constant contains dunder reference in format pattern: '{brace}'"

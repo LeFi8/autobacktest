@@ -161,3 +161,50 @@ benchmark: SPY
         assert "POLLUTED_BY_SANDBOX" not in os.environ
     finally:
         os.environ["AUTOBACKTEST_SAFE_IMPORTS_WHITELIST"] = old_whitelist
+
+
+def test_ast_blocks_format_string_dunder_exploit(mock_dirs: tuple[Path, Path]) -> None:
+    """Verifies that dunder access via .format() is blocked by AST checker.
+
+    Attack vector: "{0.__class__}".format(obj) or format_map / vformat.
+    """
+    strat_dir, conf_dir = mock_dirs
+
+    # Vector 1: str.format() with dunder in format string
+    strat_file = strat_dir / "exploit1.py"
+    strat_file.write_text(
+        """
+import pandas as pd
+
+def generate_signals(prices: pd.DataFrame, config: dict) -> pd.DataFrame:
+    template = "{0.__class__}"
+    return prices
+""",
+        encoding="utf-8",
+    )
+    conf_file = conf_dir / "exploit1.yaml"
+    conf_file.write_text("universe:\n  - SPY\nbenchmark: SPY\n", encoding="utf-8")
+
+    res = preflight("exploit1", strat_dir, conf_dir)
+    assert not res.passed
+    assert res.error_code == ValidationError.AST_BLOCKED_IMPORT
+    assert "dunder" in res.detail or "format" in res.detail
+
+    # Vector 2: str.format_map() directly called
+    strat_file = strat_dir / "exploit2.py"
+    strat_file.write_text(
+        """
+import pandas as pd
+
+def generate_signals(prices: pd.DataFrame, config: dict) -> pd.DataFrame:
+    return prices.format_map({"x": 1})
+""",
+        encoding="utf-8",
+    )
+    conf_file = conf_dir / "exploit2.yaml"
+    conf_file.write_text("universe:\n  - SPY\nbenchmark: SPY\n", encoding="utf-8")
+
+    res = preflight("exploit2", strat_dir, conf_dir)
+    assert not res.passed
+    assert res.error_code == ValidationError.AST_BLOCKED_IMPORT
+    assert "format" in res.detail
