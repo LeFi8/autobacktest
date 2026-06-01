@@ -28,11 +28,6 @@ This document describes how to set up the development environment, execute the t
    uv sync
    ```
 
-3. **Install Pre-Commit Hooks**:
-   Registers Ruff and MyPy checks to run automatically before every git commit:
-   ```bash
-   uv run pre-commit install
-   ```
 
 ## Development Commands
 

@@ -46,7 +46,6 @@ Clone the repository and sync the virtual environment using `uv`:
 git clone <repository_url> autobacktest
 cd autobacktest
 uv sync
-uv run pre-commit install
 ```
 
 ### 3. Environment Configuration

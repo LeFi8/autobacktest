@@ -29,7 +29,7 @@
 - **Robust testing**:
   - `hypothesis >=6.98.0` (Property-based generative test cases)
   - `vcrpy >=6.0.0` (HTTP response capture / caching)
-- **Linter & Formatter**: `ruff >=0.3.0` (combining flake8, black, isort rules; line length 88)
+- **Linter & Formatter**: `ruff >=0.3.0` (combining flake8, black, isort rules; line length 120)
 - **Static Type Checking**: `mypy >=1.9.0` (strict mode enabled across project context)
 - **Hooks**: `pre-commit >=3.6.0` (quality pre-commit validation)
 - **Types**: `types-pyyaml >=6.0.12.20240311` (type stubs)
