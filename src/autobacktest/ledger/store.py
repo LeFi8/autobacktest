@@ -6,8 +6,10 @@ import sqlite3
 import zlib
 from io import StringIO
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
+import yaml
 
 from autobacktest.config import settings
 
@@ -265,6 +267,94 @@ class LedgerStore:
 
         rows = self._conn.execute(query, params).fetchall()
         return [str(row[0]) for row in rows]
+
+    def fetch_attempt_summaries(
+        self,
+        dataset_hash: str,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return a chronological list of attempt summary dicts for a dataset_hash.
+
+        Each dict contains scalar metrics and a compact ``config_fingerprint``
+        with only the ``universe`` and ``params`` keys parsed from ``config_yaml``.
+
+        Args:
+            dataset_hash: Stable hash of the sorted universe tickers.
+            limit: When not None, return only the last *limit* rows (most recent).
+
+        Returns:
+            List of summary dicts, oldest first. Empty list when no rows match.
+        """
+        query = """
+            SELECT
+                iteration,
+                accepted,
+                committed,
+                target_metric_value,
+                observed_sharpe,
+                deflated_sharpe,
+                holdout_max_drawdown,
+                holdout_turnover,
+                regime_passed,
+                rejection_reason,
+                config_yaml
+            FROM attempts
+            WHERE dataset_hash = ?
+            ORDER BY id ASC
+        """
+        rows = self._conn.execute(query, (dataset_hash,)).fetchall()
+
+        if not rows:
+            return []
+
+        if limit is not None:
+            rows = rows[-limit:]
+
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            (
+                iteration,
+                accepted,
+                committed,
+                target_metric_value,
+                observed_sharpe,
+                deflated_sharpe,
+                holdout_max_drawdown,
+                holdout_turnover,
+                regime_passed,
+                rejection_reason,
+                config_yaml,
+            ) = row
+
+            try:
+                parsed = yaml.safe_load(config_yaml)
+                if isinstance(parsed, dict):
+                    fingerprint: dict[str, Any] = {}
+                    if "universe" in parsed:
+                        fingerprint["universe"] = parsed["universe"]
+                    if "params" in parsed:
+                        fingerprint["params"] = parsed["params"]
+                else:
+                    fingerprint = {}
+            except yaml.YAMLError:
+                fingerprint = {}
+
+            results.append(
+                {
+                    "iteration": int(iteration),
+                    "accepted": bool(accepted),
+                    "committed": bool(committed),
+                    "target_metric_value": float(target_metric_value),
+                    "observed_sharpe": float(observed_sharpe),
+                    "deflated_sharpe": float(deflated_sharpe),
+                    "holdout_max_drawdown": float(holdout_max_drawdown),
+                    "holdout_turnover": float(holdout_turnover),
+                    "regime_passed": bool(regime_passed),
+                    "rejection_reason": rejection_reason,
+                    "config_fingerprint": fingerprint,
+                }
+            )
+        return results
 
     def latest_run_id(self) -> str | None:
         """Return the most recently started run id, if any runs exist."""

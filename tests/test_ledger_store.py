@@ -373,3 +373,179 @@ def test_fetch_configs_excludes_other_hashes(tmp_path: Path) -> None:
 
     assert len(configs) == 1
     assert "abc_value" in configs[0]
+
+
+# ---------------------------------------------------------------------------
+# fetch_attempt_summaries tests
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_attempt_summaries_empty(tmp_path: Path) -> None:
+    """fetch_attempt_summaries returns [] when no rows match the hash."""
+    db = tmp_path / "ledger.db"
+    store = LedgerStore(db)
+    result = store.fetch_attempt_summaries("nonexistent-hash")
+    store.close()
+
+    assert result == []
+
+
+def test_fetch_attempt_summaries_basic(tmp_path: Path) -> None:
+    """fetch_attempt_summaries returns all expected fields in chronological order."""
+    db = tmp_path / "ledger.db"
+    store = LedgerStore(db)
+
+    _record(store, iteration=1, observed_sharpe=1.0, accepted=True)
+    _record(store, iteration=2, observed_sharpe=1.5, accepted=False)
+
+    results = store.fetch_attempt_summaries("hash-abc")
+    store.close()
+
+    assert len(results) == 2
+
+    # chronological order
+    assert results[0]["iteration"] == 1
+    assert results[1]["iteration"] == 2
+
+    expected_keys = {
+        "iteration",
+        "accepted",
+        "committed",
+        "target_metric_value",
+        "observed_sharpe",
+        "deflated_sharpe",
+        "holdout_max_drawdown",
+        "holdout_turnover",
+        "regime_passed",
+        "rejection_reason",
+        "config_fingerprint",
+    }
+    assert set(results[0].keys()) == expected_keys
+
+    first = results[0]
+    assert first["iteration"] == 1
+    assert first["accepted"] is True
+    assert first["committed"] is False
+    assert first["observed_sharpe"] == pytest.approx(1.0)
+    assert first["deflated_sharpe"] == pytest.approx(0.9)
+    assert first["target_metric_value"] == pytest.approx(1.0)
+    assert first["holdout_max_drawdown"] == pytest.approx(0.05)
+    assert first["holdout_turnover"] == pytest.approx(0.3)
+    assert first["regime_passed"] is True
+    assert first["rejection_reason"] is None
+
+    second = results[1]
+    assert second["iteration"] == 2
+    assert second["accepted"] is False
+    assert second["observed_sharpe"] == pytest.approx(1.5)
+
+
+def test_fetch_attempt_summaries_filters_by_hash(tmp_path: Path) -> None:
+    """fetch_attempt_summaries only returns rows matching the requested dataset_hash."""
+    db = tmp_path / "ledger.db"
+    store = LedgerStore(db)
+
+    _record(store, dataset_hash="hash-abc", iteration=1, observed_sharpe=1.0)
+    _record(store, dataset_hash="hash-xyz", iteration=2, observed_sharpe=0.5)
+
+    results_abc = store.fetch_attempt_summaries("hash-abc")
+    results_xyz = store.fetch_attempt_summaries("hash-xyz")
+    store.close()
+
+    assert len(results_abc) == 1
+    assert results_abc[0]["observed_sharpe"] == pytest.approx(1.0)
+
+    assert len(results_xyz) == 1
+    assert results_xyz[0]["observed_sharpe"] == pytest.approx(0.5)
+
+
+def test_fetch_attempt_summaries_limit(tmp_path: Path) -> None:
+    """fetch_attempt_summaries with limit=3 returns the 3 most recent rows."""
+    db = tmp_path / "ledger.db"
+    store = LedgerStore(db)
+
+    for i in range(1, 6):
+        _record(store, iteration=i, observed_sharpe=float(i))
+
+    results = store.fetch_attempt_summaries("hash-abc", limit=3)
+    store.close()
+
+    assert len(results) == 3
+    # most-recent 3 are iterations 3, 4, 5 — still in chronological (oldest-first) order
+    assert [r["iteration"] for r in results] == [3, 4, 5]
+
+
+def test_fetch_attempt_summaries_config_fingerprint(tmp_path: Path) -> None:
+    """config_fingerprint contains only universe and params; invalid YAML yields {}."""
+    full_yaml = """universe:
+  - SPY
+  - TIP
+benchmark: SPY
+momentum_lookback: 12
+params:
+  top_n: 3
+  canary_threshold: 0.5
+"""
+    db = tmp_path / "ledger.db"
+    store = LedgerStore(db)
+
+    # record with full YAML
+    store.record_attempt(
+        run_id="run-1",
+        iteration=1,
+        strategy_name="strat_a",
+        dataset_hash="hash-fp",
+        config_yaml=full_yaml,
+        observed_sharpe=1.2,
+        deflated_sharpe=1.1,
+        target_metric="sharpe",
+        target_metric_value=1.2,
+        holdout_max_drawdown=0.05,
+        holdout_turnover=0.3,
+        regime_passed=True,
+        accepted=True,
+        committed=False,
+        commit_sha=None,
+        rejection_reason=None,
+        report_json="{}",
+        holdout_returns=_make_returns(seed=0),
+    )
+
+    # record with invalid YAML
+    store.record_attempt(
+        run_id="run-1",
+        iteration=2,
+        strategy_name="strat_a",
+        dataset_hash="hash-fp",
+        config_yaml=": invalid: yaml: [[[",
+        observed_sharpe=0.5,
+        deflated_sharpe=0.4,
+        target_metric="sharpe",
+        target_metric_value=0.5,
+        holdout_max_drawdown=0.10,
+        holdout_turnover=0.5,
+        regime_passed=False,
+        accepted=False,
+        committed=False,
+        commit_sha=None,
+        rejection_reason="bad_config",
+        report_json="{}",
+        holdout_returns=_make_returns(seed=1),
+    )
+
+    results = store.fetch_attempt_summaries("hash-fp")
+    store.close()
+
+    assert len(results) == 2
+
+    fp = results[0]["config_fingerprint"]
+    assert isinstance(fp, dict)
+    assert set(fp.keys()) == {"universe", "params"}
+    assert fp["universe"] == ["SPY", "TIP"]
+    assert fp["params"] == {"top_n": 3, "canary_threshold": 0.5}
+    # benchmark and momentum_lookback must NOT appear
+    assert "benchmark" not in fp
+    assert "momentum_lookback" not in fp
+
+    # invalid YAML → empty fingerprint
+    assert results[1]["config_fingerprint"] == {}
