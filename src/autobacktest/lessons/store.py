@@ -7,6 +7,7 @@ deduplication.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import sqlite3
 import threading
@@ -50,6 +51,16 @@ class LessonStore:
         self._db_path = Path(db_path) if db_path else settings.lessons_db_path
         self._local: dict[int, sqlite3.Connection] = {}
         self._lock = threading.Lock()
+
+    def __enter__(self) -> LessonStore:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        with contextlib.suppress(Exception):
+            self.close()
 
     # ------------------------------------------------------------------
     # Connection management (one per thread)

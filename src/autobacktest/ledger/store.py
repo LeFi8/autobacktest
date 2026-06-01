@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import sqlite3
 import threading
 import zlib
@@ -87,6 +88,16 @@ class LedgerStore:
         self._schema_initialized = False
         # Trigger schema creation on the calling thread
         self._conn()
+
+    def __enter__(self) -> LedgerStore:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        with contextlib.suppress(Exception):
+            self.close()
 
     # ------------------------------------------------------------------
     # Connection management (one per thread)

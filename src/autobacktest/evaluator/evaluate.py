@@ -75,7 +75,7 @@ def calculate_information_ratio(net_returns: pd.Series, benchmark_returns: pd.Se
     if net_returns.empty or benchmark_returns.empty:
         return 0.0
     # Align dates
-    aligned = pd.concat([net_returns, benchmark_returns], axis=1).dropna()
+    aligned = pd.concat([net_returns, benchmark_returns], axis=1, sort=True).dropna()
     if aligned.empty:
         return 0.0
     active_returns = aligned.iloc[:, 0] - aligned.iloc[:, 1]
