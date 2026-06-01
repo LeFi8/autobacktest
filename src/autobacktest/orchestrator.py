@@ -7,6 +7,7 @@ import hashlib
 import importlib.util
 import logging
 import sys
+import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -58,6 +59,37 @@ STUCK_ESCALATION_FACTOR = 0.8
 MAX_DIVERSITY_RETRIES = 2
 EARLY_STOP_PATIENCE = 10  # counts all non-acceptance outcomes (validation, diversity, gate)
 EXPLOIT_PATIENCE = 3  # consecutive non-improvements in EXPLOIT before returning to EXPLORE
+
+
+class _ThreadSafeDict:
+    """Thread-safe dict wrapper using composition (not inheritance).
+
+    Wraps a plain ``dict`` with a ``threading.Lock`` so that concurrent
+    ``.get()`` / ``__setitem__`` / ``__contains__`` calls from the
+    ``ThreadPoolExecutor`` workers do not race on dict resize.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._data: dict[int, tuple[EvaluationReport, pd.Series]] = {}
+
+    def __getitem__(self, key: int) -> tuple[EvaluationReport, pd.Series]:
+        with self._lock:
+            return self._data[key]
+
+    def __setitem__(self, key: int, value: tuple[EvaluationReport, pd.Series]) -> None:
+        with self._lock:
+            self._data[key] = value
+
+    def __contains__(self, key: int) -> bool:
+        with self._lock:
+            return key in self._data
+
+    def get(
+        self, key: int, default: tuple[EvaluationReport, pd.Series] | None = None
+    ) -> tuple[EvaluationReport, pd.Series] | None:
+        with self._lock:
+            return self._data.get(key, default)
 
 
 @dataclass
@@ -158,7 +190,7 @@ def run_optimization(
         min_temp = 0.1
         config_obj = StrategyConfig.from_yaml(cfg_path)
         config = config_obj.model_dump()
-        _eval_cache: dict[int, tuple[EvaluationReport, pd.Series]] = {}
+        _eval_cache = _ThreadSafeDict()
 
         # 6. Record run metadata
         dataset_hash = _compute_dataset_hash(config)
@@ -201,7 +233,7 @@ def run_optimization(
                 config,
                 start_date=start_date,
                 end_date=end_date,
-                _eval_cache=_eval_cache,
+                _eval_cache=_eval_cache,  # type: ignore[arg-type]
                 _strategy_code=_baseline_code,
             )
             _deflate(baseline_report, baseline_returns, ledger)
@@ -454,7 +486,7 @@ def run_optimization(
                                 configs_dir,
                                 start_date,
                                 end_date,
-                                _eval_cache,
+                                _eval_cache,  # type: ignore[arg-type]
                             )
                             if err:
                                 ev["valid"] = False
@@ -834,15 +866,7 @@ def _generate_candidates(
 
     with ThreadPoolExecutor(max_workers=n) as pool:
         futures = [pool.submit(_try) for _ in range(n)]
-        results: list[AgentEdit | None] = []
-        for f in futures:
-            try:
-                results.append(f.result())
-            except LLMError:
-                raise
-            except Exception:
-                results.append(None)
-        return results
+        return [f.result() for f in futures]
 
 
 def _eval_single_candidate(

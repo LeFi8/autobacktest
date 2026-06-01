@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +49,7 @@ class LessonStore:
     def __init__(self, db_path: Path | str | None = None) -> None:
         self._db_path = Path(db_path) if db_path else settings.lessons_db_path
         self._local: dict[int, sqlite3.Connection] = {}
+        self._lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Connection management (one per thread)
@@ -55,20 +57,22 @@ class LessonStore:
 
     def _conn(self) -> sqlite3.Connection:
         tid = _current_thread_id()
-        if tid not in self._local:
-            c = sqlite3.connect(str(self._db_path), timeout=settings.db_timeout)
-            c.execute("PRAGMA journal_mode=WAL")
-            c.execute(_CREATE_LESSONS)
-            c.execute(_CREATE_STRATEGY_IDX)
-            c.execute(_CREATE_TYPE_IDX)
-            c.commit()
-            self._local[tid] = c
-        return self._local[tid]
+        with self._lock:
+            if tid not in self._local:
+                c = sqlite3.connect(str(self._db_path), timeout=settings.db_timeout)
+                c.execute("PRAGMA journal_mode=WAL")
+                c.execute(_CREATE_LESSONS)
+                c.execute(_CREATE_STRATEGY_IDX)
+                c.execute(_CREATE_TYPE_IDX)
+                c.commit()
+                self._local[tid] = c
+            return self._local[tid]
 
     def close(self) -> None:
-        for c in self._local.values():
-            c.close()
-        self._local.clear()
+        with self._lock:
+            for c in self._local.values():
+                c.close()
+            self._local.clear()
 
     # ------------------------------------------------------------------
     # Core operations
@@ -248,8 +252,6 @@ def _hash_body(body: str) -> str:
 
 def _current_thread_id() -> int:
     """Return a hashable id for the current thread."""
-    import threading
-
     return threading.get_ident()
 
 

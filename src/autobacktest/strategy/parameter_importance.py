@@ -99,6 +99,9 @@ def compute_parameter_importance(
         if n < min_attempts or len(set(values)) < 3:
             continue
 
+        if len(set(metrics)) < 2:
+            continue
+
         rho, p_value = spearmanr(values, metrics)
         if np.isnan(rho):
             continue
