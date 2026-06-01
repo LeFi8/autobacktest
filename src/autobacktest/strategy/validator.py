@@ -1,5 +1,7 @@
 import ast
 import json
+import os
+import re
 import signal
 import subprocess
 import sys
@@ -22,6 +24,9 @@ FORBIDDEN_NAMES = {
     "exec",
     "eval",
     "compile",
+    "format",
+    "format_map",
+    "vformat",
     "open",
     "__import__",
     "globals",
@@ -85,6 +90,22 @@ FORBIDDEN_NAMES = {
     "to_stata",
     "to_orc",
 }
+
+
+# API key patterns to redact from error output
+_SANITIZE_PATTERNS = [
+    (re.compile(r"(sk-[a-zA-Z0-9]{20,})"), r"sk-***REDACTED***"),
+    (re.compile(r"(sk-[a-zA-Z0-9]{32,})"), r"sk-***REDACTED***"),
+]
+
+
+def _sanitize_detail(text: str) -> str:
+    """Redact potential API keys and credentials from error messages."""
+    if not text:
+        return text
+    for pattern, replacement in _SANITIZE_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
 
 
 class ValidationError(StrEnum):
@@ -446,6 +467,13 @@ result = run_checks()
 print("__RESULT__" + json.dumps(result))
 """
 
+    # Construct a safe subprocess environment (whitelist approach)
+    safe_env = {
+        k: v
+        for k, v in os.environ.items()
+        if k in {"PATH", "PYTHONPATH", "HOME", "USER"} or k.startswith("AUTOBACKTEST_")
+    }
+
     try:
         proc = subprocess.run(
             [sys.executable, "-c", runner_code],
@@ -453,9 +481,10 @@ print("__RESULT__" + json.dumps(result))
             capture_output=True,
             text=True,
             timeout=25,  # Bounded wait with safety buffer
+            env=safe_env,
         )
         if proc.returncode != 0:
-            err_msg = proc.stderr.strip() or f"Subprocess exited with non-zero code {proc.returncode}"
+            err_msg = _sanitize_detail(proc.stderr.strip() or f"Subprocess exited with non-zero code {proc.returncode}")
             return ValidationResult(
                 passed=False,
                 error_code=ValidationError.SMOKE_TEST_FAILED,
@@ -469,7 +498,7 @@ print("__RESULT__" + json.dumps(result))
                 result_line = line[len("__RESULT__") :]
                 break
         if result_line is None:
-            raise ValueError(f"Subprocess produced no result line. stderr: {proc.stderr.strip()!r}")
+            raise ValueError(f"Subprocess produced no result line. stderr: {_sanitize_detail(proc.stderr.strip())!r}")
         res_data = json.loads(result_line)
         err_code = None
         if res_data["error_code"]:
@@ -478,7 +507,7 @@ print("__RESULT__" + json.dumps(result))
         return ValidationResult(
             passed=res_data["passed"],
             error_code=err_code,
-            detail=res_data["detail"],
+            detail=_sanitize_detail(res_data["detail"]),
         )
 
     except subprocess.TimeoutExpired:
@@ -491,7 +520,7 @@ print("__RESULT__" + json.dumps(result))
         return ValidationResult(
             passed=False,
             error_code=ValidationError.IMPORT_FAILED,
-            detail=f"Subprocess sandboxing orchestration failed: {e}",
+            detail=_sanitize_detail(f"Subprocess sandboxing orchestration failed: {e}"),
         )
 
 
@@ -599,6 +628,23 @@ def _check_ast(content: str) -> ValidationResult:
                             passed=False,
                             error_code=ValidationError.AST_BLOCKED_IMPORT,
                             detail=f"Import alias '{alias.asname}' is blocked.",
+                        )
+
+        # Inspect string constants for dunder format-string exploits
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            val: str = node.value
+            if "{" in val and "__" in val:
+                # Detect patterns like "{0.__class__}" or "{__import__}"
+                import re as _re
+
+                brace_contents = _re.findall(r"\{[^}]*\}", val)
+                for brace in brace_contents:
+                    if "__" in brace:
+                        msg = f"String constant contains dunder reference in format pattern: '{brace}'"
+                        return ValidationResult(
+                            passed=False,
+                            error_code=ValidationError.AST_BLOCKED_IMPORT,
+                            detail=msg,
                         )
 
         # Inspect forbidden variables, functions, and builtin names

@@ -1,23 +1,28 @@
 universe:
   - SPY
   - IWM
-  - QQQ
-  - VGK
-  - EWJ
+  - VEA
   - VWO
   - VNQ
   - DBC
   - IEF
+  - TLT
   - BIL
   - TIP
 benchmark: SPY
-risky_assets:
-  - SPY
-  - QQQ
-  - IEF
-  - DBC
-cash_asset: BIL
-target_vol: 0.12
-vol_span: 126
 max_drawdown_limit: 0.20
 turnover_limit: 2.0
+params:
+  offensive_assets:
+    - SPY
+    - IWM
+    - VEA
+    - VWO
+    - VNQ
+    - DBC
+    - IEF
+    - TLT
+  defensive_assets:
+    - BIL
+    - IEF
+  canary_asset: TIP

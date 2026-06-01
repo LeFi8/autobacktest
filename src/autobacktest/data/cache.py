@@ -2,6 +2,7 @@
 
 import json
 import logging
+import threading
 from pathlib import Path
 
 import pandas as pd
@@ -9,6 +10,44 @@ import pandas as pd
 from autobacktest.data.base import DataProvider
 
 logger = logging.getLogger(__name__)
+
+# Per-path locks for thread-safe cache writes
+_cache_locks: dict[str, threading.Lock] = {}
+_cache_locks_lock = threading.Lock()
+
+
+def _get_cache_lock(path: Path) -> threading.Lock:
+    """Get or create a thread lock for a specific cache file path."""
+    key = str(path.resolve())
+    with _cache_locks_lock:
+        if key not in _cache_locks:
+            _cache_locks[key] = threading.Lock()
+        return _cache_locks[key]
+
+
+def _atomic_write(df: pd.DataFrame, path: Path) -> None:
+    """Write a DataFrame to Parquet atomically via temp file + os.replace."""
+    tmp_path = path.with_suffix(".parquet.tmp")
+    try:
+        df.to_parquet(tmp_path)
+        tmp_path.replace(path)
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink()
+        raise
+
+
+def _atomic_write_json(data: dict[str, object], path: Path) -> None:
+    """Write JSON metadata atomically via temp file + os.replace."""
+    tmp_path = path.with_suffix(".json.tmp")
+    try:
+        with tmp_path.open("w") as f:
+            json.dump(data, f)
+        tmp_path.replace(path)
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink()
+        raise
 
 
 class CachedDataProvider(DataProvider):
@@ -48,15 +87,15 @@ class CachedDataProvider(DataProvider):
         """
         meta_file = self.cache_dir / f"{ticker}_{interval}.json"
         try:
-            with meta_file.open("w") as f:
-                json.dump(
+            lock = _get_cache_lock(meta_file)
+            with lock:
+                _atomic_write_json(
                     {
-                        # isoformat() preserves time-of-day for sub-daily intervals
                         "start": start.isoformat(),
                         "end": end.isoformat(),
                         "confirmed_empty": confirmed_empty,
                     },
-                    f,
+                    meta_file,
                 )
         except Exception as e:
             logger.warning("Failed to save cache metadata for %s: %s", ticker, e)
@@ -171,7 +210,9 @@ class CachedDataProvider(DataProvider):
                             cached_df = pd.concat([cached_df, new_data])
                             cached_df = cached_df[~cached_df.index.duplicated(keep="last")]
                             cached_df.sort_index(inplace=True)
-                            cached_df.to_parquet(cache_file)
+                            lock = _get_cache_lock(cache_file)
+                            with lock:
+                                _atomic_write(cached_df, cache_file)
                             # P0-1: advance boundary only when rows were received.
                             self._save_metadata(ticker, interval, cache_start, cached_df.index.max())
                         else:
@@ -204,7 +245,9 @@ class CachedDataProvider(DataProvider):
                             cached_df = pd.concat([new_data, cached_df])
                             cached_df = cached_df[~cached_df.index.duplicated(keep="last")]
                             cached_df.sort_index(inplace=True)
-                            cached_df.to_parquet(cache_file)
+                            lock = _get_cache_lock(cache_file)
+                            with lock:
+                                _atomic_write(cached_df, cache_file)
                             # P0-1: advance boundary only when rows were received.
                             self._save_metadata(ticker, interval, cached_df.index.min(), cache_end)
                         else:
@@ -233,7 +276,9 @@ class CachedDataProvider(DataProvider):
                     else:
                         cached_df = new_data
                     cached_df.sort_index(inplace=True)
-                    cached_df.to_parquet(cache_file)
+                    lock = _get_cache_lock(cache_file)
+                    with lock:
+                        _atomic_write(cached_df, cache_file)
                     # P0-1: metadata advance gated on actual rows stored.
                     self._save_metadata(ticker, interval, cached_df.index.min(), cached_df.index.max())
                     ticker_df = self._slice_window(cached_df, start_dt, end_dt)

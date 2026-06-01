@@ -35,7 +35,12 @@ class GitLedger:
         return branch_name
 
     def commit_strategy(self, strategy_name: str, message: str) -> str:
-        """Stage strategy and config files, commit, return hexsha."""
+        """Stage and commit only strategy and config files.
+
+        Uses ``index.add()`` to stage only the two targeted files, then
+        ``index.commit()`` so that unrelated staged files are excluded.
+        Returns the commit hexsha.
+        """
         strat_rel = f"{self._strategies_dir}/{strategy_name}.py"
         cfg_rel = f"{self._configs_dir}/{strategy_name}.yaml"
         self._repo.index.add([strat_rel, cfg_rel])

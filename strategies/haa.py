@@ -1,4 +1,8 @@
-"""Vol-targeted risk parity strategy."""
+"""Hybrid Asset Allocation (HAA) Balanced (G8/T4) per Keller 2023.
+
+Implements the 13612U momentum scoring, TIP canary check, top-4 offensive
+selection with defensive substitution, and dual-defense (BIL/IEF) allocation.
+"""
 
 from typing import Any
 
@@ -6,81 +10,93 @@ import numpy as np
 import pandas as pd
 
 
+def _momentum_13612u(prices: pd.Series, current_date: pd.Timestamp) -> float:
+    """Compute the unweighted 13612U momentum score.
+
+    Returns the simple average of 1-month, 3-month, 6-month, and 12-month
+    simple returns ending at current_date:
+        Momentum = (r_1m + r_3m + r_6m + r_12m) / 4
+
+    If insufficient price history for any window, that window is omitted
+    from the average.
+    """
+    lookbacks = [21, 63, 126, 252]
+    returns = []
+    for lb in lookbacks:
+        try:
+            idx = prices.index.get_loc(current_date)
+            if idx >= lb:
+                start = prices.index[idx - lb]
+                r = (prices.loc[current_date] / prices.loc[start]) - 1.0
+                returns.append(r)
+        except (KeyError, IndexError):
+            continue
+    if not returns:
+        return -1.0
+    return float(np.mean(returns))
+
+
 def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFrame:
-    """Generate volatility-targeted equal risk contribution weights.
+    """Generate HAA Balanced portfolio weights.
 
     Args:
-        prices: Daily prices DataFrame (DatetimeIndex).
-        config: Strategy configuration with keys:
-            - risky_assets: list of tickers for the risk portfolio
-            - cash_asset: ticker of the cash/defensive asset
-            - target_vol: annualized target volatility (e.g., 0.15)
-            - vol_span: EWMA span for volatility estimation (e.g., 126)
+        prices: Daily prices DataFrame (DatetimeIndex, columns=tickers).
+        config: Configuration dict with keys:
+            - params.offensive_assets: list of 8 offensive tickers
+            - params.defensive_assets: list of 2 defensive tickers (BIL, IEF)
+            - params.canary_asset: ticker for the TIP canary
 
     Returns:
         pd.DataFrame: Weights indexed by rebalance dates.
     """
-    risky_assets = config.get("risky_assets", [])
-    cash_asset = config.get("cash_asset", "BIL")
-    target_vol = config.get("target_vol", 0.15)
-    vol_span = config.get("vol_span", 126)
+    params = config.get("params", {})
+    offensive_assets = params.get("offensive_assets", ["SPY", "IWM", "VEA", "VWO", "VNQ", "DBC", "IEF", "TLT"])
+    defensive_assets = params.get("defensive_assets", ["BIL", "IEF"])
+    canary_asset = params.get("canary_asset", "TIP")
+
+    all_assets = list(prices.columns)
 
     if prices.empty:
-        return pd.DataFrame(0.0, index=pd.DatetimeIndex([]), columns=prices.columns)
+        return pd.DataFrame(0.0, index=pd.DatetimeIndex([]), columns=all_assets)
 
-    # Ensure all assets exist in prices
-    available = set(prices.columns)
-    risky_assets = [a for a in risky_assets if a in available]
-    if cash_asset not in available:
-        raise ValueError(f"Cash asset {cash_asset} not in price data")
-
-    # Compute daily returns (simple percentage)
-    returns = prices.pct_change().dropna(how="all")
-    if returns.empty:
-        return pd.DataFrame(0.0, index=pd.DatetimeIndex([]), columns=prices.columns)
-
-    # Rebalance schedule: last trading day of each month
+    # Rebalance on last trading day of each month
     monthly_dates = prices.groupby(prices.index.to_period("M")).tail(1).index
-    monthly_dates = monthly_dates[monthly_dates >= returns.index[0]]  # start after some data
 
-    weights = pd.DataFrame(0.0, index=monthly_dates, columns=prices.columns)
+    weights = pd.DataFrame(0.0, index=monthly_dates, columns=all_assets)
 
     for date in monthly_dates:
-        if not risky_assets:
-            weights.loc[date, cash_asset] = 1.0
-            continue
+        # Compute momentum for all assets
+        mom_scores = {}
+        for asset in all_assets:
+            if asset in prices.columns:
+                mom_scores[asset] = _momentum_13612u(prices[asset], date)
 
-        # Slice returns up to current date
-        hist_ret = returns.loc[:date, risky_assets].copy()
-        if hist_ret.empty:
-            continue
+        # Canary check
+        canary_mom = mom_scores.get(canary_asset, -1.0)
 
-        # Compute EWMA volatility for each risky asset (annualized by sqrt(252))
-        daily_vol = hist_ret.ewm(span=vol_span, min_periods=10).std().iloc[-1]
-        ann_vol = daily_vol * np.sqrt(252)
+        if canary_mom <= 0:
+            # Defensive: 100% to the better defensive asset
+            def_mom_vals = [(d, mom_scores.get(d, -1.0)) for d in defensive_assets if d in all_assets]
+            if not def_mom_vals:
+                weights.loc[date, :] = 0.0
+                continue
+            best_def = max(def_mom_vals, key=lambda x: x[1])[0]
+            weights.loc[date, best_def] = 1.0
+        else:
+            # Clear skies: rank offensive assets, pick top 4
+            off_mom_vals = [(o, mom_scores.get(o, -1.0)) for o in offensive_assets if o in all_assets]
+            off_mom_vals.sort(key=lambda x: x[1], reverse=True)
+            top_4 = off_mom_vals[:4]
 
-        # Replace NaN/inf with a large value to effectively set weight to zero
-        ann_vol = ann_vol.replace(0, np.nan).fillna(1e6)
+            # Best defensive asset (for substitution)
+            def_mom_vals = [(d, mom_scores.get(d, -1.0)) for d in defensive_assets if d in all_assets]
+            best_def = max(def_mom_vals, key=lambda x: x[1])[0] if def_mom_vals else defensive_assets[0]
 
-        # Inverse volatility weights (raw)
-        inv_vol = 1.0 / ann_vol
-        total_inv_vol = inv_vol.sum()
-
-        w_raw = inv_vol / total_inv_vol if total_inv_vol > 1e-8 else pd.Series(0.0, index=risky_assets)
-
-        # Estimate portfolio volatility under zero correlation assumption
-        port_var = (w_raw**2 * ann_vol**2).sum()
-        port_vol = np.sqrt(port_var) if port_var > 0 else 0.0
-
-        # Scale to target volatility; cap at 1.0
-        leverage = min(1.0, target_vol / port_vol) if port_vol > 1e-8 else 0.0
-
-        # Final risky weights
-        w_risky = w_raw * leverage
-
-        # Assign to output
-        for asset in risky_assets:
-            weights.loc[date, asset] = w_risky.get(asset, 0.0)
-        weights.loc[date, cash_asset] = 1.0 - leverage
+            slot_weight = 1.0 / 4.0
+            for asset, mom in top_4:
+                if mom > 0:
+                    weights.loc[date, asset] = slot_weight
+                else:
+                    weights.loc[date, best_def] = weights.loc[date, best_def] + slot_weight
 
     return weights
