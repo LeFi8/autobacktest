@@ -317,12 +317,10 @@ def test_stuck_counter_resets_on_acceptance(
     escalated = min(start_temp, min_temp + (start_temp - min_temp) * STUCK_ESCALATION_FACTOR)
     assert provider.recorded_temperatures[STUCK_THRESHOLD] == pytest.approx(escalated)
 
-    # k=7..9 (index 6..8): counter reset to 0 after k=6 acceptance — normal decay resumes.
+    # k=7..9 (index 6..8): after acceptance, mode=EXPLOIT — temperature fixed at min_temp.
     for i in range(STUCK_THRESHOLD + 1, n_iter):
         k = i + 1
-        decay_factor = i / (n_iter - 1)
-        expected = start_temp - decay_factor * (start_temp - min_temp)
-        assert provider.recorded_temperatures[i] == pytest.approx(expected), (
-            f"Iteration {k}: expected normal decay {expected:.4f} after reset, "
+        assert provider.recorded_temperatures[i] == pytest.approx(min_temp), (
+            f"Iteration {k}: expected EXPLOIT min_temp {min_temp:.4f} after acceptance, "
             f"got {provider.recorded_temperatures[i]:.4f}"
         )

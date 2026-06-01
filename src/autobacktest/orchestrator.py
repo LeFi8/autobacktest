@@ -51,6 +51,7 @@ STUCK_THRESHOLD = 5
 STUCK_ESCALATION_FACTOR = 0.8
 MAX_DIVERSITY_RETRIES = 2
 EARLY_STOP_PATIENCE = 10  # counts all non-acceptance outcomes (validation, diversity, gate)
+EXPLOIT_PATIENCE = 3  # consecutive non-improvements in EXPLOIT before returning to EXPLORE
 
 
 @dataclass
@@ -201,6 +202,8 @@ def run_optimization(
         last_attempt: dict[str, Any] | None = None
         consecutive_no_accept: int = 0
         _early_stop = False
+        mode: str = "explore"
+        exploit_stall: int = 0
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -213,9 +216,19 @@ def run_optimization(
                 total=iterations,
             )
             for k in range(1, iterations + 1):
+                # Stuck detection: force EXPLORE and reset exploit_stall before temperature block
+                if consecutive_no_accept >= STUCK_THRESHOLD:
+                    if mode != "explore":
+                        logger.info("Stuck threshold reached, forcing EXPLORE mode.")
+                    mode = "explore"
+                    exploit_stall = 0
+
                 if start_temp is not None:
-                    if consecutive_no_accept >= STUCK_THRESHOLD:
-                        # Stuck: bump temperature back toward start_temp for exploration
+                    if mode == "exploit":
+                        # In exploit mode: always use low temperature for focused refinement
+                        provider.temperature = min_temp
+                    elif consecutive_no_accept >= STUCK_THRESHOLD:
+                        # Stuck in explore mode: bump temperature back toward start_temp
                         if consecutive_no_accept == STUCK_THRESHOLD:
                             logger.info(f"Stuck for {STUCK_THRESHOLD} iterations, escalating temperature.")
                         provider.temperature = min(
@@ -231,6 +244,7 @@ def run_optimization(
                     "iteration": k,
                     "strategy": strategy_name,
                 }
+                event["mode"] = mode
                 if start_temp is not None:
                     event["temperature"] = provider.temperature
 
@@ -239,6 +253,7 @@ def run_optimization(
                     current_code = strat_path.read_text(encoding="utf-8")
                     current_yaml = cfg_path.read_text(encoding="utf-8")
                     historical_configs = ledger.fetch_configs(dataset_hash)
+                    attempt_summaries = ledger.fetch_attempt_summaries(dataset_hash)
                     ctx = AgentContext(
                         strategy_name=strategy_name,
                         strategy_code=current_code,
@@ -249,6 +264,8 @@ def run_optimization(
                         lessons_text=lessons_text,
                         n_historical_configs=len(historical_configs),
                         last_attempt=last_attempt,
+                        attempt_history=attempt_summaries,
+                        mode=mode,
                     )
 
                     # 8b. Get LLM edit (with auto-retry on length limit cutoff and transient error backoff)
@@ -311,6 +328,14 @@ def run_optimization(
 
                     if edit is None:
                         consecutive_no_accept += 1
+                        if mode == "exploit":
+                            exploit_stall += 1
+                            if exploit_stall >= EXPLOIT_PATIENCE:
+                                logger.info(
+                                    f"Exploit stall reached ({EXPLOIT_PATIENCE}), switching to EXPLORE mode."
+                                )
+                                mode = "explore"
+                                exploit_stall = 0
                         continue
 
                     event["edit"] = {
@@ -347,68 +372,79 @@ def run_optimization(
                             "candidate_config_yaml": edit.config_yaml,
                         }
                         consecutive_no_accept += 1
+                        if mode == "exploit":
+                            exploit_stall += 1
+                            if exploit_stall >= EXPLOIT_PATIENCE:
+                                logger.info(
+                                    f"Exploit stall reached ({EXPLOIT_PATIENCE}), switching to EXPLORE mode."
+                                )
+                                mode = "explore"
+                                exploit_stall = 0
                         continue
 
                     event["validation"] = {"passed": True}
 
                     # 8c.5 Tier 1 — Config diversity gate (pre-backtest), with bounded retry
                     _diversity_exhausted = False
-                    if historical_configs:
-                        diversity_retry_count = 0
-                        while True:
-                            max_sim = max_config_similarity(edit.config_yaml, historical_configs)
-                            if max_sim <= DIVERSITY_CONFIG_THRESHOLD:
-                                break  # Passed — continue to evaluation
+                    if mode == "explore":
+                        if historical_configs:
+                            diversity_retry_count = 0
+                            while True:
+                                max_sim = max_config_similarity(edit.config_yaml, historical_configs)
+                                if max_sim <= DIVERSITY_CONFIG_THRESHOLD:
+                                    break  # Passed — continue to evaluation
 
-                            # Diversity rejected: give LLM one more chance within the
-                            # same iteration
-                            last_attempt = {
-                                "stage": "diversity_config",
-                                "detail": (
-                                    f"Config similarity {max_sim:.3f} exceeded threshold "
-                                    f"{DIVERSITY_CONFIG_THRESHOLD}. Your config was too similar "
-                                    f"to a past attempt."
-                                ),
-                                "candidate_config_yaml": edit.config_yaml,
-                            }
-                            if diversity_retry_count >= MAX_DIVERSITY_RETRIES:
-                                # Exhausted retries — log and consume this iteration
-                                event["diversity"] = {
-                                    "tier": "config",
-                                    "passed": False,
-                                    "max_similarity": max_sim,
-                                    "retries_exhausted": True,
+                                # Diversity rejected: give LLM one more chance within the
+                                # same iteration
+                                last_attempt = {
+                                    "stage": "diversity_config",
+                                    "detail": (
+                                        f"Config similarity {max_sim:.3f} exceeded threshold "
+                                        f"{DIVERSITY_CONFIG_THRESHOLD}. Your config was too similar "
+                                        f"to a past attempt."
+                                    ),
+                                    "candidate_config_yaml": edit.config_yaml,
                                 }
-                                event["evaluation"] = None
-                                event["gate"] = None
-                                event["commit"] = None
-                                event_log.write(event)
-                                consecutive_no_accept += 1
-                                _diversity_exhausted = True
-                                break
+                                if diversity_retry_count >= MAX_DIVERSITY_RETRIES:
+                                    # Exhausted retries — log and consume this iteration
+                                    event["diversity"] = {
+                                        "tier": "config",
+                                        "passed": False,
+                                        "max_similarity": max_sim,
+                                        "retries_exhausted": True,
+                                    }
+                                    event["evaluation"] = None
+                                    event["gate"] = None
+                                    event["commit"] = None
+                                    event_log.write(event)
+                                    consecutive_no_accept += 1
+                                    _diversity_exhausted = True
+                                    break
 
-                            diversity_retry_count += 1
-                            ctx_retry = AgentContext(
-                                strategy_name=strategy_name,
-                                strategy_code=current_code,
-                                config_yaml=current_yaml,
-                                program_text=spec.raw_text,
-                                evaluation_report=incumbent,
-                                iteration=k,
-                                lessons_text=lessons_text,
-                                n_historical_configs=len(historical_configs),
-                                last_attempt=last_attempt,
-                            )
-                            try:
-                                edit = provider.generate_edit(ctx_retry)
-                            except LLMError:
-                                # On LLM failure during retry, skip this iteration rather
-                                # than evaluating the already-rejected config
-                                _diversity_exhausted = True
-                                break
+                                diversity_retry_count += 1
+                                ctx_retry = AgentContext(
+                                    strategy_name=strategy_name,
+                                    strategy_code=current_code,
+                                    config_yaml=current_yaml,
+                                    program_text=spec.raw_text,
+                                    evaluation_report=incumbent,
+                                    iteration=k,
+                                    lessons_text=lessons_text,
+                                    n_historical_configs=len(historical_configs),
+                                    last_attempt=last_attempt,
+                                    attempt_history=attempt_summaries,
+                                    mode=mode,
+                                )
+                                try:
+                                    edit = provider.generate_edit(ctx_retry)
+                                except LLMError:
+                                    # On LLM failure during retry, skip this iteration rather
+                                    # than evaluating the already-rejected config
+                                    _diversity_exhausted = True
+                                    break
 
-                    if _diversity_exhausted:
-                        continue
+                        if _diversity_exhausted:
+                            continue
 
                     # 8d. Apply to real files and 8e. Evaluate — both inside the same
                     # try/except so a write error also triggers a clean rollback.
@@ -441,64 +477,73 @@ def run_optimization(
                             "candidate_config_yaml": edit.config_yaml,
                         }
                         consecutive_no_accept += 1
+                        if mode == "exploit":
+                            exploit_stall += 1
+                            if exploit_stall >= EXPLOIT_PATIENCE:
+                                logger.info(
+                                    f"Exploit stall reached ({EXPLOIT_PATIENCE}), switching to EXPLORE mode."
+                                )
+                                mode = "explore"
+                                exploit_stall = 0
                         continue
 
                     # 8e.5 Tier 2 — Returns correlation diversity gate (post-backtest)
-                    hist_matrix, _ = ledger.fetch_historical_returns(dataset_hash)
-                    if not hist_matrix.empty:
-                        corr_passed, max_corr = check_returns_correlation(
-                            returns_k, hist_matrix, DIVERSITY_RETURNS_THRESHOLD
-                        )
-                        if not corr_passed:
-                            git_ledger.rollback_strategy(strategy_name)
-                            event["diversity"] = {
-                                "tier": "returns",
-                                "passed": False,
-                                "max_correlation": max_corr,
-                            }
-                            event["evaluation"] = None
-                            event["gate"] = None
-                            event["commit"] = None
-                            event_log.write(event)
-                            ledger.record_attempt(
-                                run_id=run_id,
-                                iteration=k,
-                                strategy_name=strategy_name,
-                                dataset_hash=dataset_hash,
-                                config_yaml=edit.config_yaml,
-                                observed_sharpe=report_k.observed_sharpe,
-                                deflated_sharpe=report_k.deflated_sharpe,
-                                target_metric=target_metric.value,
-                                target_metric_value=_get_metric_value(report_k, target_metric),
-                                holdout_max_drawdown=report_k.holdout_metrics.max_drawdown,
-                                holdout_turnover=report_k.holdout_metrics.turnover,
-                                regime_passed=report_k.regime_passed,
-                                accepted=False,
-                                committed=False,
-                                commit_sha=None,
-                                rejection_reason="diversity_tier2_returns",
-                                report_json=report_k.to_json(),
-                                holdout_returns=returns_k,
-                                prompt_tokens=edit.prompt_tokens,
-                                completion_tokens=edit.completion_tokens,
-                                total_tokens=edit.total_tokens,
-                                cost=edit.cost,
+                    if mode == "explore":
+                        hist_matrix, _ = ledger.fetch_historical_returns(dataset_hash)
+                        if not hist_matrix.empty:
+                            corr_passed, max_corr = check_returns_correlation(
+                                returns_k, hist_matrix, DIVERSITY_RETURNS_THRESHOLD
                             )
-                            last_attempt = {
-                                "stage": "diversity_returns",
-                                "detail": (
-                                    f"Return correlation {max_corr:.3f} exceeded threshold "
-                                    f"{DIVERSITY_RETURNS_THRESHOLD}. The strategy produces "
-                                    f"returns too similar to past attempts."
-                                ),
-                                "candidate_config_yaml": edit.config_yaml,
-                                "candidate_metrics": {
-                                    "observed_sharpe": report_k.observed_sharpe,
-                                    "holdout_max_drawdown": report_k.holdout_metrics.max_drawdown,
-                                },
-                            }
-                            consecutive_no_accept += 1
-                            continue
+                            if not corr_passed:
+                                git_ledger.rollback_strategy(strategy_name)
+                                event["diversity"] = {
+                                    "tier": "returns",
+                                    "passed": False,
+                                    "max_correlation": max_corr,
+                                }
+                                event["evaluation"] = None
+                                event["gate"] = None
+                                event["commit"] = None
+                                event_log.write(event)
+                                ledger.record_attempt(
+                                    run_id=run_id,
+                                    iteration=k,
+                                    strategy_name=strategy_name,
+                                    dataset_hash=dataset_hash,
+                                    config_yaml=edit.config_yaml,
+                                    observed_sharpe=report_k.observed_sharpe,
+                                    deflated_sharpe=report_k.deflated_sharpe,
+                                    target_metric=target_metric.value,
+                                    target_metric_value=_get_metric_value(report_k, target_metric),
+                                    holdout_max_drawdown=report_k.holdout_metrics.max_drawdown,
+                                    holdout_turnover=report_k.holdout_metrics.turnover,
+                                    regime_passed=report_k.regime_passed,
+                                    accepted=False,
+                                    committed=False,
+                                    commit_sha=None,
+                                    rejection_reason="diversity_tier2_returns",
+                                    report_json=report_k.to_json(),
+                                    holdout_returns=returns_k,
+                                    prompt_tokens=edit.prompt_tokens,
+                                    completion_tokens=edit.completion_tokens,
+                                    total_tokens=edit.total_tokens,
+                                    cost=edit.cost,
+                                )
+                                last_attempt = {
+                                    "stage": "diversity_returns",
+                                    "detail": (
+                                        f"Return correlation {max_corr:.3f} exceeded threshold "
+                                        f"{DIVERSITY_RETURNS_THRESHOLD}. The strategy produces "
+                                        f"returns too similar to past attempts."
+                                    ),
+                                    "candidate_config_yaml": edit.config_yaml,
+                                    "candidate_metrics": {
+                                        "observed_sharpe": report_k.observed_sharpe,
+                                        "holdout_max_drawdown": report_k.holdout_metrics.max_drawdown,
+                                    },
+                                }
+                                consecutive_no_accept += 1
+                                continue
 
                     # 8f. DSR deflation
                     _deflate(report_k, returns_k, ledger)
@@ -509,6 +554,7 @@ def run_optimization(
                         baseline=incumbent,
                         target_metric=target_metric,
                         config=new_config,
+                        require_dsr_non_degradation=(mode == "exploit"),
                     )
 
                     event["evaluation"] = {
@@ -560,6 +606,8 @@ def run_optimization(
                         event["commit"] = {"sha": sha}
                         last_attempt = None
                         consecutive_no_accept = 0
+                        mode = "exploit"
+                        exploit_stall = 0
                     else:
                         git_ledger.rollback_strategy(strategy_name)
                         ledger.record_attempt(
@@ -586,6 +634,14 @@ def run_optimization(
                             },
                         }
                         consecutive_no_accept += 1
+                        if mode == "exploit":
+                            exploit_stall += 1
+                            if exploit_stall >= EXPLOIT_PATIENCE:
+                                logger.info(
+                                    f"Exploit stall reached ({EXPLOIT_PATIENCE}), switching to EXPLORE mode."
+                                )
+                                mode = "explore"
+                                exploit_stall = 0
 
                     event_log.write(event)
                 finally:
