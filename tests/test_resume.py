@@ -24,8 +24,8 @@ def test_resume_optimization_picks_up_correctly(
     monkeypatch.setattr("autobacktest.orchestrator.evaluate_strategy_detailed", patched_evaluate)
     monkeypatch.setattr("autobacktest.orchestrator.max_config_similarity", lambda *_: 0.0)
     monkeypatch.setattr("autobacktest.orchestrator.check_returns_correlation", lambda *_: (True, 0.0))
-    monkeypatch.setattr("autobacktest.orchestrator.select", lambda *_: GateResult(accepted=True))
-    monkeypatch.setattr("autobacktest.orchestrator.confirm", lambda *_: GateResult(accepted=True))
+    monkeypatch.setattr("autobacktest.orchestrator.select", lambda *_a, **_kw: GateResult(accepted=True))
+    monkeypatch.setattr("autobacktest.orchestrator.confirm", lambda *_a, **_kw: GateResult(accepted=True))
 
     edit = AgentEdit(
         strategy_code=BASELINE_STRATEGY,

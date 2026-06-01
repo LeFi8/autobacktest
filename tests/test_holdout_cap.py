@@ -59,12 +59,12 @@ def test_holdout_peek_limit_early_termination(project_root_with_lessons: Path, m
     monkeypatch.setattr("autobacktest.orchestrator.check_returns_correlation", lambda *_: (True, 0.0))
 
     # 2. Patch select to always accept
-    monkeypatch.setattr("autobacktest.orchestrator.select", lambda *_: GateResult(accepted=True))
+    monkeypatch.setattr("autobacktest.orchestrator.select", lambda *_a, **_kw: GateResult(accepted=True))
 
     # 3. Patch confirm to reject (so we don't commit, but we peek holdout!)
     monkeypatch.setattr(
         "autobacktest.orchestrator.confirm",
-        lambda *_: GateResult(accepted=False, reason="holdout fail"),
+        lambda *_a, **_kw: GateResult(accepted=False, reason="holdout fail"),
     )
 
     # 4. Set holdout_peek_limit = 2, iterations = 5
