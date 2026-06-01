@@ -76,6 +76,9 @@ def run_optimization(
     repo_path: Path = Path(),
     start_date: str = settings.default_start_date,
     end_date: str = settings.default_end_date,
+    holdout_peek_limit: int = 20,
+    early_stop_patience: int = 10,
+    resume: str | None = None,
 ) -> OrchestratorResult:
     """Run the LLM-driven strategy optimization loop.
 
@@ -117,9 +120,20 @@ def run_optimization(
 
     # 3. Setup git
     git_ledger = GitLedger(repo_path)
-    git_ledger.ensure_clean(strategy_name)
-    run_id = f"{strategy_name}-{datetime.now(tz=UTC):%Y%m%d-%H%M%S}"
-    branch = git_ledger.create_run_branch(run_id)
+    if resume:
+        run_id = resume
+        branch = f"autobacktest/{run_id}"
+        try:
+            git_ledger._repo.heads[branch].checkout()
+        except Exception as e:
+            try:
+                git_ledger._repo.git.checkout(branch)
+            except Exception:
+                raise ValueError(f"Could not checkout branch '{branch}': {e}") from e
+    else:
+        git_ledger.ensure_clean(strategy_name)
+        run_id = f"{strategy_name}-{datetime.now(tz=UTC):%Y%m%d-%H%M%S}"
+        branch = git_ledger.create_run_branch(run_id)
 
     # 4. Setup ledger and event log — wrapped in try/finally so they are always
     # closed even if baseline evaluation or any loop iteration raises.
@@ -138,17 +152,18 @@ def run_optimization(
 
         # 6. Record run metadata
         dataset_hash = _compute_dataset_hash(config)
-        ledger.create_run(
-            run_id=run_id,
-            strategy_name=strategy_name,
-            program_path=str(program_path),
-            provider=provider.provider_name,
-            model=getattr(provider, "model", "unknown"),
-            branch=branch,
-            dataset_hash=dataset_hash,
-            iterations=iterations,
-            started_at=datetime.now(tz=UTC).isoformat(),
-        )
+        if not resume:
+            ledger.create_run(
+                run_id=run_id,
+                strategy_name=strategy_name,
+                program_path=str(program_path),
+                provider=provider.provider_name,
+                model=getattr(provider, "model", "unknown"),
+                branch=branch,
+                dataset_hash=dataset_hash,
+                iterations=iterations,
+                started_at=datetime.now(tz=UTC).isoformat(),
+            )
 
         # Initialize lessons
         lessons_path = git_ledger.repo_root / "lessons.md"
@@ -157,55 +172,129 @@ def run_optimization(
             lessons_text = lessons_path.read_text(encoding="utf-8")
 
         # 7. Baseline evaluation (iteration 0 — not written to events.jsonl)
-        baseline_fn = _load_signals(strat_path)
-        _baseline_code = strat_path.read_text(encoding="utf-8")
-        baseline_report, baseline_returns = evaluate_strategy_detailed(
-            strategy_name,
-            baseline_fn,
-            config,
-            start_date=start_date,
-            end_date=end_date,
-            _eval_cache=_eval_cache,
-            _strategy_code=_baseline_code,
-        )
-        _deflate(baseline_report, baseline_returns, ledger)
-        _deflate_holdout(baseline_report, ledger)
-        incumbent = baseline_report
-        incumbent_returns = baseline_returns
-        baseline_sha: str | None = git_ledger._repo.head.commit.hexsha
-        ledger.record_attempt(
-            run_id=run_id,
-            iteration=0,
-            strategy_name=strategy_name,
-            dataset_hash=dataset_hash,
-            config_yaml=cfg_path.read_text(encoding="utf-8"),
-            observed_sharpe=baseline_report.observed_sharpe,
-            deflated_sharpe=baseline_report.deflated_sharpe,
-            target_metric=target_metric.value,
-            target_metric_value=_get_metric_value(baseline_report, target_metric),
-            in_sample_max_drawdown=baseline_report.in_sample_metrics.max_drawdown,
-            in_sample_turnover=baseline_report.in_sample_metrics.turnover,
-            regime_passed=baseline_report.regime_passed,
-            accepted=True,
-            committed=True,
-            commit_sha=baseline_sha,
-            rejection_reason=None,
-            report_json=baseline_report.to_json(),
-            selection_returns=baseline_returns,
-            prompt_tokens=0,
-            completion_tokens=0,
-            total_tokens=0,
-            cost=0.0,
-            holdout_evaluated=True,
-            holdout_observed_sharpe=baseline_report.holdout_metrics.sharpe_ratio,
-            holdout_returns=baseline_report.holdout_net_returns,
-        )
+        baseline_exists = False
+        if resume:
+            check_baseline = ledger._conn.execute(
+                "SELECT COUNT(*) FROM attempts WHERE run_id = ? AND iteration = 0", (run_id,)
+            ).fetchone()
+            if check_baseline and check_baseline[0] > 0:
+                baseline_exists = True
+
+        if not baseline_exists:
+            baseline_fn = _load_signals(strat_path)
+            _baseline_code = strat_path.read_text(encoding="utf-8")
+            baseline_report, baseline_returns = evaluate_strategy_detailed(
+                strategy_name,
+                baseline_fn,
+                config,
+                start_date=start_date,
+                end_date=end_date,
+                _eval_cache=_eval_cache,
+                _strategy_code=_baseline_code,
+            )
+            _deflate(baseline_report, baseline_returns, ledger)
+            _deflate_holdout(baseline_report, ledger)
+            incumbent = baseline_report
+            incumbent_returns = baseline_returns
+            baseline_sha: str | None = git_ledger._repo.head.commit.hexsha
+            ledger.record_attempt(
+                run_id=run_id,
+                iteration=0,
+                strategy_name=strategy_name,
+                dataset_hash=dataset_hash,
+                config_yaml=cfg_path.read_text(encoding="utf-8"),
+                observed_sharpe=baseline_report.observed_sharpe,
+                deflated_sharpe=baseline_report.deflated_sharpe,
+                target_metric=target_metric.value,
+                target_metric_value=_get_metric_value(baseline_report, target_metric),
+                in_sample_max_drawdown=baseline_report.in_sample_metrics.max_drawdown,
+                in_sample_turnover=baseline_report.in_sample_metrics.turnover,
+                regime_passed=baseline_report.regime_passed,
+                accepted=True,
+                committed=True,
+                commit_sha=baseline_sha,
+                rejection_reason=None,
+                report_json=baseline_report.to_json(),
+                selection_returns=baseline_returns,
+                prompt_tokens=0,
+                completion_tokens=0,
+                total_tokens=0,
+                cost=0.0,
+                holdout_evaluated=True,
+                holdout_observed_sharpe=baseline_report.holdout_metrics.sharpe_ratio,
+                holdout_returns=baseline_report.holdout_net_returns,
+            )
+        else:
+            # Reconstruct incumbent from the latest accepted/committed attempt
+            rows = ledger._conn.execute(
+                "SELECT iteration, accepted, committed, report_json "
+                "FROM attempts WHERE run_id = ? ORDER BY iteration ASC",
+                (run_id,),
+            ).fetchall()
+
+            latest_accepted = None
+            if rows:
+                accepted_rows = [row for row in rows if row[1] or row[2]]
+                if accepted_rows:
+                    latest_accepted = max(accepted_rows, key=lambda row: row[0])
+                else:
+                    latest_accepted = next(r for r in rows if r[0] == 0)
+
+            if latest_accepted:
+                from autobacktest.evaluator.report import EvaluationReport
+                from autobacktest.ledger.store import _deserialize_returns
+
+                incumbent = EvaluationReport.from_json(latest_accepted[3])
+
+                ret_row = ledger._conn.execute(
+                    "SELECT returns_blob FROM attempts WHERE run_id = ? AND iteration = ?", (run_id, latest_accepted[0])
+                ).fetchone()
+                incumbent_returns = _deserialize_returns(bytes(ret_row[0])) if ret_row else pd.Series(dtype=float)
+            else:
+                from autobacktest.evaluator.report import WindowReport
+
+                _zero = WindowReport(
+                    start_date="",
+                    end_date="",
+                    annualized_return=0.0,
+                    annualized_volatility=0.0,
+                    sharpe_ratio=0.0,
+                    sortino_ratio=0.0,
+                    max_drawdown=0.0,
+                    turnover=0.0,
+                )
+                incumbent = EvaluationReport(
+                    strategy_name=strategy_name,
+                    dataset_hash=dataset_hash,
+                    gates_passed={},
+                    is_accepted=False,
+                    rejection_reason=None,
+                    holdout_metrics=_zero,
+                    in_sample_metrics=_zero,
+                    walk_forward_metrics=[],
+                    regime_drawdowns={},
+                    regime_passed=False,
+                    mc_sharpe_5th=0.0,
+                    mc_sharpe_50th=0.0,
+                    mc_sharpe_95th=0.0,
+                    observed_sharpe=0.0,
+                    effective_trials=1,
+                    deflated_sharpe=0.0,
+                )
+                incumbent_returns = pd.Series(dtype=float)
 
         # 8. Optimization loop
+        start_k = 1
+        if resume:
+            rows = ledger._conn.execute("SELECT iteration FROM attempts WHERE run_id = ?", (run_id,)).fetchall()
+            if rows:
+                start_k = max(row[0] for row in rows) + 1
+
         n_committed = 0
         n_llm_ok = 0
         last_attempt: dict[str, Any] | None = None
         consecutive_no_accept: int = 0
+        rolling_history: list[bool] = []
         _early_stop = False
         mode: str = "explore"
         exploit_stall: int = 0
@@ -220,7 +309,8 @@ def run_optimization(
                 f"[cyan]Optimizing {strategy_name}... (Incumbent Sharpe: {incumbent.observed_sharpe:.3f})",
                 total=iterations,
             )
-            for k in range(1, iterations + 1):
+            for k in range(start_k, iterations + 1):
+                prev_n_committed = n_committed
                 # Stuck detection: force EXPLORE and reset exploit_stall before temperature block
                 if consecutive_no_accept >= STUCK_THRESHOLD:
                     if mode != "explore":
@@ -232,18 +322,15 @@ def run_optimization(
                     if mode == "exploit":
                         # In exploit mode: always use low temperature for focused refinement
                         provider.temperature = min_temp
-                    elif consecutive_no_accept >= STUCK_THRESHOLD:
-                        # Stuck in explore mode: bump temperature back toward start_temp
-                        if consecutive_no_accept == STUCK_THRESHOLD:
-                            logger.info(f"Stuck for {STUCK_THRESHOLD} iterations, escalating temperature.")
-                        provider.temperature = min(
-                            start_temp, min_temp + (start_temp - min_temp) * STUCK_ESCALATION_FACTOR
-                        )
-                    elif iterations > 1:
-                        decay_factor = (k - 1) / (iterations - 1)
-                        provider.temperature = start_temp - decay_factor * (start_temp - min_temp)
                     else:
-                        provider.temperature = start_temp
+                        # Explore mode: scale temperature based on rolling failure history
+                        if rolling_history:
+                            failures = rolling_history.count(False)
+                            failure_rate = failures / len(rolling_history)
+                        else:
+                            # Start with a neutral-to-high exploration temperature in explore mode
+                            failure_rate = 0.6
+                        provider.temperature = min_temp + (start_temp - min_temp) * failure_rate
 
                 event: dict[str, object] = {
                     "iteration": k,
@@ -385,67 +472,36 @@ def run_optimization(
 
                     event["validation"] = {"passed": True}
 
-                    # 8c.5 Tier 1 — Config diversity gate (pre-backtest), with bounded retry
+                    # 8c.5 Tier 1 — Config diversity gate (pre-backtest)
                     _diversity_exhausted = False
-                    if mode == "explore":
-                        if historical_configs:
-                            diversity_retry_count = 0
-                            while True:
-                                max_sim = max_config_similarity(edit.config_yaml, historical_configs)
-                                if max_sim <= DIVERSITY_CONFIG_THRESHOLD:
-                                    break  # Passed — continue to evaluation
+                    if mode == "explore" and historical_configs:
+                        max_sim = max_config_similarity(edit.config_yaml, historical_configs)
+                        if max_sim > DIVERSITY_CONFIG_THRESHOLD:
+                            # Diversity rejected: consume this iteration immediately with no retries
+                            last_attempt = {
+                                "stage": "diversity_config",
+                                "detail": (
+                                    f"Config similarity {max_sim:.3f} exceeded threshold "
+                                    f"{DIVERSITY_CONFIG_THRESHOLD}. Your config was too similar "
+                                    f"to a past attempt."
+                                ),
+                                "candidate_config_yaml": edit.config_yaml,
+                            }
+                            event["diversity"] = {
+                                "tier": "config",
+                                "passed": False,
+                                "max_similarity": max_sim,
+                                "retries_exhausted": True,
+                            }
+                            event["evaluation"] = None
+                            event["gate"] = None
+                            event["commit"] = None
+                            event_log.write(event)
+                            consecutive_no_accept += 1
+                            _diversity_exhausted = True
 
-                                # Diversity rejected: give LLM one more chance within the
-                                # same iteration
-                                last_attempt = {
-                                    "stage": "diversity_config",
-                                    "detail": (
-                                        f"Config similarity {max_sim:.3f} exceeded threshold "
-                                        f"{DIVERSITY_CONFIG_THRESHOLD}. Your config was too similar "
-                                        f"to a past attempt."
-                                    ),
-                                    "candidate_config_yaml": edit.config_yaml,
-                                }
-                                if diversity_retry_count >= MAX_DIVERSITY_RETRIES:
-                                    # Exhausted retries — log and consume this iteration
-                                    event["diversity"] = {
-                                        "tier": "config",
-                                        "passed": False,
-                                        "max_similarity": max_sim,
-                                        "retries_exhausted": True,
-                                    }
-                                    event["evaluation"] = None
-                                    event["gate"] = None
-                                    event["commit"] = None
-                                    event_log.write(event)
-                                    consecutive_no_accept += 1
-                                    _diversity_exhausted = True
-                                    break
-
-                                diversity_retry_count += 1
-                                ctx_retry = AgentContext(
-                                    strategy_name=strategy_name,
-                                    strategy_code=current_code,
-                                    config_yaml=current_yaml,
-                                    program_text=spec.raw_text,
-                                    evaluation_report=incumbent,
-                                    iteration=k,
-                                    lessons_text=lessons_text,
-                                    n_historical_configs=len(historical_configs),
-                                    last_attempt=last_attempt,
-                                    attempt_history=attempt_summaries,
-                                    mode=mode,
-                                )
-                                try:
-                                    edit = provider.generate_edit(ctx_retry)
-                                except LLMError:
-                                    # On LLM failure during retry, skip this iteration rather
-                                    # than evaluating the already-rejected config
-                                    _diversity_exhausted = True
-                                    break
-
-                        if _diversity_exhausted:
-                            continue
+                    if _diversity_exhausted:
+                        continue
 
                     # 8d. Apply to real files and 8e. Evaluate — both inside the same
                     # try/except so a write error also triggers a clean rollback.
@@ -588,6 +644,38 @@ def run_optimization(
                     }
 
                     if sel.accepted:
+                        # Check holdout peek budget cap
+                        hist_matrix, _ = ledger.fetch_holdout_history(report_k.dataset_hash)
+                        current_peeks = len(hist_matrix.columns) if not hist_matrix.empty else 0
+                        if current_peeks >= holdout_peek_limit:
+                            logger.warning(
+                                f"Holdout peek limit reached: {current_peeks} >= {holdout_peek_limit}. "
+                                "Aborting optimization loop immediately to prevent further out-of-sample data leakage."
+                            )
+                            git_ledger.rollback_strategy(strategy_name)
+                            ledger.record_attempt(
+                                **attempt_kwargs,  # type: ignore[arg-type]
+                                accepted=False,
+                                committed=False,
+                                commit_sha=None,
+                                rejection_reason=(
+                                    f"holdout_peek_limit_exceeded ({current_peeks} >= {holdout_peek_limit})"
+                                ),
+                                holdout_evaluated=False,
+                                holdout_observed_sharpe=None,
+                                holdout_returns=None,
+                            )
+                            event["gate"] = {
+                                "stage": "select",
+                                "accepted": False,
+                                "reason": f"Holdout peek limit exceeded ({current_peeks} >= {holdout_peek_limit})",
+                            }
+                            event["commit"] = None
+                            event_log.write(event)
+                            consecutive_no_accept += 1
+                            _early_stop = True
+                            continue
+
                         # 8g2. Holdout DSR deflation (only when select passes)
                         _deflate_holdout(report_k, ledger)
 
@@ -708,6 +796,11 @@ def run_optimization(
 
                     event_log.write(event)
                 finally:
+                    # Record iteration outcome in rolling history
+                    rolling_history.append(n_committed > prev_n_committed)
+                    if len(rolling_history) > 5:
+                        rolling_history.pop(0)
+
                     # Single progress.update per iteration — runs regardless of skip/error/success.
                     progress.update(
                         task,
@@ -716,7 +809,7 @@ def run_optimization(
                             f"[cyan]Optimizing {strategy_name}... (Incumbent Sharpe: {incumbent.observed_sharpe:.3f})"
                         ),
                     )
-                    if consecutive_no_accept >= EARLY_STOP_PATIENCE:
+                    if consecutive_no_accept >= early_stop_patience:
                         logger.info(
                             f"Early stop: no acceptance in {consecutive_no_accept} consecutive iterations. "
                             f"Stopping at iteration {k}/{iterations}."

@@ -67,6 +67,21 @@ def run(
         "--target-metric",
         help="Target metric for optimization: sharpe, sortino, or information_ratio.",
     ),
+    resume: str | None = typer.Option(
+        None,
+        "--resume",
+        help="Run ID to resume optimization from.",
+    ),
+    holdout_peek_limit: int = typer.Option(
+        20,
+        "--holdout-peek-limit",
+        help="Maximum holdout peeks before early termination.",
+    ),
+    early_stop_patience: int = typer.Option(
+        10,
+        "--early-stop-patience",
+        help="Number of consecutive rejections allowed before early stopping.",
+    ),
 ) -> None:
     """Run the optimization loop on a strategy."""
     # Resolve target metric
@@ -105,6 +120,9 @@ def run(
             provider=provider_impl,
             run_dir=run_dir_path,
             target_metric=metric,
+            holdout_peek_limit=holdout_peek_limit,
+            early_stop_patience=early_stop_patience,
+            resume=resume,
         )
     except Exception as e:
         typer.echo(f"Error: {e}")

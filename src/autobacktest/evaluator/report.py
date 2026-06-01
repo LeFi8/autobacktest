@@ -21,6 +21,11 @@ class WindowReport:
     turnover: float
     information_ratio: float = 0.0
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "WindowReport":
+        """Reconstruct WindowReport from dictionary representation."""
+        return cls(**data)
+
 
 @dataclass
 class EvaluationReport:
@@ -77,3 +82,21 @@ class EvaluationReport:
     def to_json(self, indent: int = 4) -> str:
         """Serialize the report to a JSON string."""
         return json.dumps(self.to_dict(), indent=indent)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "EvaluationReport":
+        """Reconstruct EvaluationReport from dictionary representation."""
+        d = dict(data)
+        d["holdout_metrics"] = WindowReport.from_dict(d["holdout_metrics"])
+        d["in_sample_metrics"] = WindowReport.from_dict(d["in_sample_metrics"])
+        d["walk_forward_metrics"] = [WindowReport.from_dict(w) for w in d["walk_forward_metrics"]]
+        # Ensure default None for holdout_net_returns if not present
+        if "holdout_net_returns" not in d:
+            d["holdout_net_returns"] = None
+        return cls(**d)
+
+    @classmethod
+    def from_json(cls, json_str: str) -> "EvaluationReport":
+        """Reconstruct EvaluationReport from a JSON string."""
+        data = json.loads(json_str)
+        return cls.from_dict(data)

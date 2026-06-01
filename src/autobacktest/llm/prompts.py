@@ -1,5 +1,6 @@
 """System and user prompts construction for the LLM strategy optimizer."""
 
+import re
 from typing import Any
 
 from autobacktest.config import settings
@@ -27,7 +28,9 @@ You operate in a strict execution loop and MUST adhere to the following rules:
    principles discovered.
    - Summarize findings of the previous iteration (e.g. if the previous
      edit failed AST checks, execution, or the gate, analyze why and record it).
-   - Keep lessons structured, concise, and action-oriented.
+    - Keep lessons structured, concise, and action-oriented.
+     - Each lesson block MUST include a type tag of format: `- **Type:** <ENUM>` (ENUM:
+       BUG, DIVERSITY, GATE_REJECTION, PERFORMANCE_INSIGHT, or STRUCTURAL).
     - If the current lessons exceed the 4096 token limit (~16k characters),
       you MUST prune, compress, and consolidate older or less useful lessons to fit.
 8. Diversity Rule: Your proposed strategy config YAML will be compared
@@ -52,6 +55,69 @@ You operate in a strict execution loop and MUST adhere to the following rules:
 """
 
 
+def parse_lessons(lessons_text: str) -> list[dict[str, str]]:
+    """Parse lessons.md markdown content into a list of parsed lesson dicts.
+    Each dict has keys: 'title', 'type', 'body'.
+    """
+    if not lessons_text:
+        return []
+
+    # Split by h3 header: '### ' at the beginning of a line
+    pattern = r"^###\s+(.+)$"
+    parts = re.split(pattern, lessons_text, flags=re.MULTILINE)
+
+    lessons = []
+    for i in range(1, len(parts), 2):
+        title = parts[i].strip()
+        body = parts[i + 1].strip() if i + 1 < len(parts) else ""
+
+        # Search for Type metadata, e.g., "- **Type:** BUG" or "- **Type:** DIVERSITY"
+        type_match = re.search(r"-\s+\*\*Type:\*\*\s*(\w+)", body, re.IGNORECASE)
+        lesson_type = type_match.group(1).upper() if type_match else "STRUCTURAL"
+
+        lessons.append(
+            {
+                "title": title,
+                "type": lesson_type,
+                "body": body,
+            }
+        )
+    return lessons
+
+
+def filter_lessons(lessons_text: str, context_stage: str | None) -> str:
+    """Filter and reconstruct lessons based on the active stage/context."""
+    if not lessons_text:
+        return "No lessons recorded yet."
+
+    lessons = parse_lessons(lessons_text)
+    if not lessons:
+        return lessons_text.strip()
+
+    # Determine the target lesson type based on context_stage
+    target_type = None
+    if context_stage in ("validation", "eval_error"):
+        target_type = "BUG"
+    elif context_stage in ("diversity_config", "diversity_returns"):
+        target_type = "DIVERSITY"
+    elif context_stage == "gate":
+        target_type = "GATE_REJECTION"
+
+    if not target_type:
+        return lessons_text.strip()
+
+    # Prioritize target_type first, followed by others (or target_type + general STRUCTURAL)
+    filtered = []
+    for lesson in lessons:
+        if lesson["type"] == target_type or lesson["type"] == "STRUCTURAL":
+            filtered.append(f"### {lesson['title']}\n{lesson['body']}")
+
+    if not filtered:
+        return lessons_text.strip()
+
+    return "\n\n".join(filtered)
+
+
 def build_messages(context: AgentContext) -> list[dict[str, str]]:
     """Build the system and user message payload for the LLM completion API.
 
@@ -65,6 +131,9 @@ def build_messages(context: AgentContext) -> list[dict[str, str]]:
         "role": "system",
         "content": SYSTEM_PROMPT,
     }
+
+    context_stage = context.last_attempt.get("stage") if context.last_attempt else None
+    injected_lessons = filter_lessons(context.lessons_text, context_stage)
 
     # Format the latest evaluation — in-sample walk-forward aggregate only.
     # Holdout metrics are deliberately hidden from the LLM.
@@ -323,7 +392,7 @@ Current Loop Iteration: {context.iteration}
 {context.program_text}
 
 ## Lessons
-{context.lessons_text or "No lessons recorded yet."}
+{injected_lessons}
 {warning_str}
 ## Current Strategy Code
 ```python

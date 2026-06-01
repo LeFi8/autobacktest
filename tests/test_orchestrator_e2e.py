@@ -435,11 +435,9 @@ def test_orchestrator_retries_transient_error_with_backoff(mock_sleep: MagicMock
 
     # Calls 1-2: transient LLMError → retried with backoff.
     # Call 3: succeeds, returns STRATEGY_CONFIG (identical to baseline).
-    # Diversity gate fires: STRATEGY_CONFIG == baseline → retry up to MAX_DIVERSITY_RETRIES.
-    # Calls 4 to (3 + MAX_DIVERSITY_RETRIES): each returns STRATEGY_CONFIG → diversity rejected.
-    from autobacktest.orchestrator import MAX_DIVERSITY_RETRIES
-
-    assert call_count == 3 + MAX_DIVERSITY_RETRIES
+    # Diversity gate fires: STRATEGY_CONFIG == baseline → rejected immediately (0 retries).
+    # Total calls should be exactly 3.
+    assert call_count == 3
     # time.sleep called twice with exponential backoff: 2.0 ** 1 = 2.0s, and 2.0 ** 2 = 4.0s
     assert mock_sleep.call_count == 2
     mock_sleep.assert_any_call(2.0)

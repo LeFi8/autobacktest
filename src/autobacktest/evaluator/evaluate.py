@@ -247,7 +247,10 @@ def evaluate_strategy_detailed(
     # ---- Evaluation cache check (Opt 4) ----
     if _eval_cache is not None and _strategy_code is not None:
         try:
-            _code_hash = hash(_strategy_code)
+            from autobacktest.strategy.normalization import normalize_python_code
+
+            _norm_code = normalize_python_code(_strategy_code)
+            _code_hash = hash(_norm_code)
             _config_hash = hash(json.dumps(flat_config, sort_keys=True, default=str))
             _ckey = hash((_code_hash, _config_hash))
             cached = _eval_cache.get(_ckey)
@@ -415,7 +418,10 @@ def evaluate_strategy_detailed(
 
     if _eval_cache is not None and _strategy_code is not None:
         try:
-            _code_hash = hash(_strategy_code)
+            from autobacktest.strategy.normalization import normalize_python_code
+
+            _norm_code = normalize_python_code(_strategy_code)
+            _code_hash = hash(_norm_code)
             _config_hash = hash(json.dumps(flat_config, sort_keys=True, default=str))
             _ckey = hash((_code_hash, _config_hash))
             _eval_cache[_ckey] = (deepcopy(report), in_sample_net_returns.copy())
