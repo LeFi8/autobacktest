@@ -68,6 +68,7 @@ def select(
     dd_limit: float | None = None,
     turnover_limit: float | None = None,
     min_improvement: float | None = None,
+    require_dsr_non_degradation: bool | None = None,
     config: Any = None,
 ) -> GateResult:
     """In-sample selection gate — evaluated on every candidate.
@@ -91,7 +92,10 @@ def select(
     min_improvement = (
         min_improvement if min_improvement is not None else _get_config_val(config, "min_improvement", 0.0)
     )
-    require_dsr = _get_config_val(config, "require_dsr_non_degradation", True)
+    if require_dsr_non_degradation is not None:
+        require_dsr = require_dsr_non_degradation
+    else:
+        require_dsr = _get_config_val(config, "require_dsr_non_degradation", True)
 
     # --- Hard constraints on in_sample_metrics ---
     max_dd = report.in_sample_metrics.max_drawdown
@@ -264,7 +268,7 @@ def accept(
     dd_limit: float | None = None,
     turnover_limit: float | None = None,
     min_improvement: float | None = None,
-    require_dsr_non_degradation: bool | None = None,  # noqa: ARG001
+    require_dsr_non_degradation: bool | None = None,
     config: Any = None,
 ) -> GateResult:
     """Backward-compatible wrapper: composes ``select`` + ``confirm``.
@@ -273,11 +277,9 @@ def accept(
     optimisation run the orchestrator calls ``select`` and ``confirm``
     as separate stages.
 
-    The ``require_dsr_non_degradation`` parameter is conventionally
-    ignored — the in-sample selection gate always enforces DSR
-    non-degradation (configurable via ``config.require_dsr_non_degradation``).
-    It is accepted here only for signature compatibility with existing
-    callers who may pass it explicitly.
+    The ``require_dsr_non_degradation`` parameter is propagated to the
+    underlying ``select`` gate.  When ``None`` the value is resolved
+    from the ``config`` (default ``True``).
     """
     sel = select(
         report,
@@ -286,6 +288,7 @@ def accept(
         dd_limit=dd_limit,
         turnover_limit=turnover_limit,
         min_improvement=min_improvement,
+        require_dsr_non_degradation=require_dsr_non_degradation,
         config=config,
     )
     if not sel.accepted:

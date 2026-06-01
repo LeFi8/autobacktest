@@ -602,6 +602,8 @@ def run_optimization(
 
                     # 8f. DSR deflation (in-sample selection basis)
                     _deflate(report_k, returns_k, ledger)
+                    if incumbent is not None and not incumbent_returns.empty:
+                        _deflate(incumbent, incumbent_returns, ledger)
 
                     # 8g1. Selection gate (in-sample walk-forward aggregate)
                     sel = select(
@@ -678,6 +680,8 @@ def run_optimization(
 
                         # 8g2. Holdout DSR deflation (only when select passes)
                         _deflate_holdout(report_k, ledger)
+                        if incumbent is not None:
+                            _deflate_holdout(incumbent, ledger)
 
                         # 8g3. Confirmation gate (holdout — budgeted peek)
                         cnf = confirm(
