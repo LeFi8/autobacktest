@@ -1,5 +1,7 @@
 """System and user prompts construction for the LLM strategy optimizer."""
 
+from typing import Any
+
 from autobacktest.config import settings
 from autobacktest.llm.base import AgentContext
 
@@ -42,6 +44,11 @@ You operate in a strict execution loop and MUST adhere to the following rules:
    the very first character immediately following the closing </think>
    tag must be the opening {{ of the JSON payload. No markdown
    wrapping (like ```json) is permitted.
+10. Attempt History Rule: Before proposing a strategy, consult the
+    ## Attempt History section. Do NOT re-propose configs in already-explored
+    regions — cross-reference the history table to identify which metric
+    directions or structural approaches remain unexplored and target those.
+    Reason explicitly about gaps in the explored space.
 """
 
 
@@ -80,6 +87,58 @@ def build_messages(context: AgentContext) -> list[dict[str, str]]:
             f"> You MUST compress, consolidate, or prune the lessons in lessons_text "
             f"to keep them under the cap.\n"
         )
+
+    # Attempt history table section
+    attempt_history_section = ""
+    if context.attempt_history:
+        committed_rows = [r for r in context.attempt_history if r.get("committed")]
+        non_committed_rows = [r for r in context.attempt_history if not r.get("committed")]
+        total_non_committed = len(non_committed_rows)
+        omitted_count = max(0, total_non_committed - 25)
+        displayed_non_committed = non_committed_rows[-25:] if omitted_count > 0 else non_committed_rows
+        rows_to_render = committed_rows + displayed_non_committed
+
+        def _outcome(r: dict[str, Any]) -> str:
+            if r.get("committed"):
+                return "✓ committed"
+            if r.get("accepted"):
+                return "✓ accepted"
+            reason = r.get("rejection_reason") or ""
+            return f"✗ {str(reason)[:30]}"
+
+        def _fingerprint_repr(r: dict[str, Any]) -> str:
+            fp = r.get("config_fingerprint", {})
+            s = str(fp)
+            return s[:60] + "..." if len(s) > 60 else s
+
+        header = "| iter | outcome | target | DSR | maxDD | turnover | regime | reason | config |"
+        separator = "|------|---------|--------|-----|-------|----------|--------|--------|--------|"
+        table_lines = [header, separator]
+        for r in rows_to_render:
+            rejection_reason = r.get("rejection_reason") or None
+            reason_col = "-" if (r.get("committed") or rejection_reason is None) else str(rejection_reason)[:30]
+            row = (
+                f"| {r.get('iteration', '')} "
+                f"| {_outcome(r)} "
+                f"| {r.get('target_metric_value', 0.0):.4f} "
+                f"| {r.get('deflated_sharpe', 0.0):.4f} "
+                f"| {r.get('holdout_max_drawdown', 0.0):.4f} "
+                f"| {r.get('holdout_turnover', 0.0):.4f} "
+                f"| {'pass' if r.get('regime_passed') else 'FAIL'} "
+                f"| {reason_col} "
+                f"| {_fingerprint_repr(r)} |"
+            )
+            table_lines.append(row)
+
+        table_str = "\n".join(table_lines)
+        omit_note = ""
+        if omitted_count > 0:
+            total_non_committed_shown = len(displayed_non_committed)
+            omit_note = (
+                f"\n(showing {total_non_committed_shown + len(committed_rows)} of "
+                f"{len(context.attempt_history)} total — oldest non-committed omitted)"
+            )
+        attempt_history_section = f"\n## Attempt History\n{table_str}{omit_note}\n"
 
     # Diversity warning section
     diversity_warning = ""
@@ -205,8 +264,25 @@ def build_messages(context: AgentContext) -> list[dict[str, str]]:
             "DSR reported for overfitting insight only — not a hard gate.\n\n"
         )
 
+    # Mode-aware instruction section
+    if context.mode == "exploit":
+        mode_section = (
+            "## Mode\n"
+            "**EXPLOIT** — Locally refine the incumbent strategy. The diversity gate is suspended this round.\n"
+            "Make small, targeted parameter tweaks or minor signal adjustments to the best strategy found so far.\n"
+            "Do NOT make large structural changes. Focus on squeezing out marginal improvements."
+        )
+    else:
+        mode_section = (
+            "## Mode\n"
+            "**EXPLORE** — Search for structurally different strategies. The diversity gate is active.\n"
+            "You MUST propose approaches that differ meaningfully from previous attempts (see Attempt History)."
+        )
+
     user_content = f"""## Iteration
 Current Loop Iteration: {context.iteration}
+
+{mode_section}
 
 ## Objective
 {context.program_text}
@@ -225,7 +301,7 @@ Current Loop Iteration: {context.iteration}
 ```
 
 ## Latest Evaluation
-{eval_report_str}
+{eval_report_str}{attempt_history_section}
 {diversity_warning}
 {previous_attempt_section}{performance_target_section}## Instructions
 Improve the strategy per the objective. Optimize parameters, signal

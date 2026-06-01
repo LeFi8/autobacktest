@@ -22,6 +22,13 @@ class AgentContext:
             Keys vary by failure stage: stage, error_code, detail, rejection_reason,
             failed_gate, candidate_strategy_code, candidate_config_yaml,
             candidate_metrics.
+        attempt_history: Full list of past attempt summaries from the ledger (each
+            dict from ``fetch_attempt_summaries``), or None if not provided. Used to
+            render the ## Attempt History table in the prompt so the model can avoid
+            re-proposing already-explored configuration regions.
+        mode: Current optimization phase. Either ``"explore"`` (default) for broad
+            search with the diversity gate active, or ``"exploit"`` for local
+            refinement of the incumbent with the diversity gate suspended.
     """
 
     strategy_name: str
@@ -33,6 +40,8 @@ class AgentContext:
     lessons_text: str = ""
     n_historical_configs: int = 0
     last_attempt: dict[str, Any] | None = None
+    attempt_history: list[dict[str, Any]] | None = None
+    mode: str = "explore"
 
 
 @dataclass(frozen=True)

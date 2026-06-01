@@ -98,3 +98,59 @@ def test_llm_error_fields() -> None:
     assert "openai" in str(err)
     assert "gpt-4o" in str(err)
     assert "Rate limit exceeded" in str(err)
+
+
+def test_agent_context_new_fields_default() -> None:
+    context = AgentContext(
+        strategy_name="haa",
+        strategy_code="def generate_signals(): pass",
+        config_yaml="universe: [SPY]",
+        program_text="make it conservative",
+        evaluation_report=None,
+        iteration=1,
+    )
+    assert context.attempt_history is None
+    assert context.mode == "explore"
+
+
+def test_agent_context_attempt_history_populated() -> None:
+    history = [
+        {
+            "iteration": 1,
+            "accepted": True,
+            "committed": True,
+            "target_metric_value": 1.25,
+            "observed_sharpe": 1.3,
+            "deflated_sharpe": 1.1,
+            "holdout_max_drawdown": 0.08,
+            "holdout_turnover": 0.4,
+            "regime_passed": True,
+            "rejection_reason": None,
+            "config_fingerprint": {"universe": ["SPY", "TIP"], "params": {"top_n": 3}},
+        }
+    ]
+    context = AgentContext(
+        strategy_name="haa",
+        strategy_code="def generate_signals(): pass",
+        config_yaml="universe: [SPY]",
+        program_text="make it conservative",
+        evaluation_report=None,
+        iteration=2,
+        attempt_history=history,
+    )
+    assert context.attempt_history is not None
+    assert len(context.attempt_history) == 1
+    assert context.attempt_history[0]["iteration"] == 1
+
+
+def test_agent_context_mode_exploit() -> None:
+    context = AgentContext(
+        strategy_name="haa",
+        strategy_code="def generate_signals(): pass",
+        config_yaml="universe: [SPY]",
+        program_text="make it conservative",
+        evaluation_report=None,
+        iteration=5,
+        mode="exploit",
+    )
+    assert context.mode == "exploit"

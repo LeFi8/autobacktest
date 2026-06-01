@@ -297,3 +297,128 @@ def test_build_messages_previous_attempt_before_instructions() -> None:
     prev_pos = user_msg.index("## Previous Attempt Result")
     instructions_pos = user_msg.index("## Instructions")
     assert prev_pos < instructions_pos
+
+
+# ── Attempt History tests ──────────────────────────────────────────────────────
+
+_ATTEMPT_COMMITTED = {
+    "iteration": 1,
+    "accepted": True,
+    "committed": True,
+    "target_metric_value": 1.25,
+    "observed_sharpe": 1.3,
+    "deflated_sharpe": 1.1,
+    "holdout_max_drawdown": 0.08,
+    "holdout_turnover": 0.4,
+    "regime_passed": True,
+    "rejection_reason": None,
+    "config_fingerprint": {"universe": ["SPY", "TIP"], "params": {"top_n": 3}},
+}
+
+_ATTEMPT_REJECTED = {
+    "iteration": 2,
+    "accepted": False,
+    "committed": False,
+    "target_metric_value": 0.95,
+    "observed_sharpe": 1.0,
+    "deflated_sharpe": 0.8,
+    "holdout_max_drawdown": 0.22,
+    "holdout_turnover": 1.5,
+    "regime_passed": False,
+    "rejection_reason": "Drawdown exceeds limit",
+    "config_fingerprint": {"universe": ["SPY"], "params": {"top_n": 5}},
+}
+
+
+def _make_context(**kwargs) -> AgentContext:  # type: ignore[no-untyped-def]
+    defaults = {
+        "strategy_name": "haa",
+        "strategy_code": "def generate_signals(): pass",
+        "config_yaml": "universe: [SPY]",
+        "program_text": "make it conservative",
+        "evaluation_report": None,
+        "iteration": 1,
+    }
+    defaults.update(kwargs)
+    return AgentContext(**defaults)
+
+
+def test_build_messages_attempt_history_omitted_when_none() -> None:
+    context = _make_context(attempt_history=None)
+    messages = build_messages(context)
+    user_msg = messages[1]["content"]
+    assert "## Attempt History" not in user_msg
+
+
+def test_build_messages_attempt_history_omitted_when_empty() -> None:
+    context = _make_context(attempt_history=[])
+    messages = build_messages(context)
+    user_msg = messages[1]["content"]
+    assert "## Attempt History" not in user_msg
+
+
+def test_build_messages_attempt_history_rendered() -> None:
+    accepted_not_committed = {
+        "iteration": 3,
+        "accepted": True,
+        "committed": False,
+        "target_metric_value": 1.10,
+        "observed_sharpe": 1.15,
+        "deflated_sharpe": 0.95,
+        "holdout_max_drawdown": 0.10,
+        "holdout_turnover": 0.6,
+        "regime_passed": True,
+        "rejection_reason": None,
+        "config_fingerprint": {"universe": ["AGG"], "params": {"top_n": 4}},
+    }
+    history = [_ATTEMPT_COMMITTED, _ATTEMPT_REJECTED, accepted_not_committed]
+    context = _make_context(attempt_history=history)
+    messages = build_messages(context)
+    user_msg = messages[1]["content"]
+    assert "## Attempt History" in user_msg
+    assert "| iter | outcome |" in user_msg
+    assert "✓ committed" in user_msg
+
+
+def test_build_messages_attempt_history_truncation() -> None:
+    # 30 non-committed rows — only 25 should be shown, triggering the omit note
+    history = [
+        {
+            "iteration": i,
+            "accepted": False,
+            "committed": False,
+            "target_metric_value": 0.9,
+            "observed_sharpe": 0.9,
+            "deflated_sharpe": 0.7,
+            "holdout_max_drawdown": 0.15,
+            "holdout_turnover": 1.0,
+            "regime_passed": True,
+            "rejection_reason": "Below target",
+            "config_fingerprint": {"universe": ["SPY"], "params": {"top_n": i}},
+        }
+        for i in range(1, 31)
+    ]
+    context = _make_context(attempt_history=history)
+    messages = build_messages(context)
+    user_msg = messages[1]["content"]
+    assert "## Attempt History" in user_msg
+    assert "oldest non-committed omitted" in user_msg
+
+
+# ── Mode section tests ─────────────────────────────────────────────────────────
+
+
+def test_build_messages_mode_explore_section() -> None:
+    context = _make_context()  # default mode is "explore"
+    messages = build_messages(context)
+    user_msg = messages[1]["content"]
+    assert "## Mode" in user_msg
+    assert "**EXPLORE**" in user_msg
+
+
+def test_build_messages_mode_exploit_section() -> None:
+    context = _make_context(mode="exploit")
+    messages = build_messages(context)
+    user_msg = messages[1]["content"]
+    assert "## Mode" in user_msg
+    assert "**EXPLOIT**" in user_msg
