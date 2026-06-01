@@ -31,7 +31,13 @@ This document describes how to set up the development environment, execute the t
 
 ## Development Commands
 
-### 1. Code Quality Audits (Linting & Formatting)
+### 1. Static Typing Verification
+Strict static type checking is enforced via `mypy` with `--strict`. All code in `src/` must compile with no errors:
+```bash
+uv run mypy --strict src/
+```
+
+### 2. Code Quality Audits (Linting & Formatting)
 We use `ruff` to enforce code quality, style guidelines, and sorted imports.
 
 - **Check Code Quality**:
@@ -46,12 +52,6 @@ We use `ruff` to enforce code quality, style guidelines, and sorted imports.
    ```bash
    uv run ruff format .
    ```
-
-### 2. Static Typing Verification
-We enforce strict static type checking via `mypy`. All code in `src/` must compile with no errors:
-```bash
-uv run mypy --strict src/
-```
 
 ### 3. Executing Unit Tests
 We use `pytest` with `hypothesis` (property-based testing) and `vcrpy` (HTTP connection recording).
@@ -69,6 +69,20 @@ We use `pytest` with `hypothesis` (property-based testing) and `vcrpy` (HTTP con
 Verify installation by executing the CLI helper command:
 ```bash
 uv run autobacktest --help
+```
+
+### 5. Testing LLM Edits (Without Full Loop)
+Test whether a prompt produces a valid strategy edit against preflight checks:
+```bash
+uv run autobacktest llm-test \
+  "Add a momentum filter that only selects assets with positive 6-month return" \
+  --strategy haa
+```
+
+### 6. Interactive Strategy Scaffolding
+Generate a new strategy with Pydantic-validated boilerplate:
+```bash
+uv run autobacktest init-strategy --name my_strategy
 ```
 
 

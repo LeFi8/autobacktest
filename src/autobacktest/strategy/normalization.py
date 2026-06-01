@@ -1,3 +1,11 @@
+"""Strategy code normalization utilities.
+
+Provides ``normalize_python_code`` which strips comments, docstrings, and
+standardises whitespace to produce a stable, content-addressable string
+suitable for eval-cache key computation.  The normaliser parses the source
+into an AST, removes docstring nodes, and unparses the tree.
+"""
+
 import ast
 
 

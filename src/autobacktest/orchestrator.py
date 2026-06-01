@@ -1,4 +1,12 @@
-"""Top-level orchestration loop."""
+"""Top-level orchestration loop.
+
+Coordinates the iterative LLM-driven strategy optimization pipeline:
+generates parallel candidate edits, validates via preflight checks, enforces
+config/returns diversity gates, evaluates walk-forward + holdout performance,
+applies the two-phase select/confirm gate system, and commits winners to git.
+Tracks explore/exploit mode with dynamic temperature tuning and performs
+parameter importance analysis after each iteration.
+"""
 
 from __future__ import annotations
 

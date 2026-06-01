@@ -821,7 +821,12 @@ def _render_rich_summary(
     iterations: int,
     report_path: Path | None,
 ) -> None:
-    """Render a detailed Rich summary dashboard for the completed run."""
+    """Render a detailed Rich summary dashboard for the completed run.
+
+    Displays header panel with run ID, strategy info (branch, commits),
+    a performance comparison table (baseline vs. final metrics with
+    improvement arrows), gate results table, and cost summary.
+    """
     console = Console()
     report = result.final_report
 

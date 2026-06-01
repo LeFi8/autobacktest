@@ -11,18 +11,18 @@ By combining an LLM optimizer, a vectorized backtester, a sacred Out-Of-Sample (
 ```mermaid
 sequenceDiagram
     participant O as Orchestrator
-    participant FS as lessons.md
+    participant LS as LessonStore (SQLite)
     participant LLM as LLM Provider
     participant Git as Git Ledger
 
-    O->>FS: Read lessons.md
+    O->>LS: Read lessons
     O->>LLM: AgentContext (+ lessons_text)
     LLM-->>O: AgentEdit (+ lessons_text)
     
-    O->>FS: Write updated lessons.md
+    O->>LS: Ingest updated lessons
     
-    alt Edit passes gate
-        O->>Git: Commit (strategy + config + lessons)
+    alt Edit passes gate (select + confirm)
+        O->>Git: Commit (strategy + config)
     else Edit rejected
         O->>Git: Rollback (strategy + config)
     end
@@ -68,9 +68,11 @@ uv run autobacktest run \
 *What happens now?*
 1. AutoBacktest sets up a git branch `autobacktest/haa-<timestamp>`.
 2. It evaluates the baseline HAA strategy on walk-forward and holdout datasets.
-3. The LLM processes the objective (`program.md`), current code, config, and performance metrics alongside historical lessons (`lessons.md`).
-4. The LLM returns a structured edit including updated code, YAML config parameters, and refined lessons.
-5. If the candidate code passes AST validation and beats the incumbent strategy in the statistical gate, it is committed to git. Otherwise, it is rolled back.
+3. The orchestrator generates **3 candidate mutations in parallel** via the LLM, each with structured code edits, YAML config changes, and refined lessons.
+4. Each candidate passes through **preflight validation** (AST whitelist, Pydantic config, smoke test, lookahead sniffing).
+5. In **explore mode**, candidates pass a **config similarity gate** (Tier 1) preventing duplicate parameter proposals, then a **returns correlation gate** (Tier 2) after backtesting to ensure functional diversity.
+6. A **two-phase gate system** evaluates survivors: `select` (in-sample walk-forward metrics, DSR non-degradation) then `confirm` (holdout confirmation, budgeted peeks).
+7. If a candidate passes all gates, it is committed to git with the incumbent updated. Otherwise, it is rolled back and the LLM receives structured failure feedback.
 
 ### 5. View Leaderboard Report
 Print a gorgeous performance table summarizing the best accepted strategy variants directly from the SQLite ledger:
@@ -99,11 +101,15 @@ Starts the autonomous optimization loop.
 - `--model`: LLM model identifier (e.g. `gpt-4o`, `claude-3-5-sonnet-20241022`).
 - `--run-dir`: Output run directory (default: `runs/`).
 - `--target-metric`: Target metric for optimization: `sharpe` (default), `sortino`, or `information_ratio`.
+- `--resume`: Run ID to resume a previously interrupted optimization run.
+- `--holdout-peek-limit`: Maximum number of holdout peeks before early termination (default: `20`).
+- `--early-stop-patience`: Consecutive rejections allowed before early stopping (default: `10`).
 - `--json`: Output raw JSON to stdout instead of the Rich terminal summary dashboard.
 
 ### `report`
 Pretty-prints the run leaderboard sorted by observed Sharpe ratio.
 - `--run-dir`: Path to the runs directory containing `ledger.db` (default: `runs/`).
+- `--run-id`: Filter to a specific run ID (defaults to the latest run).
 - `--strategy` / `-s`: Filter the leaderboard to a single strategy name.
 - `--compare-all`: Show all strategies registered in the ledger side-by-side.
 
@@ -125,6 +131,20 @@ Interactively scaffolds a new backtesting strategy with validated configuration 
 - Guides the user through prompts for universe tickers, benchmark, drawdown/turnover limits, lookback window, and optional custom parameters with dynamic type inference.
 - Runs full Pydantic validation via `StrategyConfig` before writing files.
 
+### `llm-test`
+Generates LLM-driven strategy edits and tests them against preflight validation checks without running the full optimization loop.
+- `prompt`: The instruction prompt for strategy modification. [Required, positional argument]
+- `--strategy` / `-s`: Strategy name in the registry (default: `haa`).
+- `--model` / `-m`: LLM model name.
+- `--provider` / `-p`: LLM provider (`litellm` or `mock`).
+
+### `init-strategy`
+Interactively scaffolds a new backtesting strategy with validated configuration and boilerplate signal code.
+- `--name` / `-n`: Strategy name in `snake_case`. Omit for interactive prompt.
+- `--overwrite`: Overwrite existing strategy/config files without prompting.
+- Guides the user through prompts for universe tickers, benchmark, drawdown/turnover limits, lookback window, and optional custom parameters with dynamic type inference.
+- Runs full Pydantic validation via `StrategyConfig` before writing files.
+
 ---
 
 ## 📊 Institutional Reports & Visual Summaries
@@ -136,12 +156,15 @@ On optimization completion, AutoBacktest generates high-fidelity visual outputs 
 
 ---
 
-## 🧠 Lessons Memory System (`lessons.md`)
+## 🧠 Lessons Memory System (`LessonStore`)
 
-AutoBacktest implements an **autonomous, self-curating memory system** for LLMs stored in `lessons.md` at the project root.
+AutoBacktest implements an **autonomous, self-curating memory system** for LLMs backed by a SQLite database (`lessons.db`).
+
 - The LLM updates the `lessons_text` field in every iteration to record what modifications worked, what failed, and key market insights discovered.
-- **Token Budget**: The orchestrator tracks a `4096` token limit (~16,000 characters) using a character-based proxy.
-- If lessons exceed the cap, a warnings alert triggers in the prompt, prompting the agent to **compress, consolidate, and prune** older findings.
+- **Token Budget**: The orchestrator tracks a `4096` token limit (~16,000 characters).
+- If lessons exceed the cap, a warning triggers in the prompt, prompting the agent to **compress, consolidate, and prune** older findings.
+- The `LessonStore` deduplicates entries by `(strategy, type, body_hash)`, preventing redundant storage across runs.
+- On first use, the system migrates any existing `lessons.md` file into the structured database.
 - This creates a tight, self-curated, semantic memory loop that improves strategy results across hundreds of iterations.
 
 ---
