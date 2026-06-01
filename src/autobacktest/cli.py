@@ -18,8 +18,6 @@ from autobacktest.gate import TargetMetric
 from autobacktest.ledger.store import LedgerStore
 from autobacktest.llm.base import AgentContext
 from autobacktest.llm.base import LLMProvider as _LLMProvider
-from autobacktest.llm.litellm_provider import LiteLLMProvider
-from autobacktest.llm.mock_provider import MockProvider
 from autobacktest.orchestrator import OrchestratorResult, run_optimization
 from autobacktest.reports.generator import (
     compile_failure_summary,
@@ -107,6 +105,9 @@ def run(
         raise typer.Exit(code=1) from err
 
     # Resolve provider
+    from autobacktest.llm.litellm_provider import LiteLLMProvider
+    from autobacktest.llm.mock_provider import MockProvider
+
     provider_impl: _LLMProvider
     if provider == "mock":
         provider_impl = MockProvider()
@@ -560,7 +561,11 @@ def llm_test(
         iteration=1,
     )
 
-    # 2. Instantiate LLM Provider
+    # 2. Import LLM provider modules
+    from autobacktest.llm.litellm_provider import LiteLLMProvider
+    from autobacktest.llm.mock_provider import MockProvider
+
+    # 3. Instantiate LLM Provider
     provider_impl: _LLMProvider
     if provider == "litellm":
         provider_impl = LiteLLMProvider(

@@ -392,6 +392,10 @@ def run_optimization(
                     event["temperature"] = provider.temperature
 
                 try:
+                    # Snapshot pre-iteration state for progress display
+                    _iter_prev_cost = total_cost
+                    _iter_incumbent_sharpe = incumbent.observed_sharpe
+
                     # 8a. Build context
                     current_code = strat_path.read_text(encoding="utf-8")
                     current_yaml = cfg_path.read_text(encoding="utf-8")
@@ -414,6 +418,14 @@ def run_optimization(
                     # 8b. Generate N candidates in parallel
                     n = getattr(settings, "n_candidates", 3)
                     raw_edits = _generate_candidates(provider, ctx, n)
+                    n_gen = sum(1 for e in raw_edits if e is not None)
+                    progress.update(
+                        task,
+                        description=(
+                            f"[cyan]Iter {k}/{iterations} | mode={mode} | "
+                            f"LLM generated {n_gen} candidates, validating..."
+                        ),
+                    )
 
                     # Filter out None (LLM failures) and process each candidate
                     candidate_results: list[dict[str, Any]] = []
@@ -473,6 +485,10 @@ def run_optimization(
 
                     # Collect valid candidates for backtest evaluation
                     to_eval = [ev for ev in valid_candidates if ev.get("valid")]
+                    _iter_n_val = len(to_eval)
+                    progress.update(
+                        task, description=(f"[cyan]Iter {k}/{iterations} | Backtesting {_iter_n_val} candidates...")
+                    )
 
                     # Phase: evaluate all valid candidates in parallel on temp files
                     if to_eval:
@@ -502,6 +518,8 @@ def run_optimization(
                             futures = {pool.submit(_eval_one, ev): i for i, ev in enumerate(to_eval)}
                             for future in as_completed(futures):
                                 future.result()
+                    if to_eval:
+                        progress.update(task, description=(f"[cyan]Iter {k}/{iterations} | Running gates..."))
 
                     # Gate phase + winner selection (main thread, sequential)
                     winner: dict[str, Any] | None = None
@@ -730,6 +748,54 @@ def run_optimization(
                                 mode = "explore"
                                 exploit_stall = 0
                         last_attempt = {"stage": "all_candidates_failed", "detail": "No candidate passed all gates"}
+
+                    # --- Per-iteration summary line ---
+                    _iter_cost = total_cost - _iter_prev_cost
+                    if winner is not None:
+                        w_report = winner["_report"]
+                        delta = w_report.observed_sharpe - _iter_incumbent_sharpe
+                        summary = (
+                            f"[green]✓[/] Iter {k:>3}/{iterations}  "
+                            f"[cyan]mode={mode:<7}[/]"
+                            f"{f'  t={provider.temperature:.2f}' if start_temp is not None else ''}  "
+                            f"gen={n_gen}  val={_iter_n_val}  "
+                            f"→  Sharpe {_iter_incumbent_sharpe:.3f}→{w_report.observed_sharpe:.3f}  "
+                            f"({delta:+.3f})  "
+                            f"dd={w_report.in_sample_metrics.max_drawdown * 100:.1f}%  "
+                            f"to={w_report.in_sample_metrics.turnover:.2f}x  "
+                            f"${_iter_cost:.4f}"
+                        )
+                    else:
+                        reasons: list[str] = []
+                        for ev in candidate_results:
+                            stage = ev.get("validation_stage")
+                            if stage == "gate":
+                                fg = ev.get("_failed_gate")
+                                reasons.append(f"gate({fg})" if fg else "gate")
+                            elif stage == "validation":
+                                reasons.append("preflight")
+                            elif stage == "diversity_config":
+                                reasons.append("config_diversity")
+                            elif stage == "diversity_returns":
+                                reasons.append("returns_diversity")
+                            elif stage == "eval_error":
+                                reasons.append("backtest_error")
+                            elif stage == "holdout_peek_limit":
+                                reasons.append("peek_limit")
+                            elif ev.get("llm_error"):
+                                reasons.append("llm_error")
+                            elif stage:
+                                reasons.append(stage)
+                        reasons_str = ",".join(dict.fromkeys(reasons))[:80] if reasons else "all_failed"
+                        summary = (
+                            f"[red]✗[/] Iter {k:>3}/{iterations}  "
+                            f"[cyan]mode={mode:<7}[/]"
+                            f"{f'  t={provider.temperature:.2f}' if start_temp is not None else ''}  "
+                            f"gen={n_gen}  val={_iter_n_val}  "
+                            f"→  FAIL  {reasons_str}  "
+                            f"${_iter_cost:.4f}"
+                        )
+                    progress.console.print(summary)
 
                     event_log.write(event)
                 finally:

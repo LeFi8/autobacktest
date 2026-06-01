@@ -142,9 +142,10 @@ None.
     assert mock_progress_instance.add_task.called
     assert mock_progress_instance.add_task.call_args[1]["total"] == 2
 
-    # Verify advance calls happened inside the loops
-    assert mock_progress_instance.update.call_count == 2
-    for call in mock_progress_instance.update.call_args_list:
+    # Verify advance calls happened in the finally block of each iteration
+    # (phase-description updates do not advance the bar)
+    advance_calls = [c for c in mock_progress_instance.update.call_args_list if c[1].get("advance") == 1]
+    assert len(advance_calls) == 2  # one per iteration
+    for call in advance_calls:
         assert call[0][0] == mock_task_id
-        assert call[1]["advance"] == 1
         assert "Incumbent Sharpe" in call[1]["description"]
