@@ -25,6 +25,9 @@ def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFra
     target_vol = config.get("target_vol", 0.15)
     vol_span = config.get("vol_span", 126)
 
+    if prices.empty:
+        return pd.DataFrame(0.0, index=pd.DatetimeIndex([]), columns=prices.columns)
+
     # Ensure all assets exist in prices
     available = set(prices.columns)
     risky_assets = [a for a in risky_assets if a in available]
@@ -33,6 +36,8 @@ def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFra
 
     # Compute daily returns (simple percentage)
     returns = prices.pct_change().dropna(how='all')
+    if returns.empty:
+        return pd.DataFrame(0.0, index=pd.DatetimeIndex([]), columns=prices.columns)
 
     # Rebalance schedule: last trading day of each month
     monthly_dates = prices.groupby(prices.index.to_period("M")).tail(1).index
@@ -41,6 +46,10 @@ def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFra
     weights = pd.DataFrame(0.0, index=monthly_dates, columns=prices.columns)
 
     for date in monthly_dates:
+        if not risky_assets:
+            weights.loc[date, cash_asset] = 1.0
+            continue
+
         # Slice returns up to current date
         hist_ret = returns.loc[:date, risky_assets].copy()
         if hist_ret.empty:
