@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import sqlite3
+import threading
 import zlib
 from io import StringIO
 from pathlib import Path
@@ -72,63 +74,101 @@ CREATE TABLE IF NOT EXISTS attempts (
 
 
 class LedgerStore:
-    """Persist optimization attempts in a local SQLite database."""
+    """Persist optimization attempts in a local SQLite database.
+
+    Thread safety: each thread creates its own ``sqlite3.Connection`` so
+    that concurrent ``ThreadPoolExecutor`` workers do not share a single
+    connection.  WAL journal mode allows concurrent readers.
+    """
 
     def __init__(self, db_path: Path) -> None:
-        self._conn = sqlite3.connect(str(db_path), timeout=settings.db_timeout)
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute(_CREATE_RUNS)
-        self._conn.execute(_CREATE_ATTEMPTS)
-        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_attempts_run_id ON attempts(run_id)")
-        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_attempts_strategy_name ON attempts(strategy_name)")
-        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_attempts_dataset_hash ON attempts(dataset_hash)")
-        self._conn.commit()
+        self._db_path = db_path
+        self._local: dict[int, sqlite3.Connection] = {}
+        self._lock = threading.Lock()
+        self._schema_initialized = False
+        # Trigger schema creation on the calling thread
+        self._conn()
 
-        # Schema migration for older databases missing target_metric/value columns
-        cursor = self._conn.cursor()
-        cursor.execute("PRAGMA table_info(attempts)")
-        columns = [row[1] for row in cursor.fetchall()]
-        if columns:
-            migrated = False
-            if "target_metric" not in columns:
-                self._conn.execute("ALTER TABLE attempts ADD COLUMN target_metric TEXT NOT NULL DEFAULT 'sharpe'")
-                migrated = True
-            if "target_metric_value" not in columns:
-                self._conn.execute("ALTER TABLE attempts ADD COLUMN target_metric_value REAL NOT NULL DEFAULT 0.0")
-                migrated = True
-            if "prompt_tokens" not in columns:
-                self._conn.execute("ALTER TABLE attempts ADD COLUMN prompt_tokens INTEGER NOT NULL DEFAULT 0")
-                migrated = True
-            if "completion_tokens" not in columns:
-                self._conn.execute("ALTER TABLE attempts ADD COLUMN completion_tokens INTEGER NOT NULL DEFAULT 0")
-                migrated = True
-            if "total_tokens" not in columns:
-                self._conn.execute("ALTER TABLE attempts ADD COLUMN total_tokens INTEGER NOT NULL DEFAULT 0")
-                migrated = True
-            if "cost" not in columns:
-                self._conn.execute("ALTER TABLE attempts ADD COLUMN cost REAL NOT NULL DEFAULT 0.0")
-                migrated = True
-            if "holdout_evaluated" not in columns:
-                self._conn.execute("ALTER TABLE attempts ADD COLUMN holdout_evaluated INTEGER NOT NULL DEFAULT 0")
-                migrated = True
-            if "holdout_observed_sharpe" not in columns:
-                self._conn.execute("ALTER TABLE attempts ADD COLUMN holdout_observed_sharpe REAL")
-                migrated = True
-            if "holdout_returns_blob" not in columns:
-                self._conn.execute("ALTER TABLE attempts ADD COLUMN holdout_returns_blob BLOB")
-                migrated = True
-            if migrated:
-                # Backfill target_metric_value using observed_sharpe for older attempts
-                self._conn.execute(
-                    "UPDATE attempts SET target_metric_value = observed_sharpe WHERE target_metric = 'sharpe'"
-                )
-                self._conn.commit()
+    def __enter__(self) -> LedgerStore:
+        return self
 
-            # Rename holdout_max_drawdown/turnover to in_sample_* (store in-sample values)
-            if "holdout_max_drawdown" in columns and "in_sample_max_drawdown" not in columns:
-                self._conn.execute("ALTER TABLE attempts RENAME COLUMN holdout_max_drawdown TO in_sample_max_drawdown")
-            if "holdout_turnover" in columns and "in_sample_turnover" not in columns:
-                self._conn.execute("ALTER TABLE attempts RENAME COLUMN holdout_turnover TO in_sample_turnover")
+    def __exit__(self, *args: object) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        with contextlib.suppress(Exception):
+            self.close()
+
+    # ------------------------------------------------------------------
+    # Connection management (one per thread)
+    # ------------------------------------------------------------------
+
+    def _conn(self) -> sqlite3.Connection:
+        tid = threading.get_ident()
+        with self._lock:
+            if tid not in self._local:
+                c = sqlite3.connect(str(self._db_path), timeout=settings.db_timeout)
+                c.execute("PRAGMA journal_mode=WAL")
+                self._local[tid] = c
+            conn = self._local[tid]
+
+            if not self._schema_initialized:
+                conn.execute(_CREATE_RUNS)
+                conn.execute(_CREATE_ATTEMPTS)
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_attempts_run_id ON attempts(run_id)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_attempts_strategy_name ON attempts(strategy_name)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_attempts_dataset_hash ON attempts(dataset_hash)")
+                conn.commit()
+
+                # Schema migration for older databases missing target_metric/value columns
+                cursor = conn.cursor()
+                cursor.execute("PRAGMA table_info(attempts)")
+                columns = [row[1] for row in cursor.fetchall()]
+                if columns:
+                    migrated = False
+                    if "target_metric" not in columns:
+                        conn.execute("ALTER TABLE attempts ADD COLUMN target_metric TEXT NOT NULL DEFAULT 'sharpe'")
+                        migrated = True
+                    if "target_metric_value" not in columns:
+                        conn.execute("ALTER TABLE attempts ADD COLUMN target_metric_value REAL NOT NULL DEFAULT 0.0")
+                        migrated = True
+                    if "prompt_tokens" not in columns:
+                        conn.execute("ALTER TABLE attempts ADD COLUMN prompt_tokens INTEGER NOT NULL DEFAULT 0")
+                        migrated = True
+                    if "completion_tokens" not in columns:
+                        conn.execute("ALTER TABLE attempts ADD COLUMN completion_tokens INTEGER NOT NULL DEFAULT 0")
+                        migrated = True
+                    if "total_tokens" not in columns:
+                        conn.execute("ALTER TABLE attempts ADD COLUMN total_tokens INTEGER NOT NULL DEFAULT 0")
+                        migrated = True
+                    if "cost" not in columns:
+                        conn.execute("ALTER TABLE attempts ADD COLUMN cost REAL NOT NULL DEFAULT 0.0")
+                        migrated = True
+                    if "holdout_evaluated" not in columns:
+                        conn.execute("ALTER TABLE attempts ADD COLUMN holdout_evaluated INTEGER NOT NULL DEFAULT 0")
+                        migrated = True
+                    if "holdout_observed_sharpe" not in columns:
+                        conn.execute("ALTER TABLE attempts ADD COLUMN holdout_observed_sharpe REAL")
+                        migrated = True
+                    if "holdout_returns_blob" not in columns:
+                        conn.execute("ALTER TABLE attempts ADD COLUMN holdout_returns_blob BLOB")
+                        migrated = True
+                    if migrated:
+                        conn.execute(
+                            "UPDATE attempts SET target_metric_value = observed_sharpe WHERE target_metric = 'sharpe'"
+                        )
+                        conn.commit()
+
+                    if "holdout_max_drawdown" in columns and "in_sample_max_drawdown" not in columns:
+                        conn.execute(
+                            "ALTER TABLE attempts RENAME COLUMN holdout_max_drawdown TO in_sample_max_drawdown"
+                        )
+                    if "holdout_turnover" in columns and "in_sample_turnover" not in columns:
+                        conn.execute("ALTER TABLE attempts RENAME COLUMN holdout_turnover TO in_sample_turnover")
+
+                self._schema_initialized = True
+
+        return conn
 
     def create_run(
         self,
@@ -143,7 +183,7 @@ class LedgerStore:
         started_at: str,
     ) -> None:
         """Insert a new run record."""
-        self._conn.execute(
+        self._conn().execute(
             """
             INSERT INTO runs
                 (run_id, strategy_name, program_path, provider, model,
@@ -162,7 +202,7 @@ class LedgerStore:
                 started_at,
             ),
         )
-        self._conn.commit()
+        self._conn().commit()
 
     def record_attempt(
         self,
@@ -191,16 +231,19 @@ class LedgerStore:
         holdout_evaluated: bool = False,
         holdout_observed_sharpe: float | None = None,
         holdout_returns: pd.Series | None = None,
-    ) -> None:
+    ) -> int:
         """Serialize in-sample selection returns and insert an attempt record.
 
         When ``holdout_evaluated`` is True the holdout returns are also
         persisted so that the confirmation gate's multiple-testing penalty
         (``_deflate_holdout``) can be computed later.
+
+        Returns:
+            The auto-generated ``id`` (primary key) of the new attempt row.
         """
         selection_blob = _serialize_returns(selection_returns)
         holdout_blob = _serialize_returns(holdout_returns) if holdout_returns is not None else None
-        self._conn.execute(
+        cursor = self._conn().execute(
             """
             INSERT INTO attempts
                 (run_id, iteration, strategy_name, dataset_hash, config_yaml,
@@ -242,7 +285,23 @@ class LedgerStore:
                 holdout_blob,
             ),
         )
-        self._conn.commit()
+        self._conn().commit()
+        row_id = cursor.lastrowid
+        if row_id is None:
+            raise RuntimeError("INSERT into attempts did not return a row id")
+        return int(row_id)
+
+    def mark_committed(self, attempt_id: int, commit_sha: str) -> None:
+        """Mark a previously recorded attempt as committed with its git SHA.
+
+        Called after the git commit succeeds in the two-phase atomic write
+        (record → commit → mark_committed).
+        """
+        self._conn().execute(
+            "UPDATE attempts SET committed = 1, commit_sha = ? WHERE id = ?",
+            (commit_sha, attempt_id),
+        )
+        self._conn().commit()
 
     def fetch_historical_returns(
         self,
@@ -261,7 +320,7 @@ class LedgerStore:
             query += " AND id != ?"
             params = (dataset_hash, exclude_id)
 
-        rows = self._conn.execute(query, params).fetchall()
+        rows = self._conn().execute(query, params).fetchall()
         if not rows:
             return pd.DataFrame(), []
 
@@ -291,14 +350,18 @@ class LedgerStore:
             Tuple of (DataFrame of holdout returns, list of holdout Sharpe ratios).
             Empty DataFrame and empty list when no holdout-peeked rows exist.
         """
-        rows = self._conn.execute(
-            """
+        rows = (
+            self._conn()
+            .execute(
+                """
             SELECT id, holdout_returns_blob, holdout_observed_sharpe
             FROM attempts
             WHERE dataset_hash = ? AND holdout_evaluated = 1
             """,
-            (dataset_hash,),
-        ).fetchall()
+                (dataset_hash,),
+            )
+            .fetchall()
+        )
 
         if not rows:
             return pd.DataFrame(), []
@@ -340,7 +403,7 @@ class LedgerStore:
             params = (dataset_hash, exclude_id)
         query += " ORDER BY id ASC"
 
-        rows = self._conn.execute(query, params).fetchall()
+        rows = self._conn().execute(query, params).fetchall()
         return [str(row[0]) for row in rows]
 
     def fetch_attempt_summaries(
@@ -381,7 +444,7 @@ class LedgerStore:
             WHERE dataset_hash = ?
             ORDER BY id ASC
         """
-        rows = self._conn.execute(query, (dataset_hash,)).fetchall()
+        rows = self._conn().execute(query, (dataset_hash,)).fetchall()
 
         if not rows:
             return []
@@ -448,45 +511,57 @@ class LedgerStore:
         Returns:
             Tuple of (config_yaml_strings, target_metric_values).
         """
-        rows = self._conn.execute(
-            """
+        rows = (
+            self._conn()
+            .execute(
+                """
             SELECT config_yaml, target_metric_value
             FROM attempts
             WHERE dataset_hash = ? AND report_json != ''
             ORDER BY id ASC
             """,
-            (dataset_hash,),
-        ).fetchall()
+                (dataset_hash,),
+            )
+            .fetchall()
+        )
         configs: list[str] = [str(row[0]) for row in rows]
         metrics: list[float] = [float(row[1]) for row in rows]
         return configs, metrics
 
     def latest_run_id(self) -> str | None:
         """Return the most recently started run id, if any runs exist."""
-        row = self._conn.execute(
-            """
+        row = (
+            self._conn()
+            .execute(
+                """
             SELECT run_id
             FROM runs
             ORDER BY started_at DESC, run_id DESC
             LIMIT 1
             """
-        ).fetchone()
+            )
+            .fetchone()
+        )
         if row is None:
             return None
         return str(row[0])
 
     def get_run(self, run_id: str) -> dict[str, object] | None:
         """Return metadata for one run id, or None when it is absent."""
-        row = self._conn.execute(
-            """
+        row = (
+            self._conn()
+            .execute(
+                """
             SELECT
                 run_id, strategy_name, program_path, provider, model,
                 branch, dataset_hash, iterations, started_at
             FROM runs
             WHERE run_id = ?
             """,
-            (run_id,),
-        ).fetchone()
+                (run_id,),
+            )
+            .fetchone()
+        )
         if row is None:
             return None
         return {
@@ -514,8 +589,10 @@ class LedgerStore:
             params.append(strategy_name)
         where_sql = " AND ".join(filters)
 
-        rows = self._conn.execute(
-            f"""
+        rows = (
+            self._conn()
+            .execute(
+                f"""
             SELECT
                 strategy_name,
                 run_id,
@@ -538,8 +615,10 @@ class LedgerStore:
             WHERE {where_sql}
             ORDER BY strategy_name ASC, iteration ASC, id ASC
             """,
-            tuple(params),
-        ).fetchall()
+                tuple(params),
+            )
+            .fetchall()
+        )
 
         results: list[dict[str, object]] = []
         for row in rows:
@@ -585,8 +664,10 @@ class LedgerStore:
             params.append(run_id)
         where_sql = " AND ".join(filters)
 
-        rows = self._conn.execute(
-            f"""
+        rows = (
+            self._conn()
+            .execute(
+                f"""
             SELECT
                 strategy_name,
                 run_id,
@@ -620,8 +701,10 @@ class LedgerStore:
             WHERE row_num = 1
             ORDER BY target_metric_value DESC, strategy_name ASC
             """,
-            tuple(params),
-        ).fetchall()
+                tuple(params),
+            )
+            .fetchall()
+        )
 
         results: list[dict[str, object]] = []
         for row in rows:
@@ -650,7 +733,7 @@ class LedgerStore:
             FROM runs
             ORDER BY started_at DESC
         """
-        rows = self._conn.execute(query).fetchall()
+        rows = self._conn().execute(query).fetchall()
         results: list[dict[str, object]] = []
         for row in rows:
             results.append(
@@ -669,5 +752,8 @@ class LedgerStore:
         return results
 
     def close(self) -> None:
-        """Close the underlying database connection."""
-        self._conn.close()
+        """Close all per-thread database connections."""
+        with self._lock:
+            for c in self._local.values():
+                c.close()
+            self._local.clear()

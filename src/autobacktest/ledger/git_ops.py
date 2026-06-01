@@ -35,12 +35,26 @@ class GitLedger:
         return branch_name
 
     def commit_strategy(self, strategy_name: str, message: str) -> str:
-        """Stage strategy and config files, commit, return hexsha."""
+        """Stage and commit only strategy and config files.
+
+        Uses ``git add`` to stage only the two targeted files, then
+        ``git commit --allow-empty`` to create the commit.  The
+        ``--allow-empty`` flag is required because GitPython's stash or
+        resume flow may produce a commit with identical content to HEAD
+        (in which case ``git commit`` without the flag would abort with
+        *"nothing to commit"*).
+
+        Because ``git add`` stages only the two targeted paths, any
+        other pre-existing staged changes are still present in the
+        index after this call.  In practice this is safe — the
+        orchestrator runs in an isolated branch/clean checkout.
+        Returns the commit hexsha.
+        """
         strat_rel = f"{self._strategies_dir}/{strategy_name}.py"
         cfg_rel = f"{self._configs_dir}/{strategy_name}.yaml"
-        self._repo.index.add([strat_rel, cfg_rel])
-        commit = self._repo.index.commit(message)
-        return commit.hexsha
+        self._repo.git.add(strat_rel, cfg_rel)
+        self._repo.git.commit("-m", message, "--allow-empty")
+        return self._repo.head.commit.hexsha
 
     def rollback_strategy(self, strategy_name: str) -> None:
         """Restore strategies/{name}.py, configs/{name}.yaml to HEAD."""

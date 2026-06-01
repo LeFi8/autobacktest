@@ -25,6 +25,37 @@ from autobacktest.evaluator.walk_forward import generate_walk_forward_windows
 from autobacktest.strategy.config_schema import StrategyConfig
 
 
+def compute_dataset_hash(
+    tickers: list[str],
+    start_date: str = "",
+    end_date: str = "",
+    holdout_years: int = 3,
+) -> str:
+    """Compute a stable dataset hash from universe tickers and date parameters.
+
+    Includes start/end dates and holdout years so that the same universe with
+    different time ranges produces distinct hashes.
+
+    Args:
+        tickers: Asset tickers in the universe.
+        start_date: Backtest start date string (YYYY-MM-DD).
+        end_date: Backtest end date string (YYYY-MM-DD).
+        holdout_years: Number of years reserved for holdout.
+
+    Returns:
+        str: 16-character hex hash digest.
+    """
+    data = "|".join(
+        [
+            ",".join(sorted(tickers)),
+            start_date,
+            end_date,
+            str(holdout_years),
+        ]
+    )
+    return hashlib.sha256(data.encode()).hexdigest()[:16]
+
+
 def calculate_sortino_ratio(net_returns: pd.Series) -> float:
     """Calculate the Sortino Ratio of a daily net returns series."""
     if net_returns.empty:
@@ -44,7 +75,7 @@ def calculate_information_ratio(net_returns: pd.Series, benchmark_returns: pd.Se
     if net_returns.empty or benchmark_returns.empty:
         return 0.0
     # Align dates
-    aligned = pd.concat([net_returns, benchmark_returns], axis=1).dropna()
+    aligned = pd.concat([net_returns, benchmark_returns], axis=1, sort=True).dropna()
     if aligned.empty:
         return 0.0
     active_returns = aligned.iloc[:, 0] - aligned.iloc[:, 1]
@@ -285,41 +316,103 @@ def evaluate_strategy_detailed(
     # Pre-compute asset returns once — reused across all window evaluations (Opt 2)
     _asset_returns = prices.pct_change().fillna(0.0)
 
-    # Dynamic dynamic weights generation from custom strategy function
-    weights = generate_signals_fn(prices, flat_config)
-
-    # Sanity validate output weights contract (Finding 14)
-    from autobacktest.strategy.contract import validate_output
-
-    ok, err = validate_output(weights, tickers, expected_index=prices.index)
-    if not ok:
-        raise ValueError(f"Strategy weights validation failed: {err}")
-
     # Partition holdout data (configurable via AUTOBACKTEST_DEFAULT_HOLDOUT_YEARS)
     in_sample_idx, holdout_idx = partition_holdout_data(prices.index, holdout_years=settings.default_holdout_years)
     if in_sample_idx.empty or holdout_idx.empty:
         raise ValueError("In-sample or holdout period is empty. Ensure the backtest period is sufficiently long.")
 
-    wf_windows = generate_walk_forward_windows(in_sample_idx, train_years=5, test_years=1)
-    wf_reports = _run_walk_forward_windows(
-        prices,
-        weights,
-        wf_windows,
-        bench_returns,
-        asset_returns=_asset_returns,
-    )
+    # ------------------------------------------------------------------
+    # Causal walk-forward: generate signals per fold, concat test weights
+    # ------------------------------------------------------------------
+    from autobacktest.strategy.contract import validate_output
 
-    # Guard: walk-forward must produce at least one window
-    if not wf_reports:
+    wf_windows = generate_walk_forward_windows(in_sample_idx, train_years=5, test_years=1)
+    if not wf_windows:
         raise ValueError(
             "No walk-forward windows could be generated from the in-sample period. "
             "Ensure the backtest range is long enough for at least one 5y-train/1y-test fold."
         )
 
-    # Aggregate walk-forward folds into a single in-sample summary
-    in_sample_metrics = aggregate_walk_forward(wf_reports)
+    wf_test_weights_list: list[pd.DataFrame] = []
+    for _train_start, _train_end, test_start, test_end in wf_windows:
+        prices_truncated = prices.loc[:test_end]
+        fold_weights = generate_signals_fn(prices_truncated, flat_config)
+        ok, err = validate_output(fold_weights, tickers, expected_index=prices.index)
+        if not ok:
+            raise ValueError(f"Strategy weights validation failed at fold test={test_start}: {err}")
+        test_segment = fold_weights.loc[test_start:test_end]
+        wf_test_weights_list.append(test_segment)
 
-    # Evaluate holdout window
+    # Concatenate all test-period weights into one continuous series
+    wf_weights = pd.concat(wf_test_weights_list)
+    wf_weights = wf_weights[~wf_weights.index.duplicated(keep="first")]
+
+    # Single continuous backtest on pooled walk-forward weights (shifted once across entire series)
+    wf_portfolio_returns, _wf_equity, wf_daily_weights = run_vectorized_backtest(
+        prices,
+        wf_weights,
+        asset_returns=_asset_returns,
+    )
+    wf_net_returns, wf_net_equity, wf_turnover = calculate_turnover_and_costs(
+        wf_portfolio_returns,
+        wf_daily_weights,
+        prices,
+        asset_returns=_asset_returns,
+    )
+
+    # Slice pooled returns to the contiguous walk-forward test-window span
+    # to avoid leading zeros (pre-first-window cash) and holdout leakage.
+    wf_start = wf_windows[0][2]
+    wf_end = wf_windows[-1][3]
+    wf_net_returns = wf_net_returns.loc[wf_start:wf_end]
+    wf_net_equity = wf_net_equity.loc[wf_start:wf_end]
+
+    if wf_net_returns.empty:
+        raise ValueError("Walk-forward test returns are empty after backtest.")
+
+    # --- Pooled metrics from the continuous walk-forward stream ---
+    wf_mean = wf_net_returns.mean()
+    wf_std = wf_net_returns.std(ddof=1) if len(wf_net_returns) >= 2 else 0.0
+    wf_total_growth = wf_net_equity.iloc[-1] if not wf_net_equity.empty else 1.0
+    wf_ann_ret = float(wf_total_growth ** (252.0 / len(wf_net_returns)) - 1.0) if wf_total_growth > 0 else -1.0
+    wf_ann_vol = float(wf_std * np.sqrt(252))
+    pooled_sharpe = float((wf_mean / wf_std * np.sqrt(252)) if wf_std > 0 else 0.0)
+    pooled_sortino = calculate_sortino_ratio(wf_net_returns)
+    running_max = wf_net_equity.cummax()
+    wf_drawdowns = (wf_net_equity - running_max) / running_max
+    pooled_max_dd = float(abs(wf_drawdowns.min())) if not wf_drawdowns.empty else 0.0
+    pooled_ir = calculate_information_ratio(wf_net_returns, bench_returns)
+
+    in_sample_metrics = WindowReport(
+        start_date=wf_windows[0][2].strftime("%Y-%m-%d"),
+        end_date=wf_windows[-1][3].strftime("%Y-%m-%d"),
+        annualized_return=wf_ann_ret,
+        annualized_volatility=wf_ann_vol,
+        sharpe_ratio=pooled_sharpe,
+        sortino_ratio=pooled_sortino,
+        max_drawdown=pooled_max_dd,
+        turnover=wf_turnover,
+        information_ratio=pooled_ir,
+    )
+
+    # Per-fold sub-reports for diagnostics (on the pooled causal weights)
+    wf_reports = _run_walk_forward_windows(
+        prices,
+        wf_weights,
+        wf_windows,
+        bench_returns,
+        asset_returns=_asset_returns,
+    )
+
+    # ------------------------------------------------------------------
+    # Full period signal generation for holdout + regime + MC evaluation
+    # ------------------------------------------------------------------
+    weights = generate_signals_fn(prices, flat_config)
+    ok, err = validate_output(weights, tickers, expected_index=prices.index)
+    if not ok:
+        raise ValueError(f"Strategy weights validation failed (full period): {err}")
+
+    # Holdout evaluation
     holdout_start = holdout_idx.min()
     holdout_end = holdout_idx.max()
     holdout_report = generate_window_report(
@@ -331,7 +424,6 @@ def evaluate_strategy_detailed(
         asset_returns=_asset_returns,
     )
 
-    # Compute holdout net returns
     holdout_prices = prices.loc[holdout_start:holdout_end]
     holdout_weights = weights.loc[holdout_start:holdout_end]
     h_portfolio_returns, _, h_daily_weights = run_vectorized_backtest(
@@ -346,7 +438,7 @@ def evaluate_strategy_detailed(
         asset_returns=_asset_returns,
     )
 
-    # Evaluate full period net returns for Monte Carlo and Regime tests
+    # Full period evaluation for Monte Carlo and Regime tests
     full_returns, _, daily_weights = run_vectorized_backtest(
         prices,
         weights,
@@ -359,35 +451,37 @@ def evaluate_strategy_detailed(
         asset_returns=_asset_returns,
     )
 
-    # Derive in-sample net returns from the full-period series
-    in_sample_net_returns = net_returns.reindex(in_sample_idx).dropna()
-
-    # Labeled stress testing regimes
-    regime_drawdowns, regime_passed = evaluate_stress_regimes(net_returns)
-
-    # Monte carlo block bootstrap (1000 paths) with seed for strict determinism
+    regime_drawdowns, regime_passed = evaluate_stress_regimes(
+        net_returns,
+        daily_weights=daily_weights,
+        n_tickers=len(tickers),
+    )
     mc_5th, mc_50th, mc_95th = run_block_bootstrap(net_returns, n_paths=1000, seed=42)
 
     # --- DSR accounting ---
-    # Selection DSR uses in-sample walk-forward returns (deflated by config's trial count)
+    # Selection DSR uses POOLED walk-forward returns (same basis as observed_sharpe)
     effective_trials = int(flat_config.get("effective_trials", 1))
     historical_sharpes = flat_config.get("historical_sharpes")
 
+    in_sample_net_returns = wf_net_returns
     selection_dsr = calculate_psr_dsr(
-        in_sample_net_returns,
+        wf_net_returns,
         historical_sharpes=historical_sharpes,
         effective_trials=effective_trials,
     )
 
-    # Holdout PSR (will be deflated by _deflate_holdout in the orchestrator)
     holdout_dsr = calculate_psr_dsr(
         holdout_net_returns,
         effective_trials=1,
     )
 
-    # Generate complete stable dataset hash using hashlib
-    tickers_str = ",".join(sorted(tickers))
-    dataset_hash = hashlib.sha256(tickers_str.encode()).hexdigest()[:16]
+    # Generate complete stable dataset hash including date parameters
+    dataset_hash = compute_dataset_hash(
+        tickers,
+        start_date=start_date,
+        end_date=end_date,
+        holdout_years=settings.default_holdout_years,
+    )
 
     # Generate complete report
     report = EvaluationReport(
@@ -404,7 +498,7 @@ def evaluate_strategy_detailed(
         mc_sharpe_5th=mc_5th,
         mc_sharpe_50th=mc_50th,
         mc_sharpe_95th=mc_95th,
-        observed_sharpe=in_sample_metrics.sharpe_ratio,
+        observed_sharpe=pooled_sharpe,
         effective_trials=effective_trials,
         deflated_sharpe=selection_dsr,
         holdout_deflated_sharpe=holdout_dsr,

@@ -11,7 +11,6 @@ parameter importance analysis after each iteration.
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import importlib.util
 import logging
 import sys
@@ -38,7 +37,7 @@ from autobacktest.evaluator.deflated_sharpe import (
     calculate_effective_trials,
     calculate_psr_dsr,
 )
-from autobacktest.evaluator.evaluate import evaluate_strategy_detailed
+from autobacktest.evaluator.evaluate import compute_dataset_hash, evaluate_strategy_detailed
 from autobacktest.evaluator.report import EvaluationReport
 from autobacktest.gate import TargetMetric, confirm, select
 from autobacktest.ledger.event_log import EventLog
@@ -201,7 +200,12 @@ def run_optimization(
         _eval_cache = _ThreadSafeDict()
 
         # 6. Record run metadata
-        dataset_hash = _compute_dataset_hash(config)
+        dataset_hash = compute_dataset_hash(
+            config.get("universe", []),
+            start_date=start_date,
+            end_date=end_date,
+            holdout_years=settings.default_holdout_years,
+        )
         if not resume:
             ledger.create_run(
                 run_id=run_id,
@@ -226,9 +230,11 @@ def run_optimization(
         # 7. Baseline evaluation (iteration 0 — not written to events.jsonl)
         baseline_exists = False
         if resume:
-            check_baseline = ledger._conn.execute(
-                "SELECT COUNT(*) FROM attempts WHERE run_id = ? AND iteration = 0", (run_id,)
-            ).fetchone()
+            check_baseline = (
+                ledger._conn()
+                .execute("SELECT COUNT(*) FROM attempts WHERE run_id = ? AND iteration = 0", (run_id,))
+                .fetchone()
+            )
             if check_baseline and check_baseline[0] > 0:
                 baseline_exists = True
 
@@ -278,11 +284,15 @@ def run_optimization(
             )
         else:
             # Reconstruct incumbent from the latest accepted/committed attempt
-            rows = ledger._conn.execute(
-                "SELECT iteration, accepted, committed, report_json "
-                "FROM attempts WHERE run_id = ? ORDER BY iteration ASC",
-                (run_id,),
-            ).fetchall()
+            rows = (
+                ledger._conn()
+                .execute(
+                    "SELECT iteration, accepted, committed, report_json "
+                    "FROM attempts WHERE run_id = ? ORDER BY iteration ASC",
+                    (run_id,),
+                )
+                .fetchall()
+            )
 
             latest_accepted = None
             if rows:
@@ -298,10 +308,14 @@ def run_optimization(
 
                 incumbent = EvaluationReport.from_json(latest_accepted[3])
 
-                ret_row = ledger._conn.execute(
-                    "SELECT returns_blob, holdout_returns_blob FROM attempts WHERE run_id = ? AND iteration = ?",
-                    (run_id, latest_accepted[0]),
-                ).fetchone()
+                ret_row = (
+                    ledger._conn()
+                    .execute(
+                        "SELECT returns_blob, holdout_returns_blob FROM attempts WHERE run_id = ? AND iteration = ?",
+                        (run_id, latest_accepted[0]),
+                    )
+                    .fetchone()
+                )
                 incumbent_returns = _deserialize_returns(bytes(ret_row[0])) if ret_row else pd.Series(dtype=float)
                 if ret_row and ret_row[1] is not None:
                     incumbent.holdout_net_returns = _deserialize_returns(bytes(ret_row[1]))
@@ -345,7 +359,7 @@ def run_optimization(
         total_cost = 0.0
         start_k = 1
         if resume:
-            rows = ledger._conn.execute("SELECT iteration FROM attempts WHERE run_id = ?", (run_id,)).fetchall()
+            rows = ledger._conn().execute("SELECT iteration FROM attempts WHERE run_id = ?", (run_id,)).fetchall()
             if rows:
                 start_k = max(row[0] for row in rows) + 1
 
@@ -533,6 +547,7 @@ def run_optimization(
                     winner: dict[str, Any] | None = None
                     sha: str | None = None
                     best_metric: float = -float("inf")
+                    peeks_this_iteration: int = 0
 
                     for ev in candidate_results:
                         if not ev.get("valid") or ev.get("_report") is None:
@@ -570,12 +585,13 @@ def run_optimization(
                         ev["_sel"] = sel
 
                         if sel.accepted:
-                            # Holdout peek budget check
+                            # Holdout peek budget check (ledger + in-memory counter for intra-iteration races)
                             hist_matrix, _ = ledger.fetch_holdout_history(report_k.dataset_hash)
                             current_peeks = len(hist_matrix.columns) if not hist_matrix.empty else 0
-                            if current_peeks >= holdout_peek_limit:
+                            if current_peeks + peeks_this_iteration >= holdout_peek_limit:
+                                total_peeks = current_peeks + peeks_this_iteration
                                 logger.warning(
-                                    f"Holdout peek limit reached: {current_peeks} >= {holdout_peek_limit}. "
+                                    f"Holdout peek limit reached: {total_peeks} >= {holdout_peek_limit}. "
                                     "Aborting optimization loop immediately."
                                 )
                                 _early_stop = True
@@ -584,6 +600,7 @@ def run_optimization(
                                 ev["_peek_fail"] = True
                                 continue
 
+                            peeks_this_iteration += 1
                             _deflate_holdout(report_k, ledger)
                             if incumbent is not None:
                                 _deflate_holdout(incumbent, ledger)
@@ -608,24 +625,74 @@ def run_optimization(
                             ev["detail"] = sel.reason
                             ev["_failed_gate"] = sel.failed_gate
 
-                    # --- Commit winner (if any) ---
+                    # --- Commit winner (if any) — atomic: record → commit → mark ---
                     if winner is not None:
                         w_edit = winner["edit"]
                         w_report = winner["_report"]
                         w_returns = winner["_returns"]
-                        strat_path.write_text(w_edit.strategy_code, encoding="utf-8")
-                        cfg_path.write_text(w_edit.config_yaml, encoding="utf-8")
-                        sha = git_ledger.commit_strategy(
-                            strategy_name,
-                            f"iter {k}: {w_edit.reasoning[:72] if w_edit.reasoning else 'multi-candidate'}",
-                        )
-                        incumbent = w_report
-                        incumbent_returns = w_returns
-                        n_committed += 1
-                        last_attempt = None
-                        consecutive_no_accept = 0
-                        mode = "exploit"
-                        exploit_stall = 0
+                        attempt_id: int | None = None
+                        try:
+                            strat_path.write_text(w_edit.strategy_code, encoding="utf-8")
+                            cfg_path.write_text(w_edit.config_yaml, encoding="utf-8")
+
+                            # Phase 1: Record in ledger (committed=False) — safe
+                            # even if the process dies after this step because
+                            # the row is already persisted with committed=0.
+                            attempt_id = ledger.record_attempt(
+                                run_id=run_id,
+                                iteration=k,
+                                strategy_name=strategy_name,
+                                dataset_hash=dataset_hash,
+                                config_yaml=w_edit.config_yaml,
+                                observed_sharpe=w_report.observed_sharpe,
+                                deflated_sharpe=w_report.deflated_sharpe,
+                                target_metric=target_metric.value,
+                                target_metric_value=_get_metric_value(w_report, target_metric),
+                                in_sample_max_drawdown=w_report.in_sample_metrics.max_drawdown,
+                                in_sample_turnover=w_report.in_sample_metrics.turnover,
+                                regime_passed=w_report.regime_passed,
+                                accepted=True,
+                                committed=False,
+                                commit_sha=None,
+                                rejection_reason=None,
+                                report_json=w_report.to_json(),
+                                selection_returns=w_returns,
+                                prompt_tokens=w_edit.prompt_tokens,
+                                completion_tokens=w_edit.completion_tokens,
+                                total_tokens=w_edit.total_tokens,
+                                cost=w_edit.cost,
+                                holdout_evaluated=True,
+                                holdout_observed_sharpe=w_report.holdout_metrics.sharpe_ratio,
+                                holdout_returns=w_report.holdout_net_returns,
+                            )
+
+                            # Phase 2: Git commit — returns the SHA
+                            sha = git_ledger.commit_strategy(
+                                strategy_name,
+                                f"iter {k}: {w_edit.reasoning[:72] if w_edit.reasoning else 'multi-candidate'}",
+                            )
+
+                            # Phase 3: Mark committed in ledger (two-phase finalize)
+                            ledger.mark_committed(attempt_id, sha)
+
+                            incumbent = w_report
+                            incumbent_returns = w_returns
+                            n_committed += 1
+                            last_attempt = None
+                            consecutive_no_accept = 0
+                            mode = "exploit"
+                            exploit_stall = 0
+                            winner["_recorded"] = True
+                        except Exception:
+                            git_ledger.rollback_strategy(strategy_name)
+                            aid = attempt_id if attempt_id is not None else "unknown"
+                            logger.exception(
+                                "Atomic commit failed for iteration %d — rolled back. "
+                                "Ledger row id=%s remains as committed=0 for resume recovery.",
+                                k,
+                                aid,
+                            )
+                            raise
 
                     # --- Record ALL candidates in ledger ---
                     rejection_reason_map = {
@@ -692,6 +759,8 @@ def run_optimization(
 
                     for ev in candidate_results:
                         if ev.get("_report") is not None:
+                            if ev.get("_recorded"):
+                                continue
                             is_winner = ev is winner
                             _record(ev, accepted=is_winner, committed=is_winner)
                         elif ev.get("llm_error"):
@@ -870,12 +939,6 @@ def run_optimization(
 # ---------------------------------------------------------------------------
 
 
-def _compute_dataset_hash(config: dict[str, Any]) -> str:
-    """Compute stable dataset hash from sorted universe tickers."""
-    tickers = sorted(config.get("universe", []))
-    return hashlib.sha256(",".join(tickers).encode()).hexdigest()[:16]
-
-
 def _load_signals(path: Path) -> Any:
     """Dynamically import generate_signals from a strategy .py file."""
     module_name = path.stem
@@ -993,21 +1056,18 @@ def _deflate(
 ) -> None:
     """Deflate the in-sample selection DSR using the ledger's multi-trial history.
 
-    This operates on **in-sample** returns (``selection_returns``) and
-    ``fetch_historical_returns`` (which now returns in-sample streams after
-    the holdout-separation refactor).  The holdout DSR is deflated separately
-    in ``_deflate_holdout``.
+    The null distribution is grounded entirely on **independent** historical
+    trials — the candidate's own returns and Sharpe are excluded from the
+    correlation matrix and Sharpe list to prevent self-contamination.
     """
     hist_matrix, hist_sharpes = ledger.fetch_historical_returns(report.dataset_hash)
 
     if hist_matrix.empty:
         return
 
-    current_col = selection_returns.rename("current")
-    matrix = pd.concat([hist_matrix, current_col], axis=1).dropna(how="all")
-
-    n = max(1, calculate_effective_trials(matrix))
-    sharpes = [*hist_sharpes, report.observed_sharpe]
+    # Use only historical trials — do NOT append the current candidate
+    n = max(1, calculate_effective_trials(hist_matrix))
+    sharpes = hist_sharpes  # candidate's Sharpe intentionally excluded
 
     report.effective_trials = n
     report.deflated_sharpe = calculate_psr_dsr(selection_returns, sharpes, n)
@@ -1019,12 +1079,8 @@ def _deflate_holdout(
 ) -> None:
     """Deflate ``report.holdout_deflated_sharpe`` by the holdout-peek count.
 
-    Each time a candidate passes the in-sample selection gate and the
-    holdout is consulted, that peek is recorded in the ledger
-    (``holdout_evaluated = 1``).  The effective-trial count is derived
-    from the clustered correlation of *holdout* return streams, so the
-    multiple-testing penalty correctly reflects how many times the holdout
-    has actually been used.
+    The null distribution uses only prior holdout peeks — the current
+    candidate's returns and Sharpe are excluded to avoid self-contamination.
     """
     hist_matrix, hist_sharpes = ledger.fetch_holdout_history(report.dataset_hash)
 
@@ -1038,11 +1094,9 @@ def _deflate_holdout(
         )
         return
 
-    current_col = report.holdout_net_returns.rename("current")
-    matrix = pd.concat([hist_matrix, current_col], axis=1).dropna(how="all")
-
-    n = max(1, calculate_effective_trials(matrix))
-    sharpes = [*hist_sharpes, report.holdout_metrics.sharpe_ratio]
+    # Use only historical holdout peeks — exclude the current candidate
+    n = max(1, calculate_effective_trials(hist_matrix))
+    sharpes = hist_sharpes  # candidate's holdout Sharpe intentionally excluded
 
     report.holdout_deflated_sharpe = calculate_psr_dsr(
         report.holdout_net_returns,

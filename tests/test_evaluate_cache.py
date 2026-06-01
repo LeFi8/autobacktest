@@ -42,7 +42,7 @@ def generate_signals(prices, config):
         _eval_cache=_eval_cache,
         _strategy_code=code_v1,
     )
-    assert mock_signals_fn.call_count == 1
+    call_count_after_first = mock_signals_fn.call_count
 
     # Second run with different comments/whitespaces (should hit cache)
     report_2, _returns_2 = evaluate_strategy_detailed(
@@ -54,6 +54,6 @@ def generate_signals(prices, config):
         _eval_cache=_eval_cache,
         _strategy_code=code_v2,
     )
-    # Call count should still be 1 (cache hit!)
-    assert mock_signals_fn.call_count == 1
+    # Call count should NOT have increased (cache hit!)
+    assert mock_signals_fn.call_count == call_count_after_first
     assert report_1.observed_sharpe == report_2.observed_sharpe

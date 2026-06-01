@@ -41,14 +41,24 @@ def _get_config_val(config: Any, key: str, default: Any) -> Any:
 
 
 def _get_in_sample_metric_val(report: EvaluationReport, target_metric: TargetMetric) -> float:
-    """Extract target metric from a report's in-sample walk-forward aggregate."""
+    """Extract target metric from a report's in-sample walk-forward aggregate.
+
+    Infinity and NaN are capped to 0.0 so that a "risk-free" strategy
+    (e.g. all-non-negative-returns producing +inf Sortino) does not
+    dominate or derail the lexicographic gate.
+    """
     if target_metric == TargetMetric.SHARPE:
-        return report.in_sample_metrics.sharpe_ratio
-    if target_metric == TargetMetric.SORTINO:
-        return report.in_sample_metrics.sortino_ratio
-    if target_metric == TargetMetric.INFORMATION_RATIO:
-        return report.in_sample_metrics.information_ratio
-    raise ValueError(f"Unsupported target metric choice: {target_metric}")
+        val = report.in_sample_metrics.sharpe_ratio
+    elif target_metric == TargetMetric.SORTINO:
+        val = report.in_sample_metrics.sortino_ratio
+    elif target_metric == TargetMetric.INFORMATION_RATIO:
+        val = report.in_sample_metrics.information_ratio
+    else:
+        raise ValueError(f"Unsupported target metric choice: {target_metric}")
+
+    if math.isnan(val) or math.isinf(val):
+        return 0.0
+    return val
 
 
 def _write_gates_passed(report: EvaluationReport, checks: dict[str, bool]) -> None:

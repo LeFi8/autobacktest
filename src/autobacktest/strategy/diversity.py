@@ -364,7 +364,8 @@ def check_returns_correlation(
         if np.isnan(corr):
             continue
 
-        if corr > max_corr:
-            max_corr = corr
+        abs_corr = abs(corr)
+        if abs_corr > max_corr:
+            max_corr = abs_corr
 
     return max_corr <= threshold, max_corr

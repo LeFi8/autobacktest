@@ -65,15 +65,15 @@ def test_negative_values_raises_error() -> None:
         StrategyConfig.model_validate({"universe": ["SPY"], "turnover_limit": -0.1})
 
 
-def test_extra_fields_allowed() -> None:
-    """Verifies that extra fields at the root are allowed by ConfigDict."""
-    cfg = StrategyConfig.model_validate(
-        {
-            "universe": ["SPY"],
-            "some_extra_field": "allowed",
-        }
-    )
-    assert cfg.some_extra_field == "allowed"  # type: ignore[attr-defined]
+def test_extra_fields_forbidden() -> None:
+    """Verifies that extra fields at the root are rejected by ConfigDict."""
+    with pytest.raises(ValidationError):
+        StrategyConfig.model_validate(
+            {
+                "universe": ["SPY"],
+                "some_extra_field": "rejected",
+            }
+        )
 
 
 def test_params_collision_raises_error() -> None:
@@ -89,6 +89,12 @@ def test_params_collision_raises_error() -> None:
         )
     exc_str = str(exc_info.value)
     assert "Keys in 'params' collide with top-level schema fields" in exc_str
+
+
+def test_turnover_limit_upper_bound() -> None:
+    """Verifies that turnover_limit cannot exceed the upper bound."""
+    with pytest.raises(ValidationError):
+        StrategyConfig.model_validate({"universe": ["SPY"], "turnover_limit": 100.0})
 
 
 def test_from_yaml_loader(tmp_path: Path) -> None:

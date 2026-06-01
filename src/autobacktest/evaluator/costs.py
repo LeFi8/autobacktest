@@ -65,10 +65,12 @@ def calculate_turnover_and_costs(
     net_equity = (1.0 + net_returns).cumprod()
 
     # Calculate annualized turnover
-    # Total sum of absolute target weight changes divided by number of years
+    # Total sum of absolute target weight changes divided by number of years.
+    # Divide by 2 because each notional trade (A -> B) produces both a sell (A)
+    # and a buy (B) in ``daily_trade_volume``, double-counting the notional.
     n_days = len(daily_returns)
     years = max(n_days / 252.0, 1.0 / 252.0)
-    total_turnover = daily_trade_volume.sum()
+    total_turnover = daily_trade_volume.sum() / 2.0
     annualized_turnover = float(total_turnover / years)
 
     return net_returns, net_equity, annualized_turnover

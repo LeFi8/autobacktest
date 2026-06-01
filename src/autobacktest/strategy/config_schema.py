@@ -10,18 +10,19 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 class StrategyConfig(BaseModel):
     """Pydantic v2 strategy configuration model.
 
-    Enforces schemas with extra fields at root allowed (for custom strategy usage),
-    redirecting strategy-specific custom parameters to the `params` dictionary,
-    while preventing collisions with standard schema fields.
+    Extra fields at the root are **forbidden** — strategy-specific custom
+    parameters must be placed in the ``params`` dictionary.  This prevents
+    the LLM from injecting arbitrary top-level keys (e.g. overriding
+    ``turnover_limit`` or ``max_drawdown_limit``).
     """
 
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
 
-    universe: list[str] = Field(..., min_length=1, description="List of asset tickers in strategy universe")
+    universe: list[str] = Field(..., min_length=1, description="List of asset tickers")
     benchmark: str = Field("SPY", description="Benchmark index ticker")
-    momentum_lookback: int = Field(12, ge=1, description="Momentum score lookback window")
-    max_drawdown_limit: float = Field(0.20, ge=0.0, le=1.0, description="Max permitted drawdown in holdout")
-    turnover_limit: float = Field(2.0, gt=0.0, description="Max permitted annualized turnover rate")
+    momentum_lookback: int = Field(12, ge=1, description="Momentum lookback window (months)")
+    max_drawdown_limit: float = Field(0.20, ge=0.0, le=1.0, description="Max permitted drawdown")
+    turnover_limit: float = Field(2.0, gt=0.0, le=10.0, description="Max annualized turnover (capped at 10x)")
     params: dict[str, Any] = Field(default_factory=dict, description="Strategy-specific parameters")
     min_improvement: float = Field(0.0, ge=0.0, description="Minimum target-metric improvement epsilon for select gate")
     require_dsr_non_degradation: bool = Field(
@@ -38,10 +39,8 @@ class StrategyConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_no_collisions(self) -> "StrategyConfig":
-        # Get all top-level keys dynamically except 'params' (Finding 11)
+        # Get all known top-level fields and exclude 'params' (Finding 11)
         top_level_keys = set(self.__class__.model_fields.keys())
-        if self.model_extra:
-            top_level_keys.update(self.model_extra.keys())
         top_level_keys.discard("params")
 
         colliding = top_level_keys.intersection(self.params.keys())

@@ -7,6 +7,7 @@ deduplication.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import sqlite3
 import threading
@@ -50,6 +51,16 @@ class LessonStore:
         self._db_path = Path(db_path) if db_path else settings.lessons_db_path
         self._local: dict[int, sqlite3.Connection] = {}
         self._lock = threading.Lock()
+
+    def __enter__(self) -> LessonStore:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        with contextlib.suppress(Exception):
+            self.close()
 
     # ------------------------------------------------------------------
     # Connection management (one per thread)
@@ -105,6 +116,8 @@ class LessonStore:
         except sqlite3.IntegrityError:
             return False
 
+    MAX_INGEST_CHARS = 32000  # 2x the retrieval cap — generous per-edit allowance
+
     def ingest_markdown(self, markdown_text: str, strategy: str, source: str = "llm") -> int:
         """Parse markdown lessons and insert them with deduplication.
 
@@ -119,6 +132,8 @@ class LessonStore:
         """
         if not markdown_text or not markdown_text.strip():
             return 0
+        if len(markdown_text) > self.MAX_INGEST_CHARS:
+            markdown_text = markdown_text[: self.MAX_INGEST_CHARS]
 
         parsed = parse_lessons(markdown_text)
         inserted = 0
@@ -133,6 +148,8 @@ class LessonStore:
                 inserted += 1
         return inserted
 
+    MAX_LESSONS_CHARS = 16000  # ~4096 tokens
+
     def get_filtered_markdown(self, strategy: str, context_stage: str | None = None) -> str:
         """Retrieve lessons for *strategy*, optionally filtered by *context_stage*.
 
@@ -140,6 +157,10 @@ class LessonStore:
         diversity_config → DIVERSITY, gate → GATE_REJECTION) only lessons of
         that type plus STRUCTURAL are returned.  Otherwise all lessons are
         returned.
+
+        The output is truncated to ``MAX_LESSONS_CHARS`` (~4096 tokens) to
+        stay within the LLM context budget.  The *most recent* lessons are
+        preserved; older lessons are dropped first.
 
         Returns:
             Re-rendered markdown string, or ``"No lessons recorded yet."`` when
@@ -177,9 +198,25 @@ class LessonStore:
         if not rows:
             return "No lessons recorded yet."
 
-        blocks = []
-        for title, body in rows:
-            blocks.append(f"### {title}\n{body}")
+        # Build blocks newest-first (rows are oldest-first by id ASC)
+        blocks: list[str] = []
+        total_len = 0
+        for title, body in reversed(rows):
+            block = f"### {title}\n{body}"
+            block_len = len(block) + 2  # +2 for "\n\n" separator
+            if total_len + block_len > self.MAX_LESSONS_CHARS:
+                break
+            blocks.append(block)
+            total_len += block_len
+
+        if not blocks:
+            # Even the single newest lesson exceeded the limit — truncate it
+            title, body = rows[-1]
+            block = f"### {title}\n{body}"
+            blocks.append(block[: self.MAX_LESSONS_CHARS])
+
+        # Reverse back to chronological order
+        blocks.reverse()
         return "\n\n".join(blocks)
 
     def count(self, strategy: str | None = None) -> int:
