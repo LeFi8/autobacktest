@@ -252,6 +252,7 @@ def test_stuck_counter_resets_on_acceptance(
             is_accepted=False,
             rejection_reason=None,
             holdout_metrics=window,
+            in_sample_metrics=window,
             walk_forward_metrics=[window],
             regime_drawdowns={},
             regime_passed=True,

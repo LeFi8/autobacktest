@@ -107,6 +107,9 @@ None.
         mock_report.holdout_metrics.sharpe_ratio = 1.5
         mock_report.holdout_metrics.max_drawdown = 0.05
         mock_report.holdout_metrics.turnover = 0.2
+        mock_report.in_sample_metrics.sharpe_ratio = 1.5
+        mock_report.in_sample_metrics.max_drawdown = 0.05
+        mock_report.in_sample_metrics.turnover = 0.2
         mock_report.regime_passed = True
         mock_report.to_json.return_value = "{}"
 

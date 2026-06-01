@@ -120,6 +120,46 @@ def generate_window_report(
     )
 
 
+def aggregate_walk_forward(wf_reports: list[WindowReport]) -> WindowReport:
+    """Aggregate individual walk-forward window reports into a single summary.
+
+    Returns the mean of return/vol/Sharpe/Sortino/IR across all folds,
+    and the **worst-case** (maximum) drawdown and turnover, so that the
+    aggregate represents both central tendency and tail risk.
+
+    Args:
+        wf_reports: One ``WindowReport`` per walk-forward fold.
+
+    Returns:
+        A single ``WindowReport`` spanning the full in-sample period.
+
+    Raises:
+        ValueError: If ``wf_reports`` is empty.
+    """
+    if not wf_reports:
+        raise ValueError("At least one walk-forward window is required to compute in-sample metrics.")
+
+    n = len(wf_reports)
+
+    def _mean(attr: str) -> float:
+        return float(sum(getattr(r, attr) for r in wf_reports) / n)
+
+    def _max(attr: str) -> float:
+        return float(max(getattr(r, attr) for r in wf_reports))
+
+    return WindowReport(
+        start_date=wf_reports[0].start_date,
+        end_date=wf_reports[-1].end_date,
+        annualized_return=_mean("annualized_return"),
+        annualized_volatility=_mean("annualized_volatility"),
+        sharpe_ratio=_mean("sharpe_ratio"),
+        sortino_ratio=_mean("sortino_ratio"),
+        max_drawdown=_max("max_drawdown"),
+        turnover=_max("turnover"),
+        information_ratio=_mean("information_ratio"),
+    )
+
+
 def _run_walk_forward_windows(
     prices: pd.DataFrame,
     weights: pd.DataFrame,
@@ -179,7 +219,10 @@ def evaluate_strategy_detailed(
 ) -> tuple[EvaluationReport, pd.Series[Any]]:
     """Run full deterministic walk-forward & holdout evaluation lifecycle.
 
-    Returns a tuple of (EvaluationReport, holdout_net_returns Series).
+    Returns a tuple of (EvaluationReport, in_sample_net_returns Series).
+    The report carries ``holdout_net_returns`` for the holdout confirmation
+    gate; the second element is the in-sample basis used for the selection
+    DSR and diversity correlation checks.
 
     Parameters prefixed with ``_`` are internal optimisations:
 
@@ -263,6 +306,16 @@ def evaluate_strategy_detailed(
         asset_returns=_asset_returns,
     )
 
+    # Guard: walk-forward must produce at least one window
+    if not wf_reports:
+        raise ValueError(
+            "No walk-forward windows could be generated from the in-sample period. "
+            "Ensure the backtest range is long enough for at least one 5y-train/1y-test fold."
+        )
+
+    # Aggregate walk-forward folds into a single in-sample summary
+    in_sample_metrics = aggregate_walk_forward(wf_reports)
+
     # Evaluate holdout window
     holdout_start = holdout_idx.min()
     holdout_end = holdout_idx.max()
@@ -275,8 +328,7 @@ def evaluate_strategy_detailed(
         asset_returns=_asset_returns,
     )
 
-    # Compute holdout net returns from the same window backtest used for holdout_report
-    # (consistent source for both observed_sharpe and the DSR test statistic)
+    # Compute holdout net returns
     holdout_prices = prices.loc[holdout_start:holdout_end]
     holdout_weights = weights.loc[holdout_start:holdout_end]
     h_portfolio_returns, _, h_daily_weights = run_vectorized_backtest(
@@ -304,28 +356,37 @@ def evaluate_strategy_detailed(
         asset_returns=_asset_returns,
     )
 
+    # Derive in-sample net returns from the full-period series
+    in_sample_net_returns = net_returns.reindex(in_sample_idx).dropna()
+
     # Labeled stress testing regimes
     regime_drawdowns, regime_passed = evaluate_stress_regimes(net_returns)
 
     # Monte carlo block bootstrap (1000 paths) with seed for strict determinism
     mc_5th, mc_50th, mc_95th = run_block_bootstrap(net_returns, n_paths=1000, seed=42)
 
-    # Sharpe ratio DSR
-    observed_sharpe = holdout_report.sharpe_ratio
+    # --- DSR accounting ---
+    # Selection DSR uses in-sample walk-forward returns (deflated by config's trial count)
     effective_trials = int(flat_config.get("effective_trials", 1))
     historical_sharpes = flat_config.get("historical_sharpes")
 
-    dsr = calculate_psr_dsr(
-        holdout_net_returns,
+    selection_dsr = calculate_psr_dsr(
+        in_sample_net_returns,
         historical_sharpes=historical_sharpes,
         effective_trials=effective_trials,
+    )
+
+    # Holdout PSR (will be deflated by _deflate_holdout in the orchestrator)
+    holdout_dsr = calculate_psr_dsr(
+        holdout_net_returns,
+        effective_trials=1,
     )
 
     # Generate complete stable dataset hash using hashlib
     tickers_str = ",".join(sorted(tickers))
     dataset_hash = hashlib.sha256(tickers_str.encode()).hexdigest()[:16]
 
-    # Generate complete report (Finding 7)
+    # Generate complete report
     report = EvaluationReport(
         strategy_name=strategy_name,
         dataset_hash=dataset_hash,
@@ -333,18 +394,21 @@ def evaluate_strategy_detailed(
         is_accepted=False,
         rejection_reason=None,
         holdout_metrics=holdout_report,
+        in_sample_metrics=in_sample_metrics,
         walk_forward_metrics=wf_reports,
         regime_drawdowns=regime_drawdowns,
         regime_passed=regime_passed,
         mc_sharpe_5th=mc_5th,
         mc_sharpe_50th=mc_50th,
         mc_sharpe_95th=mc_95th,
-        observed_sharpe=observed_sharpe,
+        observed_sharpe=in_sample_metrics.sharpe_ratio,
         effective_trials=effective_trials,
-        deflated_sharpe=dsr,
+        deflated_sharpe=selection_dsr,
+        holdout_deflated_sharpe=holdout_dsr,
+        holdout_net_returns=holdout_net_returns,
     )
 
-    # Delegate gate checks to unified gate.accept (Finding 7)
+    # Delegate standalone gate checks to backward-compat accept (hard constraints only)
     from autobacktest.gate import accept as gate_accept
 
     gate_accept(report, baseline=None, config=flat_config)
@@ -354,11 +418,11 @@ def evaluate_strategy_detailed(
             _code_hash = hash(_strategy_code)
             _config_hash = hash(json.dumps(flat_config, sort_keys=True, default=str))
             _ckey = hash((_code_hash, _config_hash))
-            _eval_cache[_ckey] = (deepcopy(report), holdout_net_returns.copy())
+            _eval_cache[_ckey] = (deepcopy(report), in_sample_net_returns.copy())
         except Exception:
             pass
 
-    return report, holdout_net_returns
+    return report, in_sample_net_returns
 
 
 def evaluate_strategy(

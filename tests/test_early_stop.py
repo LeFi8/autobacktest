@@ -41,6 +41,7 @@ def _make_canned_report(sharpe: float = 1.0) -> tuple[EvaluationReport, pd.Serie
         is_accepted=False,
         rejection_reason=None,
         holdout_metrics=window,
+        in_sample_metrics=window,
         walk_forward_metrics=[window],
         regime_drawdowns={},
         regime_passed=True,
