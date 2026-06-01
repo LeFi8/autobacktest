@@ -27,9 +27,7 @@ class StrategyConfig(BaseModel):
     require_dsr_non_degradation: bool = Field(
         True, description="If True (default), selection gate enforces DSR non-degradation"
     )
-    holdout_min_improvement: float = Field(
-        0.0, description="Tolerance for holdout DSR non-degradation in confirm gate"
-    )
+    holdout_min_improvement: float = Field(0.0, description="Tolerance for holdout DSR non-degradation in confirm gate")
     enable_holdout_confirmation: bool = Field(
         True,
         description="If True, select-passing candidates are confirmed on holdout before commit",

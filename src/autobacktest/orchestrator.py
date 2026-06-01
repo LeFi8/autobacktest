@@ -637,11 +637,11 @@ def run_optimization(
                                 holdout_returns=report_k.holdout_net_returns,
                             )
                             event["gate"] = {
-                        "stage": "confirm",
-                        "accepted": False,
-                        "reason": cnf.reason,
-                        "failed_gate": cnf.failed_gate,
-                    }
+                                "stage": "confirm",
+                                "accepted": False,
+                                "reason": cnf.reason,
+                                "failed_gate": cnf.failed_gate,
+                            }
                             event["commit"] = None
                             last_attempt = {
                                 "stage": "gate",
@@ -661,8 +661,7 @@ def run_optimization(
                                 exploit_stall += 1
                                 if exploit_stall >= EXPLOIT_PATIENCE:
                                     logger.info(
-                                        f"Exploit stall reached ({EXPLOIT_PATIENCE}), "
-                                        "switching to EXPLORE mode."
+                                        f"Exploit stall reached ({EXPLOIT_PATIENCE}), switching to EXPLORE mode."
                                     )
                                     mode = "explore"
                                     exploit_stall = 0
@@ -859,7 +858,8 @@ def _deflate_holdout(
 
     if hist_matrix.empty:
         report.holdout_deflated_sharpe = calculate_psr_dsr(
-            report.holdout_net_returns, effective_trials=1,
+            report.holdout_net_returns,
+            effective_trials=1,
         )
         return
 
@@ -870,7 +870,9 @@ def _deflate_holdout(
     sharpes = [*hist_sharpes, report.holdout_metrics.sharpe_ratio]
 
     report.holdout_deflated_sharpe = calculate_psr_dsr(
-        report.holdout_net_returns, sharpes, n,
+        report.holdout_net_returns,
+        sharpes,
+        n,
     )
 
 

@@ -79,10 +79,7 @@ def build_messages(context: AgentContext) -> list[dict[str, str]]:
                 fold_sharpes = [f.sharpe_ratio for f in rep.walk_forward_metrics]
                 min_s = min(fold_sharpes)
                 max_s = max(fold_sharpes)
-                folds_detail = (
-                    f"\n  Per-fold Sharpe:   {min_s:.4f} - {max_s:.4f} "
-                    f"(across {wf_count} windows)"
-                )
+                folds_detail = f"\n  Per-fold Sharpe:   {min_s:.4f} - {max_s:.4f} (across {wf_count} windows)"
             eval_report_str = (
                 f"In-Sample Walk-Forward Aggregate (selection basis):\n"
                 f"  Window:            {wf_span}\n"
