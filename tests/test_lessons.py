@@ -9,6 +9,7 @@ import git
 import pytest
 
 from autobacktest.gate import TargetMetric
+from autobacktest.lessons import LessonStore
 from autobacktest.llm.base import AgentContext, AgentEdit
 from autobacktest.llm.mock_provider import MockProvider
 from autobacktest.orchestrator import run_optimization
@@ -22,7 +23,7 @@ from tests.test_orchestrator_e2e import (
 
 
 def test_lessons_roundtrip_and_rollback(project_root_with_lessons: Path) -> None:
-    """Verify lessons.md is updated/committed or rolled back as expected."""
+    """Verify lessons are stored/accumulated in the DB regardless of git rollback."""
     synthetic_prices = _make_synthetic_prices()
     fake_instance = _make_fake_provider(synthetic_prices)
 
@@ -32,28 +33,27 @@ def test_lessons_roundtrip_and_rollback(project_root_with_lessons: Path) -> None
         config_yaml=IMPROVED_CONFIG,
         reasoning="Switch to HIGH asset.",
         raw_response="{}",
-        lessons_text="# Lessons\n\n- Switched to HIGH asset and succeeded.\n",
+        lessons_text=(
+            "### Switched to HIGH asset\n- **Type:** PERFORMANCE_INSIGHT\n- Switched to HIGH asset and succeeded.\n"
+        ),
     )
 
-    # 2nd iteration: Rejected edit (e.g. low Sharpe or invalid config/exception)
-    # We trigger validation exception by making the strategy code syntax-invalid
+    # 2nd iteration: Rejected edit (syntax-invalid triggers validation failure)
     bad_edit = AgentEdit(
         strategy_code="def generate_signals(): syntax error here",
         config_yaml=STRATEGY_CONFIG,
         reasoning="Bad edit.",
         raw_response="{}",
-        lessons_text="# Lessons\n\n- This should be rolled back and not persisted.\n",
+        lessons_text=("### Validation failure example\n- **Type:** BUG\n- This failed validation.\n"),
     )
 
     class ScriptedMockProvider(MockProvider):
         def generate_edit(self, context: AgentContext) -> AgentEdit:
             self.calls.append(context)
             if context.iteration == 1:
-                # Verify initial lessons were passed to LLM
                 assert "Baseline strategy loaded" in context.lessons_text
                 return improved_edit
             else:
-                # Verify updated lessons from iteration 1 were passed to LLM
                 assert "Switched to HIGH asset" in context.lessons_text
                 return bad_edit
 
@@ -80,17 +80,20 @@ def test_lessons_roundtrip_and_rollback(project_root_with_lessons: Path) -> None
     # Iteration 1 succeeded, Iteration 2 failed (syntax error triggers rollback)
     assert result.n_committed == 1
 
-    # Check that lessons.md on disk has Iteration 2 failure content
-    # preserved (cumulative learning)
-    lessons_path = project_root_with_lessons / "lessons.md"
-    lessons_content = lessons_path.read_text(encoding="utf-8")
-    assert "This should be rolled back and not persisted" in lessons_content
+    # Verify both lessons are stored in the DB (lessons persist regardless of rollback)
+    store = LessonStore(project_root_with_lessons / "runs" / "lessons.db")
+    all_lessons = store.all_lessons(strategy="toy")
+    bodies = [lesson["body"] for lesson in all_lessons]
 
-    # Verify lessons.md git commits: the committed HEAD does NOT have the bad edit
+    assert any("Switched to HIGH asset" in b for b in bodies)
+    assert any("This failed validation" in b for b in bodies)
+    store.close()
+
+    # Verify git rollback: the committed HEAD does NOT have the bad strategy code
     repo = git.Repo(project_root_with_lessons)
-    committed_lessons = repo.git.show(f"{result.branch}:lessons.md")
-    assert "Switched to HIGH asset and succeeded" in committed_lessons
-    assert "This should be rolled back" not in committed_lessons
+    committed_code = repo.git.show(f"{result.branch}:strategies/toy.py")
+    assert 'weights["HIGH"] = 1.0' in committed_code
+    assert "syntax error" not in committed_code
 
 
 @pytest.mark.parametrize("lessons_text", [None, "", "   \n"])
@@ -100,7 +103,6 @@ def test_orchestrator_preserves_lessons_when_update_missing_or_blank(
 ) -> None:
     synthetic_prices = _make_synthetic_prices()
     fake_instance = _make_fake_provider(synthetic_prices)
-    initial_lessons = (project_root_with_lessons / "lessons.md").read_text(encoding="utf-8")
 
     blank_edit = AgentEdit(
         strategy_code="import os\n",
@@ -129,4 +131,11 @@ def test_orchestrator_preserves_lessons_when_update_missing_or_blank(
             end_date="2025-01-01",
         )
 
-    assert (project_root_with_lessons / "lessons.md").read_text(encoding="utf-8") == initial_lessons
+    # Verify the originally migrated lessons are still intact
+    store = LessonStore(project_root_with_lessons / "runs" / "lessons.db")
+    all_lessons = store.all_lessons(strategy="toy")
+    bodies = [lesson["body"] for lesson in all_lessons]
+    assert any("Baseline strategy loaded" in b for b in bodies)
+    blank_body = "Invalid edit without a lessons update."
+    assert not any(blank_body in b for b in bodies)
+    store.close()

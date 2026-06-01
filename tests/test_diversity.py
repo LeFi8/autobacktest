@@ -362,18 +362,19 @@ class TestDiversityGateIntegration:
         # No accepted edit (diversity gate rejected it)
         assert result.n_committed == 0
 
-        # Event must contain the diversity rejection
+        # Event must contain the diversity rejection in candidates array
         events_path = project_root / "runs" / result.run_id / "events.jsonl"
         assert events_path.exists()
         events = [json.loads(ln) for ln in events_path.read_text().strip().split("\n") if ln]
         assert len(events) >= 1
         ev = events[0]
-        assert "diversity" in ev
-        assert ev["diversity"]["tier"] == "config"
-        assert ev["diversity"]["passed"] is False
+        assert "candidates" in ev
+        cand = ev["candidates"][0]
+        assert cand["passed"] is False
+        assert cand["stage"] == "diversity_config"
 
-        # No evaluation ran (Tier 1 gate fires before backtest)
-        assert ev["evaluation"] is None
+        # No winner (all rejected)
+        assert "winner" not in ev
 
     def test_orchestrator_rejects_tier2(self, project_root: Path) -> None:
         """Edit with returns nearly identical to baseline → Tier 2 rejects post-backtest."""
@@ -412,15 +413,16 @@ class TestDiversityGateIntegration:
         # No accepted edit (Tier 2 diversity gate rejected)
         assert result.n_committed == 0
 
-        # Event must contain the diversity rejection with tier = returns
+        # Event must contain the diversity rejection in candidates array
         events_path = project_root / "runs" / result.run_id / "events.jsonl"
         assert events_path.exists()
         events = [json.loads(ln) for ln in events_path.read_text().strip().split("\n") if ln]
         assert len(events) >= 1
         ev = events[0]
-        assert "diversity" in ev
-        assert ev["diversity"]["tier"] == "returns"
-        assert ev["diversity"]["passed"] is False
+        assert "candidates" in ev
+        cand = ev["candidates"][0]
+        assert cand["passed"] is False
+        assert cand["stage"] == "diversity_returns"
 
         # Verification that Tier 2 rejection was recorded in the ledger:
         # the failed attempt's config should be available for future diversity checks
@@ -477,14 +479,12 @@ class TestDiversityGateIntegration:
         # No commit — failed diversity
         assert result.n_committed == 0
 
-        # Event must record retries_exhausted = True (or equivalent consumed state)
+        # Event must record the diversity rejection in candidates array
         events_path = project_root / "runs" / result.run_id / "events.jsonl"
         events = [json.loads(ln) for ln in events_path.read_text().strip().split("\n") if ln]
         # Find the diversity-rejected event
-        diversity_events = [e for e in events if e.get("diversity", {}).get("tier") == "config"]
-        assert len(diversity_events) >= 1
-        assert diversity_events[0]["diversity"]["retries_exhausted"] is True
-        assert diversity_events[0]["diversity"]["passed"] is False
+        rejected = [e for e in events if any(c.get("stage") == "diversity_config" for c in e.get("candidates", []))]
+        assert len(rejected) >= 1
 
-        # Provider was called exactly 1 time
-        assert len(provider.calls) == 1
+        # Provider was called exactly 1 time (3 candidates generated in parallel)
+        assert len(provider.calls) == 3

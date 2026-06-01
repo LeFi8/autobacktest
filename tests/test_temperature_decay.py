@@ -77,7 +77,9 @@ params:
     return prog_file, strat_dir, conf_dir, tmp_path
 
 
-def test_adaptive_temperature_on_continuous_failures(mock_project: tuple[Path, Path, Path, Path]) -> None:
+def test_adaptive_temperature_on_continuous_failures(
+    mock_project: tuple[Path, Path, Path, Path],
+) -> None:
     """Verifies that in explore mode temperature scales continuously based on rolling failures."""
     prog_file, strat_dir, conf_dir, repo_root = mock_project
     provider = TemperatureTrackingProvider()
@@ -94,15 +96,15 @@ def test_adaptive_temperature_on_continuous_failures(mock_project: tuple[Path, P
         repo_path=repo_root,
     )
 
-    # In our implementation, config diversity retries were reduced to 0!
-    # So each iteration only calls the LLM once.
-    assert len(provider.recorded_temperatures) == 3
+    # 3 iterations x 3 candidates each = 9 LLM calls. All 3 calls in an
+    # iteration share the same temperature (set once per iteration).
+    assert len(provider.recorded_temperatures) == 9
 
     # k=1: rolling history is empty -> failure_rate = 0.6. Temp = 0.1 + 0.6 * 0.6 = 0.46
-    assert provider.recorded_temperatures[0] == pytest.approx(0.46)
+    assert all(t == pytest.approx(0.46) for t in provider.recorded_temperatures[0:3])
 
     # k=2: k=1 failed -> rolling history [False] -> failure_rate = 1.0. Temp = 0.7
-    assert provider.recorded_temperatures[1] == pytest.approx(0.7)
+    assert all(t == pytest.approx(0.7) for t in provider.recorded_temperatures[3:6])
 
     # k=3: k=1,2 failed -> rolling history [False, False] -> failure_rate = 1.0. Temp = 0.7
-    assert provider.recorded_temperatures[2] == pytest.approx(0.7)
+    assert all(t == pytest.approx(0.7) for t in provider.recorded_temperatures[6:9])

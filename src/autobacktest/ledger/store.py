@@ -433,6 +433,34 @@ class LedgerStore:
             )
         return results
 
+    def fetch_param_importance_data(
+        self,
+        dataset_hash: str,
+    ) -> tuple[list[str], list[float]]:
+        """Return config YAMLs and target metric values for all attempts.
+
+        Only includes attempts that have been evaluated (have a report_json).
+        Results are ordered chronologically by attempt id.
+
+        Args:
+            dataset_hash: Stable hash of the sorted universe tickers.
+
+        Returns:
+            Tuple of (config_yaml_strings, target_metric_values).
+        """
+        rows = self._conn.execute(
+            """
+            SELECT config_yaml, target_metric_value
+            FROM attempts
+            WHERE dataset_hash = ? AND report_json != ''
+            ORDER BY id ASC
+            """,
+            (dataset_hash,),
+        ).fetchall()
+        configs: list[str] = [str(row[0]) for row in rows]
+        metrics: list[float] = [float(row[1]) for row in rows]
+        return configs, metrics
+
     def latest_run_id(self) -> str | None:
         """Return the most recently started run id, if any runs exist."""
         row = self._conn.execute(

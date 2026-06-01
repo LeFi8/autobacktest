@@ -36,7 +36,7 @@ def project_root_with_lessons(tmp_path: Path) -> Path:
     (tmp_path / "program.md").write_text(PROGRAM_MD, encoding="utf-8")
 
     # Create lessons.md
-    initial_lessons = "# Lessons\n\n- Baseline strategy loaded.\n"
+    initial_lessons = "### Baseline strategy loaded\n- **Type:** STRUCTURAL\n- Baseline strategy loaded.\n"
     (tmp_path / "lessons.md").write_text(initial_lessons, encoding="utf-8")
 
     repo = git.Repo.init(tmp_path)

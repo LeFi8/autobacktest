@@ -11,6 +11,7 @@ import git
 import pandas as pd
 import pytest
 
+from autobacktest.config import settings
 from autobacktest.evaluator.report import EvaluationReport, WindowReport
 from autobacktest.gate import GateResult
 from autobacktest.llm.base import AgentContext, AgentEdit
@@ -158,6 +159,7 @@ def test_early_stop_fires_before_all_iterations(
             failed_gate="target_metric_improvement",
         ),
     )
+    monkeypatch.setattr(settings, "n_candidates", 1)
 
     total_iterations = EARLY_STOP_PATIENCE + 20  # well beyond patience
     provider = IterationCountingProvider()
@@ -220,6 +222,7 @@ def test_early_stop_counter_resets_on_acceptance(
         "autobacktest.orchestrator.confirm",
         lambda *_a, **_kw: GateResult(accepted=True),
     )
+    monkeypatch.setattr(settings, "n_candidates", 1)
 
     # Run with enough iterations that without reset the loop would have stopped
     # at EARLY_STOP_PATIENCE, but with reset it runs longer.

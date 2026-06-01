@@ -573,6 +573,7 @@ def test_orchestrator_lessons_persistence(tmp_path: Path) -> None:
 
     import git
 
+    from autobacktest.config import settings
     from autobacktest.gate import TargetMetric
     from autobacktest.llm.base import AgentEdit, LLMProvider
     from autobacktest.orchestrator import run_optimization
@@ -597,9 +598,12 @@ def test_orchestrator_lessons_persistence(tmp_path: Path) -> None:
     (cfg_dir / "toy.yaml").write_text(STRATEGY_CONFIG, encoding="utf-8")
     (tmp_path / "program.md").write_text(PROGRAM_MD, encoding="utf-8")
 
-    # Initial lessons.md file
+    # Initial lessons.md file (will be migrated to .db on first run)
     lessons_file = tmp_path / "lessons.md"
-    lessons_file.write_text("# Initial Lessons\n", encoding="utf-8")
+    lessons_file.write_text(
+        "### Initial Lessons\n- **Type:** STRUCTURAL\n- Initial lessons content.\n",
+        encoding="utf-8",
+    )
 
     repo = git.Repo.init(tmp_path)
     repo.config_writer().set_value("user", "name", "Test User").release()
@@ -625,7 +629,9 @@ def test_orchestrator_lessons_persistence(tmp_path: Path) -> None:
                     config_yaml=STRATEGY_CONFIG,
                     reasoning="Bad edit with os import.",
                     raw_response="{}",
-                    lessons_text="# Lessons: validation failed because of os import.",
+                    lessons_text=(
+                        "### Validation failed\n- **Type:** BUG\n- validation failed because of os import.\n"
+                    ),
                 )
             else:
                 return AgentEdit(
@@ -633,7 +639,7 @@ def test_orchestrator_lessons_persistence(tmp_path: Path) -> None:
                     config_yaml=STRATEGY_CONFIG,
                     reasoning="No changes reasoning.",
                     raw_response="{}",
-                    lessons_text="# Lessons: rejected because no improvement.",
+                    lessons_text=("### Rejected\n- **Type:** GATE_REJECTION\n- rejected because no improvement.\n"),
                 )
 
     provider = ScriptedLLMProvider()
@@ -659,15 +665,19 @@ def test_orchestrator_lessons_persistence(tmp_path: Path) -> None:
         )
 
     # Verify that:
-    # 1. At the start of Iteration 2, the context received updated lessons!
-    # Iteration 1 produces 1 call (validation failure — no diversity check reached).
-    # Iteration 2 produces 1 call (identical to the baseline -> rejected immediately, 0 retries).
-    assert len(called_contexts) == 2
-    assert called_contexts[0].lessons_text == "# Initial Lessons\n"
-    assert called_contexts[1].lessons_text == "# Lessons: validation failed because of os import."
+    # 1. At the start, the context received lessons from the DB (migrated from .md).
+    n_cand = settings.n_candidates
+    assert len(called_contexts) == 2 * n_cand  # n_cand calls per iteration x 2 iterations
+    assert "Initial Lessons" in called_contexts[0].lessons_text
+    # 2. At the start of Iteration 2, the context contains both the migrated lesson
+    #    AND the lesson from iteration 1, stored/retrieved from the DB.
+    iter2_start = n_cand  # first context of iteration 2
+    assert "initial lessons" in called_contexts[iter2_start].lessons_text.lower()
+    assert "validation failed" in called_contexts[iter2_start].lessons_text.lower()
 
-    # 2. After the run, the final lessons.md on disk is preserved and updated!
-    assert lessons_file.read_text(encoding="utf-8") == "# Lessons: rejected because no improvement."
+    # 3. lessons.md on disk is NOT updated by the orchestrator (DB replaces it).
+    assert "Initial Lessons" in lessons_file.read_text(encoding="utf-8")
+    assert "validation failed" not in lessons_file.read_text(encoding="utf-8")
 
 
 def test_cli_reset_safe_abort(tmp_path: Path) -> None:

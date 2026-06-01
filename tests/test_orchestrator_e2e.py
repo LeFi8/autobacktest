@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import git
 import numpy as np
@@ -281,9 +281,8 @@ def test_e2e_full_run_commits_improved_strategy(project_root: Path) -> None:
     assert len(branch_commits) >= 2, f"Expected ≥2 commits on {run_branch}, got {len(branch_commits)}"
 
     # --- MockProvider call count ---
-    # Iter 1: EXPLORE, 1 call, accepted → EXPLOIT
-    # Iters 2-3: EXPLOIT, 1 call each (no diversity gates)
-    expected_calls = 3
+    # 3 candidates per iteration x 3 iterations = 9 calls
+    expected_calls = 9
     assert len(mock_provider.calls) == expected_calls
 
 
@@ -333,15 +332,17 @@ def test_e2e_validation_failure_continues(project_root: Path) -> None:
     lines = [ln for ln in raw.split("\n") if ln]
     assert len(lines) == 2, f"Expected 2 events, got {len(lines)}"
 
-    # Each event must record validation failure
+    # Each event must record validation failure in candidates array
     for line in lines:
         event = json.loads(line)
-        assert "validation" in event, f"Missing 'validation' key in event: {event}"
-        assert event["validation"] is not None, "validation should not be None"
-        assert event["validation"]["passed"] is False, f"Expected validation.passed=False, got: {event['validation']}"
+        assert "candidates" in event, f"Missing 'candidates' key in event: {event}"
+        assert len(event["candidates"]) == 3, f"Expected 3 candidates per event, got {len(event['candidates'])}"
+        for c in event["candidates"]:
+            assert c["passed"] is False, f"Expected candidate passed=False, got: {c}"
+            assert c["stage"] == "validation", f"Expected stage='validation', got: {c}"
 
-    # MockProvider was still called 2 times (edit was generated before validation)
-    assert len(mock_provider.calls) == 2
+    # 3 candidates per iteration x 2 iterations = 6 calls
+    assert len(mock_provider.calls) == 6
 
 
 def test_orchestrator_fail_fast_on_non_retryable_error(project_root: Path) -> None:
@@ -368,8 +369,7 @@ def test_orchestrator_fail_fast_on_non_retryable_error(project_root: Path) -> No
     assert "Non-retryable config error" in str(exc_info.value)
 
 
-@patch("autobacktest.orchestrator.sleep")
-def test_orchestrator_continues_on_retryable_error(_mock_sleep: MagicMock, project_root: Path) -> None:
+def test_orchestrator_continues_on_retryable_error(project_root: Path) -> None:
     """When a retryable LLMError is raised, the orchestrator logs and continues."""
     from autobacktest.llm.base import LLMError
     from autobacktest.llm.mock_provider import MockProvider
@@ -395,9 +395,14 @@ def test_orchestrator_continues_on_retryable_error(_mock_sleep: MagicMock, proje
     assert "Zero successful LLM calls" in str(exc_info.value)
 
 
-@patch("autobacktest.orchestrator.sleep")
-def test_orchestrator_retries_transient_error_with_backoff(mock_sleep: MagicMock, project_root: Path) -> None:
-    """When a retryable LLMError is raised, the orchestrator retries and sleeps with backoff."""
+def test_orchestrator_transient_errors_become_none_candidates(
+    project_root: Path,
+) -> None:
+    """When a retryable LLMError is raised, the candidate is skipped (no retry).
+
+    With 3 candidates per iteration and only 1 succeeding (identical to baseline),
+    the config diversity gate rejects it. No crash, no commit.
+    """
     from autobacktest.llm.base import LLMError
     from autobacktest.llm.mock_provider import MockProvider
 
@@ -418,9 +423,7 @@ def test_orchestrator_retries_transient_error_with_backoff(mock_sleep: MagicMock
 
     provider = FlakyProvider()
 
-    # We expect 1 iteration.
-    # On the first iteration, call 1 fails (transient retry 1), call 2 fails (transient retry 2), call 3 succeeds.
-    run_optimization(
+    result = run_optimization(
         program_path=project_root / "program.md",
         strategy_name="toy",
         iterations=1,
@@ -433,15 +436,10 @@ def test_orchestrator_retries_transient_error_with_backoff(mock_sleep: MagicMock
         end_date="2025-01-01",
     )
 
-    # Calls 1-2: transient LLMError → retried with backoff.
-    # Call 3: succeeds, returns STRATEGY_CONFIG (identical to baseline).
-    # Diversity gate fires: STRATEGY_CONFIG == baseline → rejected immediately (0 retries).
-    # Total calls should be exactly 3.
+    # 3 parallel calls: first 2 transient, 3rd succeeds.
+    # Successful edit is identical to baseline → config diversity rejects it.
     assert call_count == 3
-    # time.sleep called twice with exponential backoff: 2.0 ** 1 = 2.0s, and 2.0 ** 2 = 4.0s
-    assert mock_sleep.call_count == 2
-    mock_sleep.assert_any_call(2.0)
-    mock_sleep.assert_any_call(4.0)
+    assert result.n_committed == 0
 
 
 def test_exploit_mode_skips_diversity_gates(project_root: Path) -> None:
@@ -495,14 +493,11 @@ def test_exploit_mode_skips_diversity_gates(project_root: Path) -> None:
     # Iter 1 is in EXPLORE mode → diversity gates called
     # Iters 2-3 are in EXPLOIT mode → diversity gates NOT called
     assert result.n_committed >= 1
-    from autobacktest.orchestrator import MAX_DIVERSITY_RETRIES
 
-    # Diversity config gate called only for iter 1 (EXPLORE)
-    # After acceptance, mode=EXPLOIT, no diversity calls
-    assert len(diversity_config_calls) <= 1 + MAX_DIVERSITY_RETRIES  # iter 1 only
-    # In iters 2-3 (EXPLOIT), diversity gates not called
-    # Total calls should be from iter 1 only
-    assert len(diversity_returns_calls) <= 1
+    # Diversity config gate called only for iter 1 (EXPLORE), once per candidate
+    assert len(diversity_config_calls) <= 3  # 3 candidates x 1 iteration
+    # Diversity returns gate called only for iter 1 (EXPLORE), once per candidate
+    assert len(diversity_returns_calls) <= 3  # 3 candidates x 1 iteration
 
 
 def test_mode_logged_in_events(project_root: Path) -> None:
