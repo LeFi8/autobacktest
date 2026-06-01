@@ -475,9 +475,11 @@ def test_exploit_mode_skips_diversity_gates(project_root: Path) -> None:
         diversity_returns_calls.append(1)
         return original_check_returns(*args, **kwargs)  # type: ignore[arg-type]
 
-    with patch("autobacktest.orchestrator.max_config_similarity", side_effect=tracking_max_config_sim), \
-         patch("autobacktest.orchestrator.check_returns_correlation", side_effect=tracking_check_returns), \
-         patch("autobacktest.evaluator.evaluate.CachedDataProvider", return_value=fake_instance):
+    with (
+        patch("autobacktest.orchestrator.max_config_similarity", side_effect=tracking_max_config_sim),
+        patch("autobacktest.orchestrator.check_returns_correlation", side_effect=tracking_check_returns),
+        patch("autobacktest.evaluator.evaluate.CachedDataProvider", return_value=fake_instance),
+    ):
         result = run_optimization(
             program_path=project_root / "program.md",
             strategy_name="toy",

@@ -23,9 +23,7 @@ class StrategyConfig(BaseModel):
     max_drawdown_limit: float = Field(0.20, ge=0.0, le=1.0, description="Max permitted drawdown in holdout")
     turnover_limit: float = Field(2.0, gt=0.0, description="Max permitted annualized turnover rate")
     params: dict[str, Any] = Field(default_factory=dict, description="Strategy-specific parameters")
-    require_dsr_non_degradation: bool = Field(
-        False, description="If True, require DSR does not degrade vs incumbent"
-    )
+    require_dsr_non_degradation: bool = Field(False, description="If True, require DSR does not degrade vs incumbent")
     dsr_floor: float | None = Field(
         None, description="Optional absolute DSR floor (unused by gate currently, reserved)"
     )

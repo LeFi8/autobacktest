@@ -331,9 +331,7 @@ def run_optimization(
                         if mode == "exploit":
                             exploit_stall += 1
                             if exploit_stall >= EXPLOIT_PATIENCE:
-                                logger.info(
-                                    f"Exploit stall reached ({EXPLOIT_PATIENCE}), switching to EXPLORE mode."
-                                )
+                                logger.info(f"Exploit stall reached ({EXPLOIT_PATIENCE}), switching to EXPLORE mode.")
                                 mode = "explore"
                                 exploit_stall = 0
                         continue
@@ -375,9 +373,7 @@ def run_optimization(
                         if mode == "exploit":
                             exploit_stall += 1
                             if exploit_stall >= EXPLOIT_PATIENCE:
-                                logger.info(
-                                    f"Exploit stall reached ({EXPLOIT_PATIENCE}), switching to EXPLORE mode."
-                                )
+                                logger.info(f"Exploit stall reached ({EXPLOIT_PATIENCE}), switching to EXPLORE mode.")
                                 mode = "explore"
                                 exploit_stall = 0
                         continue
@@ -480,9 +476,7 @@ def run_optimization(
                         if mode == "exploit":
                             exploit_stall += 1
                             if exploit_stall >= EXPLOIT_PATIENCE:
-                                logger.info(
-                                    f"Exploit stall reached ({EXPLOIT_PATIENCE}), switching to EXPLORE mode."
-                                )
+                                logger.info(f"Exploit stall reached ({EXPLOIT_PATIENCE}), switching to EXPLORE mode.")
                                 mode = "explore"
                                 exploit_stall = 0
                         continue
@@ -637,9 +631,7 @@ def run_optimization(
                         if mode == "exploit":
                             exploit_stall += 1
                             if exploit_stall >= EXPLOIT_PATIENCE:
-                                logger.info(
-                                    f"Exploit stall reached ({EXPLOIT_PATIENCE}), switching to EXPLORE mode."
-                                )
+                                logger.info(f"Exploit stall reached ({EXPLOIT_PATIENCE}), switching to EXPLORE mode.")
                                 mode = "explore"
                                 exploit_stall = 0
 
