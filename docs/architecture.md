@@ -81,6 +81,7 @@ Provides user subcommands utilizing `typer` and formats leaderboard responses vi
 - `report`: Displays runs leaderboard from SQLite tracking ledger.
 - `reset`: Reverts strategy codes to baseline states and purges run logs.
 - `evaluate`: Evaluates a standalone strategy directly without the optimization loop.
+- `init-strategy`: Interactive wizard that scaffolds a new strategy. Prompts for universe, benchmark, risk limits, and custom parameters, validates via `StrategyConfig`, and generates `configs/{name}.yaml` and `strategies/{name}.py` boilerplate.
 
 ### 2. Data Provider (`data/`)
 Provides historical close price histories with Parquet caching.
