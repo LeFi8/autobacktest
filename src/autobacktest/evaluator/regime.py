@@ -50,7 +50,7 @@ def _check_regime_exposure(
     transitions = np.diff(low_exposure, prepend=0)
     run_starts = np.where(transitions == 1)[0]
     run_ends = np.where(transitions == -1)[0]
-    if len(run_starts) > 0 and len(run_ends) > 0:
+    if len(run_starts) > 0:
         # Handle case where the series ends in a low-exposure state
         if len(run_ends) < len(run_starts):
             run_ends = np.append(run_ends, len(low_exposure))

@@ -26,8 +26,7 @@ def _momentum_13612u(prices: pd.Series, current_date: pd.Timestamp) -> float:
         try:
             idx = prices.index.get_loc(current_date)
             if idx >= lb:
-                start = prices.index[idx - lb]
-                r = (prices.loc[current_date] / prices.loc[start]) - 1.0
+                r = (prices.iloc[idx] / prices.iloc[idx - lb]) - 1.0
                 returns.append(r)
         except (KeyError, IndexError):
             continue
@@ -90,13 +89,13 @@ def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFra
 
             # Best defensive asset (for substitution)
             def_mom_vals = [(d, mom_scores.get(d, -1.0)) for d in defensive_assets if d in all_assets]
-            best_def = max(def_mom_vals, key=lambda x: x[1])[0] if def_mom_vals else defensive_assets[0]
+            best_def = max(def_mom_vals, key=lambda x: x[1])[0] if def_mom_vals else None
 
             slot_weight = 1.0 / 4.0
             for asset, mom in top_4:
                 if mom > 0:
                     weights.loc[date, asset] = slot_weight
-                else:
+                elif best_def is not None:
                     weights.loc[date, best_def] = weights.loc[date, best_def] + slot_weight
 
     return weights
