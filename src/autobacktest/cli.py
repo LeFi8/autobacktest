@@ -701,7 +701,14 @@ def init_strategy(
             typer.echo("Error: Please enter a valid decimal number.")
 
     # Momentum lookback
-    momentum_lookback = int(typer.prompt("Momentum score lookback window (months)", default="12"))
+    while True:
+        try:
+            momentum_lookback = int(typer.prompt("Momentum score lookback window (months)", default="12"))
+            if momentum_lookback >= 1:
+                break
+            typer.echo("Error: Momentum lookback must be at least 1.")
+        except ValueError:
+            typer.echo("Error: Please enter a valid integer.")
 
     # Custom params — dynamic reserved key check
     reserved_keys = set(StrategyConfig.model_fields.keys()) - {"params"}
@@ -726,9 +733,12 @@ def init_strategy(
                 param_val = False
             else:
                 try:
-                    param_val = float(param_val_raw) if "." in param_val_raw else int(param_val_raw)
+                    param_val = int(param_val_raw)
                 except ValueError:
-                    param_val = param_val_raw
+                    try:
+                        param_val = float(param_val_raw)
+                    except ValueError:
+                        param_val = param_val_raw
 
             custom_params[param_key] = param_val
 
