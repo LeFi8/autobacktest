@@ -118,6 +118,13 @@ Runs walk-forward and holdout evaluation on a single strategy file standalone.
 - `--strategy` / `-s`: Path to the target strategy file (e.g. `strategies/haa.py`).
 - `--start-date` / `--end-date`: Configure custom historical backtest backdrops.
 
+### `init-strategy`
+Interactively scaffolds a new backtesting strategy with validated configuration and boilerplate signal code.
+- `--name` / `-n`: Strategy name in `snake_case`. Omit for interactive prompt.
+- `--overwrite`: Overwrite existing strategy/config files without prompting.
+- Guides the user through prompts for universe tickers, benchmark, drawdown/turnover limits, lookback window, and optional custom parameters with dynamic type inference.
+- Runs full Pydantic validation via `StrategyConfig` before writing files.
+
 ---
 
 ## 📊 Institutional Reports & Visual Summaries
