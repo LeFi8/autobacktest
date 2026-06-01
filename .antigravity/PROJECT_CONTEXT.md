@@ -56,10 +56,25 @@ autobacktest/
 │       │   ├── litellm_provider.py     # LiteLLM structured output provider
 │       │   ├── mock_provider.py        # Mock provider for offline testing
 │       │   └── prompts.py              # Prompts and structured schema definitions
+│       ├── lessons/                    # Structured lesson memory (SQLite)
+│       │   ├── __init__.py
+│       │   └── store.py                # LessonStore: dedup, import/export
+│       ├── llm/                        # LLM driver wrapper for strategy mutation
+│       │   ├── __init__.py
+│       │   ├── base.py                 # Abstract base classes and schemas
+│       │   ├── litellm_provider.py     # LiteLLM structured output provider
+│       │   ├── mock_provider.py        # Mock provider for offline testing
+│       │   └── prompts.py              # Prompts and structured schema definitions
+│       ├── reports/                    # Report generation utilities
+│       │   ├── __init__.py
+│       │   └── generator.py            # Equity plots, failure summaries, strategy reports
 │       └── strategy/                   # Schemas and strategy parsing utilities
 │           ├── __init__.py
 │           ├── config_schema.py        # Pydantic v2 strategy parameter schema
 │           ├── contract.py             # Strategy function signature contract
+│           ├── diversity.py            # Config fingerprint + returns correlation
+│           ├── normalization.py        # Code normalization for eval cache keys
+│           ├── parameter_importance.py # Spearman rank correlation tracking
 │           └── validator.py            # Static AST check and pre-flight validation
 ├── strategies/                         # Quant strategy Python source files
 │   └── haa.py                          # Historical Asset Allocation strategy signals

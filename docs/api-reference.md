@@ -145,27 +145,44 @@ def run_block_bootstrap(
 ```
 
 ### `evaluate_strategy`
-Primary coordinator running full training walk-forward windows and Out-of-Sample holdout checks.
+Primary coordinator running full training walk-forward windows and Out-of-Sample holdout checks. Thin wrapper around `evaluate_strategy_detailed` that returns only the report.
 ```python
 def evaluate_strategy(
     strategy_name: str,
     generate_signals_fn: Any,
-    config: dict[str, Any],
-    start_date: str = "2015-01-01",
-    end_date: str = "2026-01-01",
+    config: dict[str, Any] | StrategyConfig,
+    start_date: str = settings.default_start_date,
+    end_date: str = settings.default_end_date,
+    **kwargs: Any,
 ) -> EvaluationReport:
+```
+
+### `evaluate_strategy_detailed`
+Full evaluation returning both the report and the in-sample returns Series for DSR/deflation.
+```python
+def evaluate_strategy_detailed(
+    strategy_name: str,
+    generate_signals_fn: Any,
+    config: dict[str, Any] | StrategyConfig,
+    start_date: str = settings.default_start_date,
+    end_date: str = settings.default_end_date,
+    *,
+    _prices: pd.DataFrame | None = None,
+    _bench_returns: pd.Series | None = None,
+    _eval_cache: dict[int, tuple[EvaluationReport, pd.Series]] | None = None,
+    _strategy_code: str | None = None,
+) -> tuple[EvaluationReport, pd.Series[Any]]:
     """Run full deterministic walk-forward & holdout evaluation lifecycle.
 
-    Args:
-        strategy_name: Identifier name of the strategy.
-        generate_signals_fn: Dynamic weight generation method.
-        config: Loaded strategy configuration dict.
-        start_date: Backtesting starting boundary.
-        end_date: Backtesting ending boundary.
+    Returns a tuple of (EvaluationReport, in_sample_net_returns Series).
+    The report carries ``holdout_net_returns`` for the holdout confirmation
+    gate; the second element is the in-sample basis used for the selection
+    DSR and diversity correlation checks.
 
-    Returns:
-        EvaluationReport: Structured dataclass enclosing all backtest, bootstrap,
-                          regime, DSR metrics, and gate checklist decisions.
+    Parameters prefixed with ``_`` are internal optimisations:
+    * ``_prices`` / ``_bench_returns`` — pre-fetched data to avoid redundant API calls.
+    * ``_eval_cache`` — memoization dict skipping re-evaluation of identical edits.
+    * ``_strategy_code`` — source text required for the eval cache key.
     """
 ```
 
@@ -267,8 +284,59 @@ def check_returns_correlation(
 
 ## 4. Gating Check & Metric Optimization (`autobacktest.gate`)
 
-### `accept`
-Evaluates target metrics and constraints against standard lexicographic criteria gates.
+The gate system is split into two phases to prevent holdout overfitting:
+
+### `select`
+In-sample selection gate — evaluated on **every** candidate. The holdout is never consulted.
+```python
+def select(
+    report: EvaluationReport,
+    baseline: EvaluationReport | None,
+    target_metric: TargetMetric = TargetMetric.SHARPE,
+    dd_limit: float | None = None,
+    turnover_limit: float | None = None,
+    min_improvement: float | None = None,
+    require_dsr_non_degradation: bool | None = None,
+    config: Any = None,
+) -> GateResult:
+    """In-sample selection gate.
+
+    Hard constraints (in-sample walk-forward aggregate):
+    1. Max drawdown <= dd_limit (resolved from config or default 0.20)
+    2. Regime stress tests: regime_passed is True
+    3. Turnover <= turnover_limit (resolved from config or default 2.0)
+
+    If all pass, tie-breaker (when baseline is present):
+    4. Target metric improvement: candidate > baseline + min_improvement
+    5. DSR non-degradation: candidate's in-sample DSR does not degrade below baseline's
+       (configurable via require_dsr_non_degradation, always-on by default)
+    """
+```
+
+### `confirm`
+Holdout confirmation gate — only reached when `select` passes. Each call consumes one holdout peek.
+```python
+def confirm(
+    report: EvaluationReport,
+    baseline: EvaluationReport | None,
+    dd_limit: float | None = None,
+    turnover_limit: float | None = None,
+    holdout_min_improvement: float | None = None,
+    config: Any = None,
+) -> GateResult:
+    """Holdout confirmation gate.
+
+    Hard constraints on holdout_metrics:
+    1. Max drawdown <= dd_limit
+    2. Turnover <= turnover_limit
+
+    Confirmation (when baseline is present):
+    3. Holdout DSR non-degradation with holdout_min_improvement tolerance
+    """
+```
+
+### `accept` (backward-compatible wrapper)
+Composes `select` + `confirm` as a single call for the standalone evaluation path.
 ```python
 def accept(
     report: EvaluationReport,
@@ -277,33 +345,11 @@ def accept(
     dd_limit: float | None = None,
     turnover_limit: float | None = None,
     min_improvement: float | None = None,
+    require_dsr_non_degradation: bool | None = None,
     config: Any = None,
 ) -> GateResult:
-    """Evaluate candidate EvaluationReport against lexicographic gates.
-
-    Hard constraints checked in sequence:
-    1. Drawdown: holdout_metrics.max_drawdown <= dd_limit
-    2. Regime tests: regime_passed is True
-    3. Turnover: holdout_metrics.turnover <= turnover_limit
-
-    If all pass, tie-breaker check:
-    4. Target metric improvement over baseline by at least epsilon margin
-       (if baseline is present)
-
-    Note: Deflated Sharpe Ratio (DSR) is computed and stored on the report for
-    overfitting insight but is NOT an active hard gate.
-
-    Args:
-        report: Candidate strategy EvaluationReport.
-        baseline: Optional baseline comparison EvaluationReport.
-        target_metric: Target metric to compare improvement.
-        dd_limit: Maximum allowed holdout drawdown.
-        turnover_limit: Maximum allowed holdout turnover rate.
-        min_improvement: Epsilon required improvement margin.
-        config: Optional configuration model or dict to resolve default gates limits.
-
-    Returns:
-        GateResult: Selection outcome specifying acceptance status and failure reasons.
+    """Backward-compatible wrapper: composes select + confirm.
+    The require_dsr_non_degradation parameter is propagated to select.
     """
 ```
 
@@ -313,13 +359,83 @@ def accept(
 
 ### `LedgerStore`
 SQLite relational database interface manager.
-- `create_run(run_id: str, strategy_name: str, ...)`: Commits structured metadata for a new optimization session.
-- `record_attempt(run_id: str, iteration: int, ...)`: Records attempt parameter values, performance metrics, gating decisions, and out-of-sample daily returns.
-- `fetch_historical_returns(dataset_hash: str) -> tuple[pd.DataFrame, list[float]]`: Retrieves all historical return series and Sharpe ratios matching active dataset universe for DSR effective trials calculation.
+- `create_run(run_id, strategy_name, ...)`: Commits structured metadata for a new optimization session.
+- `record_attempt(run_id, iteration, ...)`: Records attempt parameter values, performance metrics, gating decisions, and out-of-sample daily returns.
+- `fetch_historical_returns(dataset_hash) -> tuple[pd.DataFrame, list[float]]`: Retrieves all historical return series and Sharpe ratios matching active dataset universe for DSR effective trials calculation.
+- `fetch_configs(dataset_hash) -> list[str]`: Retrieves historical YAML config strings for config diversity checks.
+- `fetch_attempt_summaries(dataset_hash) -> list[dict]`: Builds summarized attempt history for LLM context.
+- `fetch_holdout_history(dataset_hash) -> tuple[pd.DataFrame, list[float]]`: Retrieves holdout return streams for DSR deflation (peek count tracking).
+- `fetch_param_importance_data(dataset_hash)`: Returns configs and metrics for Spearman rank correlation analysis.
 
 ---
 
-## 6. Optimization Orchestrator (`autobacktest.orchestrator`)
+## 6. LLM Provider Layer (`autobacktest.llm`)
+
+### `LLMProvider` (Abstract Base Class)
+Contract for LLM drivers that consume context and produce structured edits.
+```python
+class LLMProvider(ABC):
+    temperature: float
+
+    @abstractmethod
+    def generate_edit(self, context: AgentContext) -> AgentEdit:
+        """Consume context and generate strategy modifications.
+
+        Raises:
+            LLMError: If LLM service, parser, or network fails.
+        """
+
+    @property
+    @abstractmethod
+    def provider_name(self) -> str:
+        """Return the unique string identification of the provider."""
+```
+
+### `AgentContext`
+Immutable input dataclass provided to the LLM agent for strategy generation.
+```python
+@dataclass(frozen=True)
+class AgentContext:
+    strategy_name: str
+    strategy_code: str
+    config_yaml: str
+    program_text: str
+    evaluation_report: EvaluationReport | None
+    iteration: int
+    lessons_text: str = ""
+    n_historical_configs: int = 0
+    last_attempt: dict[str, Any] | None = None
+    attempt_history: list[dict[str, Any]] | None = None
+    mode: str = "explore"  # "explore" | "exploit"
+```
+
+### `AgentEdit`
+Immutable structured edit returned by the LLM driver.
+```python
+@dataclass(frozen=True)
+class AgentEdit:
+    strategy_code: str
+    config_yaml: str
+    reasoning: str
+    raw_response: str
+    lessons_text: str | None = None
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    cost: float = 0.0
+```
+
+### `LLMError`
+Domain exception raised when an LLM provider fails.
+```python
+class LLMError(Exception):
+    def __init__(self, provider: str, model: str, detail: str,
+                 retryable: bool = True, finish_reason: str | None = None):
+```
+
+---
+
+## 7. Optimization Orchestrator (`autobacktest.orchestrator`)
 
 ### `run_optimization`
 Fires and coordinates the iterative quantitative strategy optimization process.
@@ -331,23 +447,21 @@ def run_optimization(
     provider: LLMProvider,
     run_dir: Path,
     *,
-    strategies_dir: Path = Path("strategies"),
-    configs_dir: Path = Path("configs"),
+    strategies_dir: Path = settings.strategies_dir,
+    configs_dir: Path = settings.configs_dir,
     target_metric: TargetMetric = TargetMetric.SHARPE,
     repo_path: Path = Path(),
-    start_date: str = "2015-01-01",
-    end_date: str = "2026-01-01",
+    start_date: str = settings.default_start_date,
+    end_date: str = settings.default_end_date,
+    holdout_peek_limit: int = 20,
+    early_stop_patience: int = 10,
+    resume: str | None = None,
 ) -> OrchestratorResult:
     """Run the LLM-driven strategy optimization loop.
 
-    Coordinates:
-    1. Parsing target program.md guidelines.
-    2. Evaluating the candidate baseline strategy as iteration 0.
-    3. Generating structured code/config edits via LLM mutations.
-    4. Executing static code analysis, dynamic signature, and lookahead preflight checks.
-    5. Evaluates walk-forward window and holdout returns.
-    6. Adjusts Sharpe ratio for multiple testing bias (DSR).
-    7. Runs lexicographic gates and handles commits/rollbacks automatically.
+    Generates 3 parallel LLM candidate edits per iteration, validates via
+    preflight checks, diversity gates (config similarity + returns correlation),
+    two-phase gate system (select + confirm), and commits winners to git.
 
     Args:
         program_path: Path to the markdown program objective file.
@@ -361,6 +475,9 @@ def run_optimization(
         repo_path: Root repository path for Git workspace operations.
         start_date: Starting date boundary for evaluation.
         end_date: Ending date boundary for evaluation.
+        holdout_peek_limit: Maximum holdout peeks before early termination.
+        early_stop_patience: Consecutive rejections before early stopping.
+        resume: Run ID to resume a previously interrupted optimization.
 
     Returns:
         OrchestratorResult: Summary of the final optimization run outcomes.
@@ -369,7 +486,7 @@ def run_optimization(
 
 ---
 
-## 7. Centralized Configuration Module (`autobacktest.config`)
+## 8. Centralized Configuration Module (`autobacktest.config`)
 
 ### `Settings`
 Manages system configuration settings loaded from environment variables with safe fallbacks and Pydantic validation.
@@ -387,16 +504,66 @@ Manages system configuration settings loaded from environment variables with saf
 - `strategies_dir`: Strategies folder path.
 - `configs_dir`: Configuration templates folder path.
 - `ledger_db_name`: Relational ledger storage filename.
+- `n_candidates`: Number of parallel LLM candidates per iteration (default: `3`).
+- `importance_min_attempts`: Minimum attempts required for parameter importance computation (default: `6`).
+- `importance_p_threshold`: P-value threshold for significance in parameter importance (default: `0.20`).
 - `max_file_size_kb`: Maximum allowed candidate code file length (default: `100`).
 - `max_cyclomatic_complexity`: Maximum cyclomatic complexity allowed for functions (default: `15`).
 - `max_function_lines`: Maximum physical lines allowed for functions (default: `100`).
 - `safe_imports_whitelist`: Comma-separated allowed module imports.
 - `sandbox_timeout`: Strategy signal execution limit integer (default: `15`).
 - `db_timeout`: Database block lock timeout limit (default: `15.0`).
+- `parsed_safe_imports` (property): Resolved set of whitelisted import names.
+- `ledger_db_path` (property): Resolved full Path to `ledger.db`.
+- `lessons_db_path` (property): Resolved full Path to `lessons.db`.
 
 ---
 
-## 8. Reporting Module (`autobacktest.reports`)
+## 9. Strategy Normalization (`autobacktest.strategy.normalization`)
+
+### `normalize_python_code`
+Normalizes Python source code by stripping comments and docstrings, producing a stable hash key for the eval cache.
+```python
+def normalize_python_code(code: str) -> str:
+    """Remove comments, docstrings, and standardize whitespace."""
+```
+
+---
+
+## 10. Parameter Importance Tracking (`autobacktest.strategy.parameter_importance`)
+
+### `compute_parameter_importance`
+Computes Spearman rank correlation between numeric config parameters and the target metric across all attempts.
+```python
+def compute_parameter_importance(
+    flat_configs: list[dict[str, Any]],
+    metrics: list[float],
+    min_attempts: int = 6,
+    p_threshold: float = 0.20,
+) -> dict[str, dict[str, float]]:
+    """Returns dict mapping parameter names to {spearman_r, p_value} for significant correlations."""
+```
+
+### `format_importance_lessons`
+Formats significant parameter correlations into lesson text for LLM consumption.
+```python
+def format_importance_lessons(importance: dict[str, dict[str, float]]) -> str:
+```
+
+---
+
+## 11. Lessons Memory Store (`autobacktest.lessons`)
+
+### `LessonStore`
+SQLite-backed deduplicated lesson store with per-strategy filtering. Replaces the flat `lessons.md` file.
+- `migrate_from_file(lessons_md_path: Path, strategy: str) -> int`: Imports entries from legacy `lessons.md` into the database.
+- `ingest_markdown(markdown_text: str, strategy: str)`: Parses markdown lessons and inserts deduplicated entries.
+- `get_filtered_markdown(strategy: str) -> str`: Renders stored lessons as markdown for LLM context.
+- `close()`: Closes the database connection.
+
+---
+
+## 12. Reporting Module (`autobacktest.reports`)
 
 ### `plot_equity_curves`
 Generates a Matplotlib cumulative returns comparison chart.

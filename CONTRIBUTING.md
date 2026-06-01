@@ -14,11 +14,6 @@ This project uses `uv` for Python virtual environment and dependency management.
    uv sync
    ```
 
-3. **Install pre-commit hooks**:
-   ```bash
-   uv run pre-commit install
-   ```
-
 ## Development Guidelines
 
 - **Strict Type Checking**: We use `mypy` with `--strict` verification. All source code in `src/` must pass strictly.

@@ -1,4 +1,19 @@
-"""Central configuration management for AutoBacktest."""
+"""Central configuration management for AutoBacktest.
+
+Loads environment variables from ``.env`` via ``python-dotenv`` and provides
+a global ``settings`` singleton of type ``Settings``.  ``Settings`` is a
+Pydantic ``BaseModel`` whose fields resolve lazily through ``default_factory``
+closures, allowing environment variables to be set at any point before the
+first field access.
+
+Key responsibilities:
+- LLM provider/model/temperature configuration
+- Backtesting date windows and holdout length
+- System directory paths (run dir, cache, strategies, configs)
+- Optimisation loop parameters (n_candidates, importance thresholds)
+- Safety gate limits (file size, cyclomatic complexity, import whitelist)
+- SQLite database timeout configuration
+"""
 
 import os
 from pathlib import Path

@@ -12,13 +12,15 @@ uv run mypy src/                 # typecheck (--strict)
 uv run autobacktest run --program program.md --strategy haa --iterations 5
 uv run autobacktest report       # leaderboard
 uv run autobacktest evaluate --strategy strategies/haa.py
+uv run autobacktest llm-test "Add momentum filter" --strategy haa   # test LLM edit
+uv run autobacktest init-strategy --name my_strategy                # scaffold new strategy
 ```
 
 No `.pre-commit-config.yaml` exists — skip `pre-commit install`.
 
 ## Architecture
 
-- **Entrypoint**: `src/autobacktest/cli.py` → `autobacktest.cli:app` (typer). 5 subcommands: `run`, `report`, `reset`, `evaluate`, `llm-test`.
+- **Entrypoint**: `src/autobacktest/cli.py` → `autobacktest.cli:app` (typer). 6 subcommands: `run`, `report`, `reset`, `evaluate`, `llm-test`, `init-strategy`.
 - **Strategy files**: `strategies/<name>.py` + `configs/<name>.yaml` — matched by stem. Strategy exports `generate_signals(prices: pd.DataFrame, config: dict) -> pd.DataFrame`.
 - **Allowed imports** in strategy code: pandas, numpy, math, typing, scipy, dataclasses, collections, itertools, functools, decimal, statistics, numbers, json only. Blocked by AST whitelist.
 - **Optimization loop** (`orchestrator.py`): LLM edits code → preflight validation (6 checks in sandboxed subprocess) → config diversity gate → evaluation (walk-forward + holdout) → returns diversity gate → lexicographic gate → git commit or rollback.
