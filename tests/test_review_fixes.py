@@ -403,8 +403,8 @@ def test_db_schema_migration_and_custom_sorting(tmp_path: Path) -> None:
             config_yaml TEXT NOT NULL,
             observed_sharpe REAL NOT NULL,
             deflated_sharpe REAL NOT NULL,
-            holdout_max_drawdown REAL NOT NULL,
-            holdout_turnover REAL NOT NULL,
+            in_sample_max_drawdown REAL NOT NULL,
+            in_sample_turnover REAL NOT NULL,
             regime_passed INTEGER NOT NULL,
             accepted INTEGER NOT NULL,
             committed INTEGER NOT NULL,
@@ -420,7 +420,7 @@ def test_db_schema_migration_and_custom_sorting(tmp_path: Path) -> None:
         """
         INSERT INTO attempts (
             run_id, iteration, strategy_name, dataset_hash, config_yaml,
-            observed_sharpe, deflated_sharpe, holdout_max_drawdown, holdout_turnover,
+            observed_sharpe, deflated_sharpe, in_sample_max_drawdown, in_sample_turnover,
             regime_passed, accepted, committed, report_json, returns_blob, created_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """,
@@ -472,8 +472,8 @@ def test_db_schema_migration_and_custom_sorting(tmp_path: Path) -> None:
             deflated_sharpe=0.7,
             target_metric="sortino",
             target_metric_value=2.5,  # Higher value than the Sharpe attempt
-            holdout_max_drawdown=0.08,
-            holdout_turnover=0.4,
+            in_sample_max_drawdown=0.08,
+            in_sample_turnover=0.4,
             regime_passed=True,
             accepted=True,
             committed=True,

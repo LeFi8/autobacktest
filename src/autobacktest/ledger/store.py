@@ -50,8 +50,8 @@ CREATE TABLE IF NOT EXISTS attempts (
     deflated_sharpe REAL NOT NULL,
     target_metric TEXT NOT NULL,
     target_metric_value REAL NOT NULL,
-    holdout_max_drawdown REAL NOT NULL,
-    holdout_turnover REAL NOT NULL,
+    in_sample_max_drawdown REAL NOT NULL,
+    in_sample_turnover REAL NOT NULL,
     regime_passed INTEGER NOT NULL,
     accepted INTEGER NOT NULL,
     committed INTEGER NOT NULL,
@@ -124,6 +124,12 @@ class LedgerStore:
                 )
                 self._conn.commit()
 
+            # Rename holdout_max_drawdown/turnover to in_sample_* (store in-sample values)
+            if "holdout_max_drawdown" in columns and "in_sample_max_drawdown" not in columns:
+                self._conn.execute("ALTER TABLE attempts RENAME COLUMN holdout_max_drawdown TO in_sample_max_drawdown")
+            if "holdout_turnover" in columns and "in_sample_turnover" not in columns:
+                self._conn.execute("ALTER TABLE attempts RENAME COLUMN holdout_turnover TO in_sample_turnover")
+
     def create_run(
         self,
         run_id: str,
@@ -169,8 +175,8 @@ class LedgerStore:
         deflated_sharpe: float,
         target_metric: str,
         target_metric_value: float,
-        holdout_max_drawdown: float,
-        holdout_turnover: float,
+        in_sample_max_drawdown: float,
+        in_sample_turnover: float,
         regime_passed: bool,
         accepted: bool,
         committed: bool,
@@ -199,7 +205,7 @@ class LedgerStore:
             INSERT INTO attempts
                 (run_id, iteration, strategy_name, dataset_hash, config_yaml,
                  observed_sharpe, deflated_sharpe, target_metric, target_metric_value,
-                 holdout_max_drawdown, holdout_turnover, regime_passed, accepted,
+                 in_sample_max_drawdown, in_sample_turnover, regime_passed, accepted,
                  committed, commit_sha, rejection_reason, report_json,
                  returns_blob, prompt_tokens, completion_tokens, total_tokens, cost,
                  created_at,
@@ -218,8 +224,8 @@ class LedgerStore:
                 deflated_sharpe,
                 target_metric,
                 target_metric_value,
-                holdout_max_drawdown,
-                holdout_turnover,
+                in_sample_max_drawdown,
+                in_sample_turnover,
                 int(regime_passed),
                 int(accepted),
                 int(committed),
@@ -488,8 +494,8 @@ class LedgerStore:
                 iteration,
                 observed_sharpe,
                 deflated_sharpe,
-                holdout_max_drawdown,
-                holdout_turnover,
+                in_sample_max_drawdown,
+                in_sample_turnover,
                 created_at,
                 target_metric,
                 target_metric_value,
@@ -516,8 +522,8 @@ class LedgerStore:
                     "iteration": row[2],
                     "observed_sharpe": row[3],
                     "deflated_sharpe": row[4],
-                    "holdout_max_drawdown": row[5],
-                    "holdout_turnover": row[6],
+                    "in_sample_max_drawdown": row[5],
+                    "in_sample_turnover": row[6],
                     "created_at": row[7],
                     "target_metric": row[8],
                     "target_metric_value": row[9],
@@ -559,8 +565,8 @@ class LedgerStore:
                 iteration,
                 observed_sharpe,
                 deflated_sharpe,
-                holdout_max_drawdown,
-                holdout_turnover,
+                in_sample_max_drawdown,
+                in_sample_turnover,
                 created_at,
                 target_metric,
                 target_metric_value
@@ -571,8 +577,8 @@ class LedgerStore:
                     a.iteration,
                     a.observed_sharpe,
                     a.deflated_sharpe,
-                    a.holdout_max_drawdown,
-                    a.holdout_turnover,
+                    a.in_sample_max_drawdown,
+                    a.in_sample_turnover,
                     a.created_at,
                     a.target_metric,
                     a.target_metric_value,
@@ -598,8 +604,8 @@ class LedgerStore:
                     "iteration": row[2],
                     "observed_sharpe": row[3],
                     "deflated_sharpe": row[4],
-                    "holdout_max_drawdown": row[5],
-                    "holdout_turnover": row[6],
+                    "in_sample_max_drawdown": row[5],
+                    "in_sample_turnover": row[6],
                     "created_at": row[7],
                     "target_metric": row[8],
                     "target_metric_value": row[9],

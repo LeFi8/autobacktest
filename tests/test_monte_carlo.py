@@ -16,7 +16,7 @@ def test_block_bootstrap_iid_normal() -> None:
     ret_arr = np.random.normal(loc=0.0005, scale=0.01, size=1000)
     returns = pd.Series(ret_arr)
 
-    p5, p50, p95 = run_block_bootstrap(returns, n_paths=200, block_size=10)
+    p5, p50, p95 = run_block_bootstrap(returns, n_paths=200, block_size=10, seed=42)
 
     # The 50th percentile Sharpe should be close to the true annualized Sharpe (~0.79)
     assert 0.4 < p50 < 1.2

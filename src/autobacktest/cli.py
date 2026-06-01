@@ -202,10 +202,10 @@ def report(
             deflated_val = float(cast(float, r["deflated_sharpe"]))
             deflated_str = f"{deflated_val:.3f}"
 
-            max_dd_val = float(cast(float, r["holdout_max_drawdown"]))
+            max_dd_val = float(cast(float, r["in_sample_max_drawdown"]))
             max_dd_str = f"{max_dd_val * 100:.2f}%"
 
-            turnover_val = float(cast(float, r["holdout_turnover"]))
+            turnover_val = float(cast(float, r["in_sample_turnover"]))
             turnover_str = f"{turnover_val:.2f}x"
 
             date_str = r["created_at"]

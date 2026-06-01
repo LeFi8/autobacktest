@@ -205,8 +205,8 @@ def test_build_messages_gate_failure_renders_section() -> None:
             "candidate_metrics": {
                 "observed_sharpe": 1.1,
                 "holdout_sharpe": 0.9,
-                "holdout_max_drawdown": 0.20,
-                "holdout_turnover": 0.6,
+                "in_sample_max_drawdown": 0.20,
+                "in_sample_turnover": 0.6,
                 "regime_passed": True,
             },
         },
@@ -217,7 +217,7 @@ def test_build_messages_gate_failure_renders_section() -> None:
     assert "gate" in user_msg
     assert "max_drawdown" in user_msg
     assert "Holdout max drawdown 0.2000 exceeds limit of 0.1500." in user_msg
-    assert "holdout_max_drawdown" in user_msg
+    assert "in_sample_max_drawdown" in user_msg
     assert "Diagnose the failure above" in user_msg
 
 
@@ -310,8 +310,8 @@ _ATTEMPT_COMMITTED = {
     "target_metric_value": 1.25,
     "observed_sharpe": 1.3,
     "deflated_sharpe": 1.1,
-    "holdout_max_drawdown": 0.08,
-    "holdout_turnover": 0.4,
+    "in_sample_max_drawdown": 0.08,
+    "in_sample_turnover": 0.4,
     "regime_passed": True,
     "rejection_reason": None,
     "config_fingerprint": {"universe": ["SPY", "TIP"], "params": {"top_n": 3}},
@@ -324,8 +324,8 @@ _ATTEMPT_REJECTED = {
     "target_metric_value": 0.95,
     "observed_sharpe": 1.0,
     "deflated_sharpe": 0.8,
-    "holdout_max_drawdown": 0.22,
-    "holdout_turnover": 1.5,
+    "in_sample_max_drawdown": 0.22,
+    "in_sample_turnover": 1.5,
     "regime_passed": False,
     "rejection_reason": "Drawdown exceeds limit",
     "config_fingerprint": {"universe": ["SPY"], "params": {"top_n": 5}},
@@ -367,8 +367,8 @@ def test_build_messages_attempt_history_rendered() -> None:
         "target_metric_value": 1.10,
         "observed_sharpe": 1.15,
         "deflated_sharpe": 0.95,
-        "holdout_max_drawdown": 0.10,
-        "holdout_turnover": 0.6,
+        "in_sample_max_drawdown": 0.10,
+        "in_sample_turnover": 0.6,
         "regime_passed": True,
         "rejection_reason": None,
         "config_fingerprint": {"universe": ["AGG"], "params": {"top_n": 4}},
@@ -392,8 +392,8 @@ def test_build_messages_attempt_history_truncation() -> None:
             "target_metric_value": 0.9,
             "observed_sharpe": 0.9,
             "deflated_sharpe": 0.7,
-            "holdout_max_drawdown": 0.15,
-            "holdout_turnover": 1.0,
+            "in_sample_max_drawdown": 0.15,
+            "in_sample_turnover": 1.0,
             "regime_passed": True,
             "rejection_reason": "Below target",
             "config_fingerprint": {"universe": ["SPY"], "params": {"top_n": i}},

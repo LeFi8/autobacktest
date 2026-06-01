@@ -51,17 +51,6 @@ def _get_in_sample_metric_val(report: EvaluationReport, target_metric: TargetMet
     raise ValueError(f"Unsupported target metric choice: {target_metric}")
 
 
-def _get_holdout_metric_val(report: EvaluationReport, target_metric: TargetMetric) -> float:
-    """Extract target metric from a report's holdout window."""
-    if target_metric == TargetMetric.SHARPE:
-        return report.holdout_metrics.sharpe_ratio
-    if target_metric == TargetMetric.SORTINO:
-        return report.holdout_metrics.sortino_ratio
-    if target_metric == TargetMetric.INFORMATION_RATIO:
-        return report.holdout_metrics.information_ratio
-    raise ValueError(f"Unsupported target metric choice: {target_metric}")
-
-
 def _write_gates_passed(report: EvaluationReport, checks: dict[str, bool]) -> None:
     """Write gate outcomes to the report."""
     report.gates_passed.update(checks)
