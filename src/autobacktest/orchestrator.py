@@ -418,15 +418,6 @@ def run_optimization(
                                     event["commit"] = None
                                     event_log.write(event)
                                     consecutive_no_accept += 1
-                                    if mode == "exploit":
-                                        exploit_stall += 1
-                                        if exploit_stall >= EXPLOIT_PATIENCE:
-                                            logger.info(
-                                                f"Exploit stall reached ({EXPLOIT_PATIENCE}),"
-                                                " switching to EXPLORE mode."
-                                            )
-                                            mode = "explore"
-                                            exploit_stall = 0
                                     _diversity_exhausted = True
                                     break
 
@@ -552,14 +543,6 @@ def run_optimization(
                                     },
                                 }
                                 consecutive_no_accept += 1
-                                if mode == "exploit":
-                                    exploit_stall += 1
-                                    if exploit_stall >= EXPLOIT_PATIENCE:
-                                        logger.info(
-                                            f"Exploit stall reached ({EXPLOIT_PATIENCE}), switching to EXPLORE mode."
-                                        )
-                                        mode = "explore"
-                                        exploit_stall = 0
                                 continue
 
                     # 8f. DSR deflation
