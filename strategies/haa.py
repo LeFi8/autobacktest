@@ -35,7 +35,7 @@ def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFra
         raise ValueError(f"Cash asset {cash_asset} not in price data")
 
     # Compute daily returns (simple percentage)
-    returns = prices.pct_change().dropna(how='all')
+    returns = prices.pct_change().dropna(how="all")
     if returns.empty:
         return pd.DataFrame(0.0, index=pd.DatetimeIndex([]), columns=prices.columns)
 
