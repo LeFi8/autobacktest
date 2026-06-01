@@ -8,10 +8,10 @@ import importlib.util
 import logging
 import sys
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from time import sleep
 from typing import Any
 
 import pandas as pd
@@ -35,6 +35,7 @@ from autobacktest.gate import TargetMetric, confirm, select
 from autobacktest.ledger.event_log import EventLog
 from autobacktest.ledger.git_ops import GitLedger
 from autobacktest.ledger.store import LedgerStore
+from autobacktest.lessons import LessonStore
 from autobacktest.llm.base import AgentContext, AgentEdit, LLMError, LLMProvider
 from autobacktest.program import parse_program
 from autobacktest.strategy.config_schema import StrategyConfig
@@ -143,6 +144,7 @@ def run_optimization(
     # closed even if baseline evaluation or any loop iteration raises.
     run_dir.mkdir(parents=True, exist_ok=True)
     ledger = LedgerStore(run_dir / "ledger.db")
+    lesson_store = LessonStore(run_dir / "lessons.db")
     event_log = EventLog(run_dir / run_id / "events.jsonl")
     incumbent_returns = pd.Series(dtype=float)  # set before try so finally can read it
     incumbent: EvaluationReport  # assigned during baseline below
@@ -169,11 +171,13 @@ def run_optimization(
                 started_at=datetime.now(tz=UTC).isoformat(),
             )
 
-        # Initialize lessons
-        lessons_path = git_ledger.repo_root / "lessons.md"
-        lessons_text = ""
-        if lessons_path.exists():
-            lessons_text = lessons_path.read_text(encoding="utf-8")
+        # 6b. Initialize lessons — migrate any existing lessons.md, then use the DB
+        lessons_md_path = git_ledger.repo_root / "lessons.md"
+        if lessons_md_path.exists():
+            n = lesson_store.migrate_from_file(lessons_md_path, strategy_name)
+            if n > 0:
+                logger.info("Migrated %d lessons from lessons.md to lessons.db", n)
+        lessons_text = lesson_store.get_filtered_markdown(strategy_name)
 
         # 7. Baseline evaluation (iteration 0 — not written to events.jsonl)
         baseline_exists = False
@@ -371,439 +375,288 @@ def run_optimization(
                         mode=mode,
                     )
 
-                    # 8b. Get LLM edit (with auto-retry on length limit cutoff and transient error backoff)
-                    retry_count = 0
-                    max_retries = 1
-                    transient_retry_count = 0
-                    max_transient_retries = 2
-                    orig_max_tokens = getattr(provider, "max_tokens", None)
-                    edit = None
-                    while True:
-                        try:
-                            edit = provider.generate_edit(ctx)
+                    # 8b. Generate N candidates in parallel
+                    n = getattr(settings, "n_candidates", 3)
+                    raw_edits = _generate_candidates(provider, ctx, n)
+
+                    # Filter out None (LLM failures) and process each candidate
+                    candidate_results = []
+                    for edit in raw_edits:
+                        ev = {"edit": edit}
+                        if edit is None:
+                            ev["llm_error"] = True
+                        else:
                             n_llm_ok += 1
                             total_prompt_tokens += edit.prompt_tokens
                             total_completion_tokens += edit.completion_tokens
                             total_cost += edit.cost
-                            break
-                        except LLMError as e:
-                            # 1. Length cutoff retry
-                            if getattr(e, "finish_reason", None) == "length" and retry_count < max_retries:
-                                retry_count += 1
-                                if hasattr(provider, "max_tokens") and provider.max_tokens is not None:
-                                    old_tokens = provider.max_tokens
-                                    new_tokens = int(old_tokens * 1.5)
-                                    provider.max_tokens = new_tokens
-                                    logger.warning(
-                                        f"LLM cut off on length limit in iteration {k}. "
-                                        f"Retrying with max_tokens scaled from {old_tokens} to {new_tokens}."
-                                    )
-                                    continue
 
-                            # 2. Bounded backoff retry for transient retryable errors
-                            if e.retryable and transient_retry_count < max_transient_retries:
-                                transient_retry_count += 1
-                                backoff_sec = 2.0**transient_retry_count
-                                logger.warning(
-                                    f"LLM transient error in iteration {k}: {e.detail}. "
-                                    f"Retrying in {backoff_sec}s "
-                                    f"(retry {transient_retry_count}/{max_transient_retries})..."
-                                )
-                                sleep(backoff_sec)
-                                continue
+                            # Immediately persist lessons from the edit
+                            if edit.lessons_text is not None and edit.lessons_text.strip():
+                                lesson_store.ingest_markdown(edit.lessons_text, strategy_name)
+                                lessons_text = lesson_store.get_filtered_markdown(strategy_name)
 
-                            # 3. Exhausted retries or non-retryable error
-                            logger.warning(f"LLMError: {e.detail}")
-                            event["llm_error"] = str(e)
-                            event["validation"] = None
-                            event["evaluation"] = None
-                            event["gate"] = None
-                            event["commit"] = None
-                            event_log.write(event)
-                            if not e.retryable:
-                                from rich.console import Console
+                            # Validate
+                            ok, err_code, err_detail = _validate_candidate(
+                                strategy_name, edit, strategies_dir, configs_dir
+                            )
+                            if ok:
+                                ev["valid"] = True
+                                ev["strategy_code"] = edit.strategy_code
+                                ev["config_yaml"] = edit.config_yaml
+                                ev["prompt_tokens"] = edit.prompt_tokens
+                                ev["completion_tokens"] = edit.completion_tokens
+                                ev["total_tokens"] = edit.total_tokens
+                                ev["cost"] = edit.cost
+                            else:
+                                ev["valid"] = False
+                                ev["validation_stage"] = "validation"
+                                ev["detail"] = err_detail
+                                ev["error_code"] = err_code
+                                ev["strategy_code"] = edit.strategy_code
+                                ev["config_yaml"] = edit.config_yaml
 
-                                console = Console(stderr=True)
-                                console.print(f"[bold red]LLM is misconfigured (non-retryable error):[/] {e.detail}")
-                                raise e
-                            edit = None
-                            break
+                        candidate_results.append(ev)
 
-                    if orig_max_tokens is not None and hasattr(provider, "max_tokens"):
-                        provider.max_tokens = orig_max_tokens
-
-                    if edit is None:
-                        consecutive_no_accept += 1
-                        if mode == "exploit":
-                            exploit_stall += 1
-                            if exploit_stall >= EXPLOIT_PATIENCE:
-                                logger.info(f"Exploit stall reached ({EXPLOIT_PATIENCE}), switching to EXPLORE mode.")
-                                mode = "explore"
-                                exploit_stall = 0
-                        continue
-
-                    event["edit"] = {
-                        "reasoning": edit.reasoning,
-                        "prompt_tokens": edit.prompt_tokens,
-                        "completion_tokens": edit.completion_tokens,
-                        "total_tokens": edit.total_tokens,
-                        "cost": edit.cost,
-                    }
-
-                    # Immediately persist non-empty lessons_text from the edit to disk
-                    # and memory.
-                    if edit.lessons_text is not None and edit.lessons_text.strip():
-                        lessons_text = edit.lessons_text
-                        lessons_path.write_text(lessons_text, encoding="utf-8")
-
-                    # 8c. Validate candidate via temp files (same pattern as llm-test command)
-                    ok, error_code, detail = _validate_candidate(strategy_name, edit, strategies_dir, configs_dir)
-                    if not ok:
-                        event["validation"] = {
-                            "passed": False,
-                            "error_code": error_code,
-                            "detail": detail,
-                        }
-                        event["evaluation"] = None
-                        event["gate"] = None
-                        event["commit"] = None
-                        event_log.write(event)
-                        last_attempt = {
-                            "stage": "validation",
-                            "error_code": error_code,
-                            "detail": detail,
-                            "candidate_strategy_code": edit.strategy_code,
-                            "candidate_config_yaml": edit.config_yaml,
-                        }
-                        consecutive_no_accept += 1
-                        if mode == "exploit":
-                            exploit_stall += 1
-                            if exploit_stall >= EXPLOIT_PATIENCE:
-                                logger.info(f"Exploit stall reached ({EXPLOIT_PATIENCE}), switching to EXPLORE mode.")
-                                mode = "explore"
-                                exploit_stall = 0
-                        continue
-
-                    event["validation"] = {"passed": True}
-
-                    # 8c.5 Tier 1 — Config diversity gate (pre-backtest)
-                    _diversity_exhausted = False
-                    if mode == "explore" and historical_configs:
-                        max_sim = max_config_similarity(edit.config_yaml, historical_configs)
-                        if max_sim > DIVERSITY_CONFIG_THRESHOLD:
-                            # Diversity rejected: consume this iteration immediately with no retries
-                            last_attempt = {
-                                "stage": "diversity_config",
-                                "detail": (
+                    # Config diversity gate (pre-backtest, main thread)
+                    valid_candidates = []
+                    for ev in candidate_results:
+                        if not ev.get("valid"):
+                            valid_candidates.append(ev)
+                            continue
+                        e_config_yaml = ev["config_yaml"]
+                        if mode == "explore" and historical_configs:
+                            max_sim = max_config_similarity(e_config_yaml, historical_configs)
+                            if max_sim > DIVERSITY_CONFIG_THRESHOLD:
+                                ev["valid"] = False
+                                ev["validation_stage"] = "diversity_config"
+                                ev["detail"] = (
                                     f"Config similarity {max_sim:.3f} exceeded threshold "
-                                    f"{DIVERSITY_CONFIG_THRESHOLD}. Your config was too similar "
-                                    f"to a past attempt."
-                                ),
-                                "candidate_config_yaml": edit.config_yaml,
-                            }
-                            event["diversity"] = {
-                                "tier": "config",
-                                "passed": False,
-                                "max_similarity": max_sim,
-                                "retries_exhausted": True,
-                            }
-                            event["evaluation"] = None
-                            event["gate"] = None
-                            event["commit"] = None
-                            event_log.write(event)
-                            consecutive_no_accept += 1
-                            _diversity_exhausted = True
-
-                    if _diversity_exhausted:
-                        continue
-
-                    # 8d. Apply to real files and 8e. Evaluate — both inside the same
-                    # try/except so a write error also triggers a clean rollback.
-                    try:
-                        strat_path.write_text(edit.strategy_code, encoding="utf-8")
-                        cfg_path.write_text(edit.config_yaml, encoding="utf-8")
-                        new_config_obj = StrategyConfig.from_yaml(cfg_path)
-                        new_config = new_config_obj.model_dump()
-                        candidate_fn = _load_signals(strat_path)
-                        report_k, returns_k = evaluate_strategy_detailed(
-                            strategy_name,
-                            candidate_fn,
-                            new_config,
-                            start_date=start_date,
-                            end_date=end_date,
-                            _eval_cache=_eval_cache,
-                            _strategy_code=edit.strategy_code,
-                        )
-                    except Exception as e:
-                        # Rollback and skip
-                        git_ledger.rollback_strategy(strategy_name)
-                        event["evaluation"] = {"error": str(e)}
-                        event["gate"] = None
-                        event["commit"] = None
-                        event_log.write(event)
-                        last_attempt = {
-                            "stage": "eval_error",
-                            "detail": str(e),
-                            "candidate_strategy_code": edit.strategy_code,
-                            "candidate_config_yaml": edit.config_yaml,
-                        }
-                        consecutive_no_accept += 1
-                        if mode == "exploit":
-                            exploit_stall += 1
-                            if exploit_stall >= EXPLOIT_PATIENCE:
-                                logger.info(f"Exploit stall reached ({EXPLOIT_PATIENCE}), switching to EXPLORE mode.")
-                                mode = "explore"
-                                exploit_stall = 0
-                        continue
-
-                    # 8e.5 Tier 2 — Returns correlation diversity gate (post-backtest)
-                    if mode == "explore":
-                        hist_matrix, _ = ledger.fetch_historical_returns(dataset_hash)
-                        if not hist_matrix.empty:
-                            corr_passed, max_corr = check_returns_correlation(
-                                returns_k, hist_matrix, DIVERSITY_RETURNS_THRESHOLD
-                            )
-                            if not corr_passed:
-                                git_ledger.rollback_strategy(strategy_name)
-                                event["diversity"] = {
-                                    "tier": "returns",
-                                    "passed": False,
-                                    "max_correlation": max_corr,
-                                }
-                                event["evaluation"] = None
-                                event["gate"] = None
-                                event["commit"] = None
-                                event_log.write(event)
-                                ledger.record_attempt(
-                                    run_id=run_id,
-                                    iteration=k,
-                                    strategy_name=strategy_name,
-                                    dataset_hash=dataset_hash,
-                                    config_yaml=edit.config_yaml,
-                                    observed_sharpe=report_k.observed_sharpe,
-                                    deflated_sharpe=report_k.deflated_sharpe,
-                                    target_metric=target_metric.value,
-                                    target_metric_value=_get_metric_value(report_k, target_metric),
-                                    in_sample_max_drawdown=report_k.in_sample_metrics.max_drawdown,
-                                    in_sample_turnover=report_k.in_sample_metrics.turnover,
-                                    regime_passed=report_k.regime_passed,
-                                    accepted=False,
-                                    committed=False,
-                                    commit_sha=None,
-                                    rejection_reason="diversity_tier2_returns",
-                                    report_json=report_k.to_json(),
-                                    selection_returns=returns_k,
-                                    prompt_tokens=edit.prompt_tokens,
-                                    completion_tokens=edit.completion_tokens,
-                                    total_tokens=edit.total_tokens,
-                                    cost=edit.cost,
+                                    f"{DIVERSITY_CONFIG_THRESHOLD}."
                                 )
-                                last_attempt = {
-                                    "stage": "diversity_returns",
-                                    "detail": (
-                                        f"Return correlation {max_corr:.3f} exceeded threshold "
-                                        f"{DIVERSITY_RETURNS_THRESHOLD}. The strategy produces "
-                                        f"returns too similar to past attempts."
-                                    ),
-                                    "candidate_config_yaml": edit.config_yaml,
-                                    "candidate_metrics": {
-                                        "observed_sharpe": report_k.observed_sharpe,
-                                        "in_sample_max_drawdown": report_k.in_sample_metrics.max_drawdown,
-                                    },
-                                }
-                                consecutive_no_accept += 1
-                                continue
+                        valid_candidates.append(ev)
 
-                    # 8f. DSR deflation (in-sample selection basis)
-                    _deflate(report_k, returns_k, ledger)
-                    if incumbent is not None and not incumbent_returns.empty:
-                        _deflate(incumbent, incumbent_returns, ledger)
+                    # Collect valid candidates for backtest evaluation
+                    to_eval = [ev for ev in valid_candidates if ev.get("valid")]
 
-                    # 8g1. Selection gate (in-sample walk-forward aggregate)
-                    sel = select(
-                        report_k,
-                        baseline=incumbent,
-                        target_metric=target_metric,
-                        config=new_config,
-                    )
-
-                    event["evaluation"] = {
-                        "stage": "selection",
-                        "observed_sharpe": report_k.observed_sharpe,
-                        "deflated_sharpe": report_k.deflated_sharpe,
-                        "effective_trials": report_k.effective_trials,
-                        "in_sample_max_drawdown": report_k.in_sample_metrics.max_drawdown,
-                        "in_sample_turnover": report_k.in_sample_metrics.turnover,
-                        "regime_passed": report_k.regime_passed,
-                    }
-
-                    # Common attempt kwargs (in-sample selection basis)
-                    attempt_kwargs: dict[str, object] = {
-                        "run_id": run_id,
-                        "iteration": k,
-                        "strategy_name": strategy_name,
-                        "dataset_hash": dataset_hash,
-                        "config_yaml": edit.config_yaml,
-                        "observed_sharpe": report_k.observed_sharpe,
-                        "deflated_sharpe": report_k.deflated_sharpe,
-                        "target_metric": target_metric.value,
-                        "target_metric_value": _get_metric_value(report_k, target_metric),
-                        "in_sample_max_drawdown": report_k.in_sample_metrics.max_drawdown,
-                        "in_sample_turnover": report_k.in_sample_metrics.turnover,
-                        "regime_passed": report_k.regime_passed,
-                        "report_json": report_k.to_json(),
-                        "selection_returns": returns_k,
-                        "prompt_tokens": edit.prompt_tokens,
-                        "completion_tokens": edit.completion_tokens,
-                        "total_tokens": edit.total_tokens,
-                        "cost": edit.cost,
-                    }
-
-                    if sel.accepted:
-                        # Check holdout peek budget cap
-                        hist_matrix, _ = ledger.fetch_holdout_history(report_k.dataset_hash)
-                        current_peeks = len(hist_matrix.columns) if not hist_matrix.empty else 0
-                        if current_peeks >= holdout_peek_limit:
-                            logger.warning(
-                                f"Holdout peek limit reached: {current_peeks} >= {holdout_peek_limit}. "
-                                "Aborting optimization loop immediately to prevent further out-of-sample data leakage."
+                    # Phase: evaluate all valid candidates in parallel on temp files
+                    if to_eval:
+                        # Ensure single-threaded eval cache creation
+                        def _eval_one(ev: dict) -> dict:
+                            r, ret, cfg, err = _eval_single_candidate(
+                                strategy_name,
+                                ev["strategy_code"],
+                                ev["config_yaml"],
+                                strategies_dir,
+                                configs_dir,
+                                start_date,
+                                end_date,
+                                _eval_cache,
                             )
-                            git_ledger.rollback_strategy(strategy_name)
-                            ledger.record_attempt(
-                                **attempt_kwargs,  # type: ignore[arg-type]
-                                accepted=False,
-                                committed=False,
-                                commit_sha=None,
-                                rejection_reason=(
-                                    f"holdout_peek_limit_exceeded ({current_peeks} >= {holdout_peek_limit})"
-                                ),
-                                holdout_evaluated=False,
-                                holdout_observed_sharpe=None,
-                                holdout_returns=None,
-                            )
-                            event["gate"] = {
-                                "stage": "select",
-                                "accepted": False,
-                                "reason": f"Holdout peek limit exceeded ({current_peeks} >= {holdout_peek_limit})",
-                            }
-                            event["commit"] = None
-                            event_log.write(event)
-                            consecutive_no_accept += 1
-                            _early_stop = True
+                            if err:
+                                ev["valid"] = False
+                                ev["validation_stage"] = "eval_error"
+                                ev["detail"] = err
+                            else:
+                                ev["_report"] = r
+                                ev["_returns"] = ret
+                                ev["_new_config"] = cfg
+                            return ev
+
+                        with ThreadPoolExecutor(max_workers=min(4, len(to_eval))) as pool:
+                            futures = {pool.submit(_eval_one, ev): i for i, ev in enumerate(to_eval)}
+                            for future in as_completed(futures):
+                                future.result()
+
+                    # Gate phase + winner selection (main thread, sequential)
+                    winner: dict | None = None
+                    sel_reason: str | None = None
+                    cnf_reason: str | None = None
+                    best_metric: float = -float("inf")
+
+                    for ev in candidate_results:
+                        if not ev.get("valid") or ev.get("_report") is None:
                             continue
 
-                        # 8g2. Holdout DSR deflation (only when select passes)
-                        _deflate_holdout(report_k, ledger)
-                        if incumbent is not None:
-                            _deflate_holdout(incumbent, ledger)
+                        report_k = ev["_report"]
+                        returns_k = ev["_returns"]
+                        new_config = ev["_new_config"]
 
-                        # 8g3. Confirmation gate (holdout — budgeted peek)
-                        cnf = confirm(
-                            report_k,
-                            baseline=incumbent,
-                            config=new_config,
-                        )
-
-                        if cnf.accepted:
-                            # --- Commit (both gates pass) ---
-                            sha = git_ledger.commit_strategy(
-                                strategy_name,
-                                f"iter {k}: {edit.reasoning[:72]}",
-                            )
-                            incumbent = report_k
-                            incumbent_returns = returns_k
-                            n_committed += 1
-                            ledger.record_attempt(
-                                **attempt_kwargs,  # type: ignore[arg-type]
-                                accepted=True,
-                                committed=True,
-                                commit_sha=sha,
-                                rejection_reason=None,
-                                holdout_evaluated=True,
-                                holdout_observed_sharpe=report_k.holdout_metrics.sharpe_ratio,
-                                holdout_returns=report_k.holdout_net_returns,
-                            )
-                            event["gate"] = {"stage": "select", "accepted": True}
-                            event["commit"] = {"sha": sha}
-                            last_attempt = None
-                            consecutive_no_accept = 0
-                            mode = "exploit"
-                            exploit_stall = 0
-                        else:
-                            # --- Confirm rejected (holdout violation) ---
-                            git_ledger.rollback_strategy(strategy_name)
-                            ledger.record_attempt(
-                                **attempt_kwargs,  # type: ignore[arg-type]
-                                accepted=False,
-                                committed=False,
-                                commit_sha=None,
-                                rejection_reason=cnf.reason,
-                                holdout_evaluated=True,
-                                holdout_observed_sharpe=report_k.holdout_metrics.sharpe_ratio,
-                                holdout_returns=report_k.holdout_net_returns,
-                            )
-                            event["gate"] = {
-                                "stage": "confirm",
-                                "accepted": False,
-                                "reason": cnf.reason,
-                                "failed_gate": cnf.failed_gate,
-                            }
-                            event["commit"] = None
-                            last_attempt = {
-                                "stage": "gate",
-                                "rejection_reason": cnf.reason,
-                                "failed_gate": cnf.failed_gate,
-                                "candidate_strategy_code": edit.strategy_code,
-                                "candidate_config_yaml": edit.config_yaml,
-                                "candidate_metrics": {
-                                    "observed_sharpe": report_k.observed_sharpe,
-                                    "in_sample_max_drawdown": report_k.in_sample_metrics.max_drawdown,
-                                    "in_sample_turnover": report_k.in_sample_metrics.turnover,
-                                    "regime_passed": report_k.regime_passed,
-                                },
-                            }
-                            consecutive_no_accept += 1
-                            if mode == "exploit":
-                                exploit_stall += 1
-                                if exploit_stall >= EXPLOIT_PATIENCE:
-                                    logger.info(
-                                        f"Exploit stall reached ({EXPLOIT_PATIENCE}), switching to EXPLORE mode."
+                        # Returns diversity gate (post-backtest)
+                        if mode == "explore":
+                            hist_matrix, _ = ledger.fetch_historical_returns(dataset_hash)
+                            if not hist_matrix.empty:
+                                corr_passed, max_corr = check_returns_correlation(
+                                    returns_k, hist_matrix, DIVERSITY_RETURNS_THRESHOLD
+                                )
+                                if not corr_passed:
+                                    ev["valid"] = False
+                                    ev["validation_stage"] = "diversity_returns"
+                                    ev["detail"] = (
+                                        f"Return correlation {max_corr:.3f} exceeded threshold "
+                                        f"{DIVERSITY_RETURNS_THRESHOLD}."
                                     )
-                                    mode = "explore"
-                                    exploit_stall = 0
-                    else:
-                        # --- Select rejected (in-sample violation, no holdout peek) ---
-                        git_ledger.rollback_strategy(strategy_name)
-                        ledger.record_attempt(
-                            **attempt_kwargs,  # type: ignore[arg-type]
-                            accepted=False,
-                            committed=False,
-                            commit_sha=None,
-                            rejection_reason=sel.reason,
-                            holdout_evaluated=False,
-                            holdout_observed_sharpe=None,
-                            holdout_returns=None,
+                                    ev["_report_json"] = report_k.to_json()
+                                    ev["_observed_sharpe"] = report_k.observed_sharpe
+                                    continue
+
+                        # DSR deflation (in-sample)
+                        _deflate(report_k, returns_k, ledger)
+                        if incumbent is not None and not incumbent_returns.empty:
+                            _deflate(incumbent, incumbent_returns, ledger)
+
+                        # Selection gate
+                        sel = select(report_k, baseline=incumbent, target_metric=target_metric, config=new_config)
+                        ev["_sel"] = sel
+
+                        if sel.accepted:
+                            # Holdout peek budget check
+                            hist_matrix, _ = ledger.fetch_holdout_history(report_k.dataset_hash)
+                            current_peeks = len(hist_matrix.columns) if not hist_matrix.empty else 0
+                            if current_peeks >= holdout_peek_limit:
+                                logger.warning(
+                                    f"Holdout peek limit reached: {current_peeks} >= {holdout_peek_limit}. "
+                                    "Aborting optimization loop immediately."
+                                )
+                                _early_stop = True
+                                ev["valid"] = False
+                                ev["validation_stage"] = "holdout_peek_limit"
+                                ev["_peek_fail"] = True
+                                continue
+
+                            _deflate_holdout(report_k, ledger)
+                            if incumbent is not None:
+                                _deflate_holdout(incumbent, ledger)
+
+                            cnf = confirm(report_k, baseline=incumbent, config=new_config)
+                            ev["_cnf"] = cnf
+
+                            if cnf.accepted:
+                                metric_val = _get_metric_value(report_k, target_metric)
+                                if metric_val > best_metric:
+                                    best_metric = metric_val
+                                    winner = ev
+                                ev["_accepted"] = True
+                            else:
+                                ev["valid"] = False
+                                ev["validation_stage"] = "gate"
+                                ev["detail"] = cnf.reason
+                                ev["_failed_gate"] = cnf.failed_gate
+                                cnf_reason = cnf.reason
+                        else:
+                            ev["valid"] = False
+                            ev["validation_stage"] = "gate"
+                            ev["detail"] = sel.reason
+                            ev["_failed_gate"] = sel.failed_gate
+                            sel_reason = sel.reason
+
+                    # --- Commit winner (if any) ---
+                    if winner is not None:
+                        w_edit = winner["edit"]
+                        w_report = winner["_report"]
+                        w_returns = winner["_returns"]
+                        strat_path.write_text(w_edit.strategy_code, encoding="utf-8")
+                        cfg_path.write_text(w_edit.config_yaml, encoding="utf-8")
+                        sha = git_ledger.commit_strategy(
+                            strategy_name,
+                            f"iter {k}: {w_edit.reasoning[:72] if w_edit.reasoning else 'multi-candidate'}",
                         )
-                        event["gate"] = {
-                            "stage": "select",
-                            "accepted": False,
-                            "reason": sel.reason,
-                            "failed_gate": sel.failed_gate,
-                        }
+                        incumbent = w_report
+                        incumbent_returns = w_returns
+                        n_committed += 1
+                        last_attempt = None
+                        consecutive_no_accept = 0
+                        mode = "exploit"
+                        exploit_stall = 0
+
+                    # --- Record ALL candidates in ledger ---
+                    _REJECTION_REASON_MAP = {
+                        "diversity_config": "diversity_tier1_config",
+                        "diversity_returns": "diversity_tier2_returns",
+                        "validation": None,
+                        "eval_error": None,
+                        "gate": None,
+                    }
+
+                    def _rejection_reason(ev: dict) -> str | None:
+                        stage = ev.get("validation_stage")
+                        if stage in _REJECTION_REASON_MAP:
+                            return _REJECTION_REASON_MAP[stage] or ev.get("detail")
+                        if stage == "holdout_peek_limit":
+                            return "holdout_peek_limit_exceeded"
+                        if stage == "gate":
+                            return ev.get("detail") or ev.get("_failed_gate")
+                        return ev.get("detail") or stage
+
+                    def _record(ev: dict, accepted: bool, committed: bool) -> None:
+                        rp = ev.get("_report")
+                        rt = ev.get("_returns")
+                        edit = ev.get("edit")
+                        if rp is None or edit is None:
+                            return
+                        ho_evaluated = ev.get("_cnf") is not None
+                        ledger.record_attempt(
+                            run_id=run_id,
+                            iteration=k,
+                            strategy_name=strategy_name,
+                            dataset_hash=dataset_hash,
+                            config_yaml=ev.get("config_yaml", ""),
+                            observed_sharpe=rp.observed_sharpe,
+                            deflated_sharpe=rp.deflated_sharpe,
+                            target_metric=target_metric.value,
+                            target_metric_value=_get_metric_value(rp, target_metric),
+                            in_sample_max_drawdown=rp.in_sample_metrics.max_drawdown,
+                            in_sample_turnover=rp.in_sample_metrics.turnover,
+                            regime_passed=rp.regime_passed,
+                            accepted=accepted,
+                            committed=committed,
+                            commit_sha=sha if committed else None,
+                            rejection_reason=None if accepted else _rejection_reason(ev),
+                            report_json=rp.to_json(),
+                            selection_returns=rt,
+                            prompt_tokens=edit.prompt_tokens,
+                            completion_tokens=edit.completion_tokens,
+                            total_tokens=edit.total_tokens,
+                            cost=edit.cost,
+                            holdout_evaluated=ho_evaluated,
+                            holdout_observed_sharpe=rp.holdout_metrics.sharpe_ratio if ho_evaluated else None,
+                            holdout_returns=rp.holdout_net_returns if ho_evaluated else None,
+                        )
+
+                    for ev in candidate_results:
+                        if ev.get("_report") is not None:
+                            is_winner = ev is winner
+                            _record(ev, accepted=is_winner, committed=is_winner)
+                        elif ev.get("llm_error"):
+                            pass  # No report to record for LLM failures
+
+                    # --- Build consolidated event ---
+                    candidates_summary = []
+                    for ev in candidate_results:
+                        if ev.get("llm_error"):
+                            candidates_summary.append({"llm_error": True})
+                        elif not ev.get("valid"):
+                            candidates_summary.append({
+                                "passed": False,
+                                "stage": ev.get("validation_stage"),
+                                "detail": ev.get("detail"),
+                            })
+                        else:
+                            rp = ev.get("_report")
+                            candidates_summary.append({
+                                "passed": True,
+                                "accepted": ev is winner,
+                                "observed_sharpe": rp.observed_sharpe if rp else None,
+                            })
+                    event["candidates"] = candidates_summary
+                    if winner is not None:
+                        winner_idx = next(i for i, e in enumerate(candidate_results) if e is winner)
+                        event["winner"] = {"candidate_idx": winner_idx}
+                        event["gate"] = {"stage": "select", "accepted": True}
+                        event["commit"] = {"sha": sha}
+                    else:
+                        event["gate"] = {"stage": "select", "accepted": False, "reason": "No candidate passed all gates"}
                         event["commit"] = None
-                        last_attempt = {
-                            "stage": "gate",
-                            "rejection_reason": sel.reason,
-                            "failed_gate": sel.failed_gate,
-                            "candidate_strategy_code": edit.strategy_code,
-                            "candidate_config_yaml": edit.config_yaml,
-                            "candidate_metrics": {
-                                "observed_sharpe": report_k.observed_sharpe,
-                                "in_sample_max_drawdown": report_k.in_sample_metrics.max_drawdown,
-                                "in_sample_turnover": report_k.in_sample_metrics.turnover,
-                                "regime_passed": report_k.regime_passed,
-                            },
-                        }
                         consecutive_no_accept += 1
                         if mode == "exploit":
                             exploit_stall += 1
@@ -811,6 +664,7 @@ def run_optimization(
                                 logger.info(f"Exploit stall reached ({EXPLOIT_PATIENCE}), switching to EXPLORE mode.")
                                 mode = "explore"
                                 exploit_stall = 0
+                        last_attempt = {"stage": "all_candidates_failed", "detail": "No candidate passed all gates"}
 
                     event_log.write(event)
                 finally:
@@ -856,6 +710,7 @@ def run_optimization(
             _deflate_holdout(incumbent, ledger)
         # 9. Cleanup
         event_log.close()
+        lesson_store.close()
         ledger.close()
 
     return OrchestratorResult(
@@ -924,6 +779,78 @@ def _validate_candidate(
             temp_py.unlink()
         if temp_yaml.exists():
             temp_yaml.unlink()
+
+
+def _generate_candidates(
+    provider: LLMProvider,
+    ctx: AgentContext,
+    n: int,
+) -> list[AgentEdit | None]:
+    """Generate N candidate edits in parallel, returning None for transient failures.
+
+    Non-retryable errors (e.g. auth failures) are raised immediately.
+    """
+    def _try() -> AgentEdit | None:
+        try:
+            return provider.generate_edit(ctx)
+        except LLMError as e:
+            if not e.retryable:
+                raise
+            return None
+
+    with ThreadPoolExecutor(max_workers=n) as pool:
+        futures = [pool.submit(_try) for _ in range(n)]
+        results: list[AgentEdit | None] = []
+        for f in futures:
+            try:
+                results.append(f.result())
+            except LLMError:
+                raise
+            except Exception:
+                results.append(None)
+        return results
+
+
+def _eval_single_candidate(
+    strategy_name: str,
+    strategy_code: str,
+    config_yaml: str,
+    strategies_dir: Path,
+    configs_dir: Path,
+    start_date: str,
+    end_date: str,
+    _eval_cache: dict,
+) -> tuple:
+    """Evaluate one candidate via temp files.
+
+    Returns ``(report, returns, new_config, error_str)``.  When evaluation
+    fails all four values are ``None``.  Temp files are cleaned up.
+    """
+    temp_name = f"eval_{uuid.uuid4().hex}"
+    temp_py = strategies_dir / f"{temp_name}.py"
+    temp_yaml = configs_dir / f"{temp_name}.yaml"
+    try:
+        temp_py.write_text(strategy_code, encoding="utf-8")
+        temp_yaml.write_text(config_yaml, encoding="utf-8")
+        candidate_fn = _load_signals(temp_py)
+        new_config_obj = StrategyConfig.from_yaml(temp_yaml)
+        new_config = new_config_obj.model_dump()
+        report, returns = evaluate_strategy_detailed(
+            strategy_name,
+            candidate_fn,
+            new_config,
+            start_date=start_date,
+            end_date=end_date,
+            _eval_cache=_eval_cache,
+            _strategy_code=strategy_code,
+        )
+        return report, returns, new_config, None
+    except Exception as e:
+        return None, None, None, str(e)
+    finally:
+        for p in [temp_py, temp_yaml]:
+            if p.exists():
+                p.unlink()
 
 
 def _deflate(

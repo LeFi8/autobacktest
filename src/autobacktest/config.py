@@ -39,6 +39,15 @@ class Settings(BaseModel):
     configs_dir: Path = Field(default_factory=lambda: Path(os.getenv("AUTOBACKTEST_CONFIGS_DIR", "configs")))
     ledger_db_name: str = Field(default_factory=lambda: os.getenv("AUTOBACKTEST_LEDGER_DB_NAME", "ledger.db"))
 
+    # --- OPTIMIZATION LOOP ---
+    n_candidates: int = Field(default_factory=lambda: int(os.getenv("AUTOBACKTEST_N_CANDIDATES", "3")))
+    importance_min_attempts: int = Field(
+        default_factory=lambda: int(os.getenv("AUTOBACKTEST_IMPORTANCE_MIN_ATTEMPTS", "6"))
+    )
+    importance_p_threshold: float = Field(
+        default_factory=lambda: float(os.getenv("AUTOBACKTEST_IMPORTANCE_P_THRESHOLD", "0.20"))
+    )
+
     # --- SAFETY GATES ---
     max_file_size_kb: int = Field(default_factory=lambda: int(os.getenv("AUTOBACKTEST_MAX_FILE_SIZE_KB", "100")))
     max_cyclomatic_complexity: int = Field(
@@ -65,6 +74,11 @@ class Settings(BaseModel):
     def ledger_db_path(self) -> Path:
         """Resolve full ledger path."""
         return self.run_dir / self.ledger_db_name
+
+    @property
+    def lessons_db_path(self) -> Path:
+        """Resolve full lessons database path."""
+        return self.run_dir / "lessons.db"
 
 
 # Export global settings instance

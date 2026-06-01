@@ -35,14 +35,10 @@ class GitLedger:
         return branch_name
 
     def commit_strategy(self, strategy_name: str, message: str) -> str:
-        """Stage strategy, config, and lessons files, commit, return hexsha."""
+        """Stage strategy and config files, commit, return hexsha."""
         strat_rel = f"{self._strategies_dir}/{strategy_name}.py"
         cfg_rel = f"{self._configs_dir}/{strategy_name}.yaml"
-        files_to_add = [strat_rel, cfg_rel]
-        lessons_path = Path(self._repo.working_tree_dir or "") / "lessons.md"
-        if lessons_path.exists():
-            files_to_add.append("lessons.md")
-        self._repo.index.add(files_to_add)
+        self._repo.index.add([strat_rel, cfg_rel])
         commit = self._repo.index.commit(message)
         return commit.hexsha
 
