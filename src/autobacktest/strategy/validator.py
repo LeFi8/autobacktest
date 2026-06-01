@@ -510,34 +510,33 @@ def _count_node_lines(node: ast.AST) -> int:
     end: int | None = getattr(node, "end_lineno", None)
     start: int | None = getattr(node, "lineno", None)
     if end is not None and start is not None:
-        return end - start
+        return end - start + 1
     return 0
 
 
 def _calculate_complexity(node: ast.AST) -> int:
     """Calculate McCabe-style cyclomatic complexity of a function AST.
 
-    Counts decision points (if/for/while/and/or/except-handler/comprehensions)
+    Counts decision points (if/for/while/and/or/ternary/except-handler/comprehensions)
     and adds 1 for the base path.
     """
-    decisions: set[int] = set()
-
+    complexity = 1
     for child in ast.walk(node):
         if isinstance(
             child,
-            (ast.If, ast.For, ast.While, ast.ExceptHandler),
+            (ast.If, ast.For, ast.While, ast.ExceptHandler, ast.IfExp),
         ):
-            decisions.add(id(child))
+            complexity += 1
         elif isinstance(child, ast.BoolOp):
             if isinstance(child.op, (ast.And, ast.Or)):
-                decisions.add(id(child))
+                complexity += len(child.values) - 1
         elif isinstance(
             child,
-            (ast.ListComp, ast.DictComp, ast.SetComp),
+            (ast.ListComp, ast.DictComp, ast.SetComp, ast.GeneratorExp),
         ):
-            decisions.add(id(child))
+            complexity += 1
 
-    return len(decisions) + 1
+    return complexity
 
 
 def _check_ast(content: str) -> ValidationResult:

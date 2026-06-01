@@ -348,9 +348,9 @@ def _parse_func(code: str) -> ast.FunctionDef:
 
 
 def test_count_node_lines_one_line() -> None:
-    """A one-line function has line count = 0 (differs from endpoint)."""
+    """A one-line function has line count = 1."""
     func = _parse_func("def f(): pass\n")
-    assert _count_node_lines(func) == 0
+    assert _count_node_lines(func) == 1
 
 
 def test_count_node_lines_multi_line() -> None:
@@ -363,7 +363,7 @@ def f():
     return z
 """
     func = _parse_func(code)
-    assert _count_node_lines(func) == 4
+    assert _count_node_lines(func) == 5
 
 
 def test_count_node_lines_large() -> None:

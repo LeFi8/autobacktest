@@ -658,10 +658,6 @@ def _render_rich_summary(
     metrics.add_column("", justify="center")
 
     bl = result.baseline_report
-    bl_sharpe = bl.observed_sharpe if bl else 0.0
-    bl_dd = bl.in_sample_metrics.max_drawdown if bl else 0.0
-    bl_to = bl.in_sample_metrics.turnover if bl else 0.0
-    bl_reg = bl.regime_passed if bl else False
 
     def _chg(current: float, baseline: float, higher_is_better: bool = True) -> str:
         diff = current - baseline
@@ -673,31 +669,33 @@ def _render_rich_summary(
 
     metrics.add_row(
         "Observed Sharpe",
-        f"{bl_sharpe:.3f}",
+        f"{bl.observed_sharpe:.3f}" if bl else "—",
         f"{report.observed_sharpe:.3f}",
-        _chg(report.observed_sharpe, bl_sharpe),
+        _chg(report.observed_sharpe, bl.observed_sharpe) if bl else "",
     )
     metrics.add_row(
         "Deflated Sharpe",
         f"{bl.deflated_sharpe:.3f}" if bl else "—",
         f"{report.deflated_sharpe:.3f}",
-        _chg(report.deflated_sharpe, bl.deflated_sharpe if bl else 0.0),
+        _chg(report.deflated_sharpe, bl.deflated_sharpe) if bl else "",
     )
     metrics.add_row(
         "Max Drawdown",
-        f"{bl_dd * 100:.2f}%",
+        f"{bl.in_sample_metrics.max_drawdown * 100:.2f}%" if bl else "—",
         f"{report.in_sample_metrics.max_drawdown * 100:.2f}%",
-        _chg(report.in_sample_metrics.max_drawdown, bl_dd, higher_is_better=False),
+        _chg(report.in_sample_metrics.max_drawdown, bl.in_sample_metrics.max_drawdown, higher_is_better=False)
+        if bl
+        else "",
     )
     metrics.add_row(
         "Turnover",
-        f"{bl_to:.2f}x",
+        f"{bl.in_sample_metrics.turnover:.2f}x" if bl else "—",
         f"{report.in_sample_metrics.turnover:.2f}x",
-        _chg(report.in_sample_metrics.turnover, bl_to, higher_is_better=False),
+        _chg(report.in_sample_metrics.turnover, bl.in_sample_metrics.turnover, higher_is_better=False) if bl else "",
     )
     metrics.add_row(
         "Regime Stress",
-        "[green]Pass[/]" if bl_reg else "[red]Fail[/]",
+        ("[green]Pass[/]" if bl.regime_passed else "[red]Fail[/]") if bl else "—",
         "[green]Pass[/]" if report.regime_passed else "[red]Fail[/]",
     )
     console.print(metrics)

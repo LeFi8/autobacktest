@@ -17,6 +17,7 @@ def plot_equity_curves(
     run_id: str,
     output_dir: Path,
 ) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
     baseline_cum = (1 + baseline_returns).cumprod()
     final_cum = (1 + final_returns).cumprod()
     fig, ax = plt.subplots(figsize=(12, 6))
@@ -55,6 +56,9 @@ def compile_failure_summary(run_dir: Path) -> dict[str, Any]:
             try:
                 event = json.loads(line)
             except json.JSONDecodeError:
+                continue
+
+            if not isinstance(event, dict):
                 continue
 
             val = event.get("validation")
