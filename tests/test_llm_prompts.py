@@ -77,8 +77,8 @@ def test_build_messages_with_report() -> None:
     user_msg = messages[1]["content"]
     assert "## Iteration" in user_msg
     assert "Current Loop Iteration: 3" in user_msg
-    assert "hash123" in user_msg
-    assert "observed_sharpe" in user_msg
+    assert "In-Sample Walk-Forward Aggregate" in user_msg
+    assert "Sharpe:" in user_msg
 
 
 def test_build_messages_lessons_warning() -> None:
@@ -259,7 +259,7 @@ def test_build_messages_performance_target_with_report() -> None:
     assert "## Performance Target" in user_msg
     assert "1.2000" in user_msg
     assert "0.20" in user_msg
-    assert "overfitting insight only" in user_msg
+    assert "always enforced" in user_msg
     assert "regime stress tests" in user_msg
 
 
@@ -276,7 +276,7 @@ def test_build_messages_performance_target_no_report() -> None:
     user_msg = messages[1]["content"]
     assert "## Performance Target" in user_msg
     assert "drawdown <= 0.20" in user_msg
-    assert "overfitting insight only" in user_msg
+    assert "always enforced" in user_msg
 
 
 def test_build_messages_previous_attempt_before_instructions() -> None:

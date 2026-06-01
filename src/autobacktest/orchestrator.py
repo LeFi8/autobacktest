@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import importlib.util
 import logging
@@ -30,7 +31,7 @@ from autobacktest.evaluator.deflated_sharpe import (
 )
 from autobacktest.evaluator.evaluate import evaluate_strategy_detailed
 from autobacktest.evaluator.report import EvaluationReport
-from autobacktest.gate import TargetMetric, accept
+from autobacktest.gate import TargetMetric, confirm, select
 from autobacktest.ledger.event_log import EventLog
 from autobacktest.ledger.git_ops import GitLedger
 from autobacktest.ledger.store import LedgerStore
@@ -168,6 +169,7 @@ def run_optimization(
             _strategy_code=_baseline_code,
         )
         _deflate(baseline_report, baseline_returns, ledger)
+        _deflate_holdout(baseline_report, ledger)
         incumbent = baseline_report
         incumbent_returns = baseline_returns
         baseline_sha: str | None = git_ledger._repo.head.commit.hexsha
@@ -181,19 +183,22 @@ def run_optimization(
             deflated_sharpe=baseline_report.deflated_sharpe,
             target_metric=target_metric.value,
             target_metric_value=_get_metric_value(baseline_report, target_metric),
-            holdout_max_drawdown=baseline_report.holdout_metrics.max_drawdown,
-            holdout_turnover=baseline_report.holdout_metrics.turnover,
+            holdout_max_drawdown=baseline_report.in_sample_metrics.max_drawdown,
+            holdout_turnover=baseline_report.in_sample_metrics.turnover,
             regime_passed=baseline_report.regime_passed,
             accepted=True,
             committed=True,
             commit_sha=baseline_sha,
             rejection_reason=None,
             report_json=baseline_report.to_json(),
-            holdout_returns=baseline_returns,
+            selection_returns=baseline_returns,
             prompt_tokens=0,
             completion_tokens=0,
             total_tokens=0,
             cost=0.0,
+            holdout_evaluated=True,
+            holdout_observed_sharpe=baseline_report.holdout_metrics.sharpe_ratio,
+            holdout_returns=baseline_report.holdout_net_returns,
         )
 
         # 8. Optimization loop
@@ -509,15 +514,15 @@ def run_optimization(
                                     deflated_sharpe=report_k.deflated_sharpe,
                                     target_metric=target_metric.value,
                                     target_metric_value=_get_metric_value(report_k, target_metric),
-                                    holdout_max_drawdown=report_k.holdout_metrics.max_drawdown,
-                                    holdout_turnover=report_k.holdout_metrics.turnover,
+                                    holdout_max_drawdown=report_k.in_sample_metrics.max_drawdown,
+                                    holdout_turnover=report_k.in_sample_metrics.turnover,
                                     regime_passed=report_k.regime_passed,
                                     accepted=False,
                                     committed=False,
                                     commit_sha=None,
                                     rejection_reason="diversity_tier2_returns",
                                     report_json=report_k.to_json(),
-                                    holdout_returns=returns_k,
+                                    selection_returns=returns_k,
                                     prompt_tokens=edit.prompt_tokens,
                                     completion_tokens=edit.completion_tokens,
                                     total_tokens=edit.total_tokens,
@@ -539,29 +544,29 @@ def run_optimization(
                                 consecutive_no_accept += 1
                                 continue
 
-                    # 8f. DSR deflation
+                    # 8f. DSR deflation (in-sample selection basis)
                     _deflate(report_k, returns_k, ledger)
 
-                    # 8g. Gate against incumbent
-                    gate_res = accept(
+                    # 8g1. Selection gate (in-sample walk-forward aggregate)
+                    sel = select(
                         report_k,
                         baseline=incumbent,
                         target_metric=target_metric,
                         config=new_config,
-                        require_dsr_non_degradation=(mode == "exploit"),
                     )
 
                     event["evaluation"] = {
+                        "stage": "selection",
                         "observed_sharpe": report_k.observed_sharpe,
                         "deflated_sharpe": report_k.deflated_sharpe,
                         "effective_trials": report_k.effective_trials,
-                        "holdout_max_drawdown": report_k.holdout_metrics.max_drawdown,
-                        "holdout_turnover": report_k.holdout_metrics.turnover,
+                        "in_sample_max_drawdown": report_k.in_sample_metrics.max_drawdown,
+                        "in_sample_turnover": report_k.in_sample_metrics.turnover,
                         "regime_passed": report_k.regime_passed,
                     }
 
-                    # 8h. Commit or rollback
-                    base_attempt_kwargs: dict[str, object] = {
+                    # Common attempt kwargs (in-sample selection basis)
+                    attempt_kwargs: dict[str, object] = {
                         "run_id": run_id,
                         "iteration": k,
                         "strategy_name": strategy_name,
@@ -571,59 +576,126 @@ def run_optimization(
                         "deflated_sharpe": report_k.deflated_sharpe,
                         "target_metric": target_metric.value,
                         "target_metric_value": _get_metric_value(report_k, target_metric),
-                        "holdout_max_drawdown": report_k.holdout_metrics.max_drawdown,
-                        "holdout_turnover": report_k.holdout_metrics.turnover,
+                        "holdout_max_drawdown": report_k.in_sample_metrics.max_drawdown,
+                        "holdout_turnover": report_k.in_sample_metrics.turnover,
                         "regime_passed": report_k.regime_passed,
                         "report_json": report_k.to_json(),
-                        "holdout_returns": returns_k,
+                        "selection_returns": returns_k,
                         "prompt_tokens": edit.prompt_tokens,
                         "completion_tokens": edit.completion_tokens,
                         "total_tokens": edit.total_tokens,
                         "cost": edit.cost,
                     }
-                    if gate_res.accepted:
-                        sha = git_ledger.commit_strategy(
-                            strategy_name,
-                            f"iter {k}: {edit.reasoning[:72]}",
+
+                    if sel.accepted:
+                        # 8g2. Holdout DSR deflation (only when select passes)
+                        _deflate_holdout(report_k, ledger)
+
+                        # 8g3. Confirmation gate (holdout — budgeted peek)
+                        cnf = confirm(
+                            report_k,
+                            baseline=incumbent,
+                            config=new_config,
                         )
-                        incumbent = report_k
-                        incumbent_returns = returns_k
-                        n_committed += 1
-                        ledger.record_attempt(
-                            **base_attempt_kwargs,  # type: ignore[arg-type]
-                            accepted=True,
-                            committed=True,
-                            commit_sha=sha,
-                            rejection_reason=None,
-                        )
-                        event["gate"] = {"accepted": True, "reason": None}
-                        event["commit"] = {"sha": sha}
-                        last_attempt = None
-                        consecutive_no_accept = 0
-                        mode = "exploit"
-                        exploit_stall = 0
+
+                        if cnf.accepted:
+                            # --- Commit (both gates pass) ---
+                            sha = git_ledger.commit_strategy(
+                                strategy_name,
+                                f"iter {k}: {edit.reasoning[:72]}",
+                            )
+                            incumbent = report_k
+                            incumbent_returns = returns_k
+                            n_committed += 1
+                            ledger.record_attempt(
+                                **attempt_kwargs,  # type: ignore[arg-type]
+                                accepted=True,
+                                committed=True,
+                                commit_sha=sha,
+                                rejection_reason=None,
+                                holdout_evaluated=True,
+                                holdout_observed_sharpe=report_k.holdout_metrics.sharpe_ratio,
+                                holdout_returns=report_k.holdout_net_returns,
+                            )
+                            event["gate"] = {"stage": "select", "accepted": True}
+                            event["commit"] = {"sha": sha}
+                            last_attempt = None
+                            consecutive_no_accept = 0
+                            mode = "exploit"
+                            exploit_stall = 0
+                        else:
+                            # --- Confirm rejected (holdout violation) ---
+                            git_ledger.rollback_strategy(strategy_name)
+                            ledger.record_attempt(
+                                **attempt_kwargs,  # type: ignore[arg-type]
+                                accepted=False,
+                                committed=False,
+                                commit_sha=None,
+                                rejection_reason=cnf.reason,
+                                holdout_evaluated=True,
+                                holdout_observed_sharpe=report_k.holdout_metrics.sharpe_ratio,
+                                holdout_returns=report_k.holdout_net_returns,
+                            )
+                            event["gate"] = {
+                        "stage": "confirm",
+                        "accepted": False,
+                        "reason": cnf.reason,
+                        "failed_gate": cnf.failed_gate,
+                    }
+                            event["commit"] = None
+                            last_attempt = {
+                                "stage": "gate",
+                                "rejection_reason": cnf.reason,
+                                "failed_gate": cnf.failed_gate,
+                                "candidate_strategy_code": edit.strategy_code,
+                                "candidate_config_yaml": edit.config_yaml,
+                                "candidate_metrics": {
+                                    "observed_sharpe": report_k.observed_sharpe,
+                                    "in_sample_max_drawdown": report_k.in_sample_metrics.max_drawdown,
+                                    "in_sample_turnover": report_k.in_sample_metrics.turnover,
+                                    "regime_passed": report_k.regime_passed,
+                                },
+                            }
+                            consecutive_no_accept += 1
+                            if mode == "exploit":
+                                exploit_stall += 1
+                                if exploit_stall >= EXPLOIT_PATIENCE:
+                                    logger.info(
+                                        f"Exploit stall reached ({EXPLOIT_PATIENCE}), "
+                                        "switching to EXPLORE mode."
+                                    )
+                                    mode = "explore"
+                                    exploit_stall = 0
                     else:
+                        # --- Select rejected (in-sample violation, no holdout peek) ---
                         git_ledger.rollback_strategy(strategy_name)
                         ledger.record_attempt(
-                            **base_attempt_kwargs,  # type: ignore[arg-type]
+                            **attempt_kwargs,  # type: ignore[arg-type]
                             accepted=False,
                             committed=False,
                             commit_sha=None,
-                            rejection_reason=gate_res.reason,
+                            rejection_reason=sel.reason,
+                            holdout_evaluated=False,
+                            holdout_observed_sharpe=None,
+                            holdout_returns=None,
                         )
-                        event["gate"] = {"accepted": False, "reason": gate_res.reason}
+                        event["gate"] = {
+                            "stage": "select",
+                            "accepted": False,
+                            "reason": sel.reason,
+                            "failed_gate": sel.failed_gate,
+                        }
                         event["commit"] = None
                         last_attempt = {
                             "stage": "gate",
-                            "rejection_reason": gate_res.reason,
-                            "failed_gate": gate_res.failed_gate,
+                            "rejection_reason": sel.reason,
+                            "failed_gate": sel.failed_gate,
                             "candidate_strategy_code": edit.strategy_code,
                             "candidate_config_yaml": edit.config_yaml,
                             "candidate_metrics": {
                                 "observed_sharpe": report_k.observed_sharpe,
-                                "holdout_sharpe": report_k.holdout_metrics.sharpe_ratio,
-                                "holdout_max_drawdown": report_k.holdout_metrics.max_drawdown,
-                                "holdout_turnover": report_k.holdout_metrics.turnover,
+                                "in_sample_max_drawdown": report_k.in_sample_metrics.max_drawdown,
+                                "in_sample_turnover": report_k.in_sample_metrics.turnover,
                                 "regime_passed": report_k.regime_passed,
                             },
                         }
@@ -660,8 +732,7 @@ def run_optimization(
     finally:
         if start_temp is not None:
             provider.temperature = start_temp
-        # Refresh final report's DSR using complete session history so the
-        # returned incumbent reflects the true multiple-testing penalty.
+        # Refresh final report's selection DSR using complete session history.
         try:
             hist_matrix, hist_sharpes = ledger.fetch_historical_returns(incumbent.dataset_hash)
             if not hist_matrix.empty and len(hist_sharpes) > 1:
@@ -670,6 +741,9 @@ def run_optimization(
                 incumbent.deflated_sharpe = calculate_psr_dsr(incumbent_returns, hist_sharpes, n)
         except Exception:
             pass  # best-effort; do not mask the loop exception
+        # Also re-deflate the holdout DSR.
+        with contextlib.suppress(Exception):
+            _deflate_holdout(incumbent, ledger)
         # 9. Cleanup
         event_log.close()
         ledger.close()
@@ -740,32 +814,71 @@ def _validate_candidate(
 
 def _deflate(
     report: EvaluationReport,
-    holdout_returns: pd.Series[Any],
+    selection_returns: pd.Series[Any],
     ledger: LedgerStore,
 ) -> None:
-    """Overwrite report's deflated_sharpe and effective_trials using ledger history."""
+    """Deflate the in-sample selection DSR using the ledger's multi-trial history.
+
+    This operates on **in-sample** returns (``selection_returns``) and
+    ``fetch_historical_returns`` (which now returns in-sample streams after
+    the holdout-separation refactor).  The holdout DSR is deflated separately
+    in ``_deflate_holdout``.
+    """
     hist_matrix, hist_sharpes = ledger.fetch_historical_returns(report.dataset_hash)
 
     if hist_matrix.empty:
-        # No prior history; current is the only trial → PSR (N=1) — report unchanged
         return
 
-    # Build matrix including current trial
-    current_col = holdout_returns.rename("current")
+    current_col = selection_returns.rename("current")
     matrix = pd.concat([hist_matrix, current_col], axis=1).dropna(how="all")
 
     n = max(1, calculate_effective_trials(matrix))
     sharpes = [*hist_sharpes, report.observed_sharpe]
 
     report.effective_trials = n
-    report.deflated_sharpe = calculate_psr_dsr(holdout_returns, sharpes, n)
+    report.deflated_sharpe = calculate_psr_dsr(selection_returns, sharpes, n)
+
+
+def _deflate_holdout(
+    report: EvaluationReport,
+    ledger: LedgerStore,
+) -> None:
+    """Deflate ``report.holdout_deflated_sharpe`` by the holdout-peek count.
+
+    Each time a candidate passes the in-sample selection gate and the
+    holdout is consulted, that peek is recorded in the ledger
+    (``holdout_evaluated = 1``).  The effective-trial count is derived
+    from the clustered correlation of *holdout* return streams, so the
+    multiple-testing penalty correctly reflects how many times the holdout
+    has actually been used.
+    """
+    hist_matrix, hist_sharpes = ledger.fetch_holdout_history(report.dataset_hash)
+
+    if report.holdout_net_returns is None or report.holdout_net_returns.empty:
+        return
+
+    if hist_matrix.empty:
+        report.holdout_deflated_sharpe = calculate_psr_dsr(
+            report.holdout_net_returns, effective_trials=1,
+        )
+        return
+
+    current_col = report.holdout_net_returns.rename("current")
+    matrix = pd.concat([hist_matrix, current_col], axis=1).dropna(how="all")
+
+    n = max(1, calculate_effective_trials(matrix))
+    sharpes = [*hist_sharpes, report.holdout_metrics.sharpe_ratio]
+
+    report.holdout_deflated_sharpe = calculate_psr_dsr(
+        report.holdout_net_returns, sharpes, n,
+    )
 
 
 def _get_metric_value(report: EvaluationReport, metric: TargetMetric) -> float:
-    """Extract the target metric value from a report."""
+    """Extract the target metric value from the in-sample walk-forward aggregate."""
     if metric == TargetMetric.SHARPE:
-        return report.holdout_metrics.sharpe_ratio
+        return report.in_sample_metrics.sharpe_ratio
     elif metric == TargetMetric.SORTINO:
-        return report.holdout_metrics.sortino_ratio
+        return report.in_sample_metrics.sortino_ratio
     else:  # INFORMATION_RATIO
-        return report.holdout_metrics.information_ratio
+        return report.in_sample_metrics.information_ratio

@@ -481,6 +481,7 @@ def test_db_schema_migration_and_custom_sorting(tmp_path: Path) -> None:
             rejection_reason=None,
             report_json="{}",
             holdout_returns=pd.Series([0.01, 0.02]),
+            selection_returns=pd.Series([0.01, 0.02]),
         )
 
         # Leaderboard should return the Sortino attempt as best

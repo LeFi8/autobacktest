@@ -63,7 +63,10 @@ CREATE TABLE IF NOT EXISTS attempts (
     completion_tokens INTEGER NOT NULL DEFAULT 0,
     total_tokens INTEGER NOT NULL DEFAULT 0,
     cost REAL NOT NULL DEFAULT 0.0,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    holdout_evaluated INTEGER NOT NULL DEFAULT 0,
+    holdout_observed_sharpe REAL,
+    holdout_returns_blob BLOB
 )
 """
 
@@ -104,6 +107,15 @@ class LedgerStore:
                 migrated = True
             if "cost" not in columns:
                 self._conn.execute("ALTER TABLE attempts ADD COLUMN cost REAL NOT NULL DEFAULT 0.0")
+                migrated = True
+            if "holdout_evaluated" not in columns:
+                self._conn.execute("ALTER TABLE attempts ADD COLUMN holdout_evaluated INTEGER NOT NULL DEFAULT 0")
+                migrated = True
+            if "holdout_observed_sharpe" not in columns:
+                self._conn.execute("ALTER TABLE attempts ADD COLUMN holdout_observed_sharpe REAL")
+                migrated = True
+            if "holdout_returns_blob" not in columns:
+                self._conn.execute("ALTER TABLE attempts ADD COLUMN holdout_returns_blob BLOB")
                 migrated = True
             if migrated:
                 # Backfill target_metric_value using observed_sharpe for older attempts
@@ -165,14 +177,23 @@ class LedgerStore:
         commit_sha: str | None,
         rejection_reason: str | None,
         report_json: str,
-        holdout_returns: pd.Series,
+        selection_returns: pd.Series,
         prompt_tokens: int = 0,
         completion_tokens: int = 0,
         total_tokens: int = 0,
         cost: float = 0.0,
+        holdout_evaluated: bool = False,
+        holdout_observed_sharpe: float | None = None,
+        holdout_returns: pd.Series | None = None,
     ) -> None:
-        """Serialize holdout returns and insert an attempt record."""
-        blob = _serialize_returns(holdout_returns)
+        """Serialize in-sample selection returns and insert an attempt record.
+
+        When ``holdout_evaluated`` is True the holdout returns are also
+        persisted so that the confirmation gate's multiple-testing penalty
+        (``_deflate_holdout``) can be computed later.
+        """
+        selection_blob = _serialize_returns(selection_returns)
+        holdout_blob = _serialize_returns(holdout_returns) if holdout_returns is not None else None
         self._conn.execute(
             """
             INSERT INTO attempts
@@ -181,9 +202,11 @@ class LedgerStore:
                  holdout_max_drawdown, holdout_turnover, regime_passed, accepted,
                  committed, commit_sha, rejection_reason, report_json,
                  returns_blob, prompt_tokens, completion_tokens, total_tokens, cost,
-                 created_at)
+                 created_at,
+                 holdout_evaluated, holdout_observed_sharpe, holdout_returns_blob)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    datetime('now'))
+                    datetime('now'),
+                    ?, ?, ?)
             """,
             (
                 run_id,
@@ -203,11 +226,14 @@ class LedgerStore:
                 commit_sha,
                 rejection_reason,
                 report_json,
-                blob,
+                selection_blob,
                 prompt_tokens,
                 completion_tokens,
                 total_tokens,
                 cost,
+                int(holdout_evaluated),
+                holdout_observed_sharpe,
+                holdout_blob,
             ),
         )
         self._conn.commit()
@@ -244,6 +270,49 @@ class LedgerStore:
         matrix = pd.concat(series_list, axis=1)
         return matrix, sharpes
 
+    def fetch_holdout_history(
+        self,
+        dataset_hash: str,
+    ) -> tuple[pd.DataFrame, list[float]]:
+        """Return holdout return series and observed Sharpes for peeked attempts.
+
+        Only rows where ``holdout_evaluated = 1`` are included — these are
+        the in-sample winners that were confirmed (or rejected) on the holdout.
+        The returned matrix drives the holdout DSR multiple-testing deflation
+        in ``_deflate_holdout``.
+
+        Returns:
+            Tuple of (DataFrame of holdout returns, list of holdout Sharpe ratios).
+            Empty DataFrame and empty list when no holdout-peeked rows exist.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT id, holdout_returns_blob, holdout_observed_sharpe
+            FROM attempts
+            WHERE dataset_hash = ? AND holdout_evaluated = 1
+            """,
+            (dataset_hash,),
+        ).fetchall()
+
+        if not rows:
+            return pd.DataFrame(), []
+
+        series_list: list[pd.Series] = []
+        sharpes: list[float] = []
+        for row_id, blob, sharpe in rows:
+            if blob is None:
+                continue
+            s = _deserialize_returns(bytes(blob))
+            s.name = row_id
+            series_list.append(s)
+            sharpes.append(float(sharpe))
+
+        if not series_list:
+            return pd.DataFrame(), []
+
+        matrix = pd.concat(series_list, axis=1)
+        return matrix, sharpes
+
     def fetch_configs(
         self,
         dataset_hash: str,
@@ -275,8 +344,13 @@ class LedgerStore:
     ) -> list[dict[str, Any]]:
         """Return a chronological list of attempt summary dicts for a dataset_hash.
 
-        Each dict contains scalar metrics and a compact ``config_fingerprint``
-        with only the ``universe`` and ``params`` keys parsed from ``config_yaml``.
+        Each dict contains **in-sample** scalar metrics only — the holdout
+        metric values are **not** exposed (they are hidden from the LLM to
+        prevent overfitting).  A ``holdout_confirmed`` boolean indicates
+        whether the attempt passed the final holdout confirmation gate.
+
+        Also includes a compact ``config_fingerprint`` with only the
+        ``universe`` and ``params`` keys parsed from ``config_yaml``.
 
         Args:
             dataset_hash: Stable hash of the sorted universe tickers.
@@ -293,11 +367,10 @@ class LedgerStore:
                 target_metric_value,
                 observed_sharpe,
                 deflated_sharpe,
-                holdout_max_drawdown,
-                holdout_turnover,
                 regime_passed,
                 rejection_reason,
-                config_yaml
+                config_yaml,
+                holdout_evaluated
             FROM attempts
             WHERE dataset_hash = ?
             ORDER BY id ASC
@@ -319,11 +392,10 @@ class LedgerStore:
                 target_metric_value,
                 observed_sharpe,
                 deflated_sharpe,
-                holdout_max_drawdown,
-                holdout_turnover,
                 regime_passed,
                 rejection_reason,
                 config_yaml,
+                holdout_evaluated,
             ) = row
 
             try:
@@ -347,10 +419,9 @@ class LedgerStore:
                     "target_metric_value": float(target_metric_value),
                     "observed_sharpe": float(observed_sharpe),
                     "deflated_sharpe": float(deflated_sharpe),
-                    "holdout_max_drawdown": float(holdout_max_drawdown),
-                    "holdout_turnover": float(holdout_turnover),
                     "regime_passed": bool(regime_passed),
                     "rejection_reason": rejection_reason,
+                    "holdout_confirmed": bool(holdout_evaluated) and bool(committed),
                     "config_fingerprint": fingerprint,
                 }
             )

@@ -278,16 +278,20 @@ def test_stuck_counter_resets_on_acceptance(
     monkeypatch.setattr("autobacktest.orchestrator.max_config_similarity", lambda *_: 0.0)
     monkeypatch.setattr("autobacktest.orchestrator.check_returns_correlation", lambda *_: (True, 0.0))
 
-    # Patch accept() to accept on the STUCK_THRESHOLD+1-th gate call, reject otherwise.
+    # Patch select() to accept on the STUCK_THRESHOLD+1-th gate call, reject otherwise.
     gate_call_count = [0]
 
-    def patched_accept(*_args: Any, **_kwargs: Any) -> GateResult:
+    def patched_select(*_args: Any, **_kwargs: Any) -> GateResult:
         gate_call_count[0] += 1
         if gate_call_count[0] == STUCK_THRESHOLD + 1:
             return GateResult(accepted=True)
         return GateResult(accepted=False, reason="test rejection", failed_gate="target_metric_improvement")
 
-    monkeypatch.setattr("autobacktest.orchestrator.accept", patched_accept)
+    monkeypatch.setattr("autobacktest.orchestrator.select", patched_select)
+    monkeypatch.setattr(
+        "autobacktest.orchestrator.confirm",
+        lambda *_a, **_kw: GateResult(accepted=True),
+    )
 
     provider = TemperatureTrackingProvider()
     provider.temperature = start_temp

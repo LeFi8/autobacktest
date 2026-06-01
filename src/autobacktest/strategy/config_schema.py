@@ -23,7 +23,17 @@ class StrategyConfig(BaseModel):
     max_drawdown_limit: float = Field(0.20, ge=0.0, le=1.0, description="Max permitted drawdown in holdout")
     turnover_limit: float = Field(2.0, gt=0.0, description="Max permitted annualized turnover rate")
     params: dict[str, Any] = Field(default_factory=dict, description="Strategy-specific parameters")
-    require_dsr_non_degradation: bool = Field(False, description="If True, require DSR does not degrade vs incumbent")
+    min_improvement: float = Field(0.0, ge=0.0, description="Minimum target-metric improvement epsilon for select gate")
+    require_dsr_non_degradation: bool = Field(
+        True, description="If True (default), selection gate enforces DSR non-degradation"
+    )
+    holdout_min_improvement: float = Field(
+        0.0, description="Tolerance for holdout DSR non-degradation in confirm gate"
+    )
+    enable_holdout_confirmation: bool = Field(
+        True,
+        description="If True, select-passing candidates are confirmed on holdout before commit",
+    )
     dsr_floor: float | None = Field(
         None, description="Optional absolute DSR floor (unused by gate currently, reserved)"
     )

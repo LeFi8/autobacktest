@@ -55,6 +55,7 @@ def _record(
         rejection_reason=None,
         report_json="{}",
         holdout_returns=returns,
+        selection_returns=returns,
     )
 
 
@@ -289,6 +290,7 @@ def test_fetch_configs_returns_committed_and_rejected(tmp_path: Path) -> None:
         rejection_reason=None,
         report_json="{}",
         holdout_returns=_make_returns(seed=0),
+        selection_returns=_make_returns(seed=0),
     )
 
     # committed=False → rejected attempt (diversity or gate rejection)
@@ -311,6 +313,7 @@ def test_fetch_configs_returns_committed_and_rejected(tmp_path: Path) -> None:
         rejection_reason="diversity_config",
         report_json="{}",
         holdout_returns=_make_returns(seed=1),
+        selection_returns=_make_returns(seed=1),
     )
 
     configs = store.fetch_configs("hash-abc")
@@ -346,6 +349,7 @@ def test_fetch_configs_excludes_other_hashes(tmp_path: Path) -> None:
         rejection_reason=None,
         report_json="{}",
         holdout_returns=_make_returns(seed=0),
+        selection_returns=_make_returns(seed=0),
     )
     store.record_attempt(
         run_id="run-1",
@@ -366,6 +370,7 @@ def test_fetch_configs_excludes_other_hashes(tmp_path: Path) -> None:
         rejection_reason=None,
         report_json="{}",
         holdout_returns=_make_returns(seed=1),
+        selection_returns=_make_returns(seed=1),
     )
 
     configs = store.fetch_configs("hash-abc")
@@ -414,8 +419,7 @@ def test_fetch_attempt_summaries_basic(tmp_path: Path) -> None:
         "target_metric_value",
         "observed_sharpe",
         "deflated_sharpe",
-        "holdout_max_drawdown",
-        "holdout_turnover",
+        "holdout_confirmed",
         "regime_passed",
         "rejection_reason",
         "config_fingerprint",
@@ -429,8 +433,7 @@ def test_fetch_attempt_summaries_basic(tmp_path: Path) -> None:
     assert first["observed_sharpe"] == pytest.approx(1.0)
     assert first["deflated_sharpe"] == pytest.approx(0.9)
     assert first["target_metric_value"] == pytest.approx(1.0)
-    assert first["holdout_max_drawdown"] == pytest.approx(0.05)
-    assert first["holdout_turnover"] == pytest.approx(0.3)
+    assert first["holdout_confirmed"] is False
     assert first["regime_passed"] is True
     assert first["rejection_reason"] is None
 
@@ -509,6 +512,7 @@ params:
         rejection_reason=None,
         report_json="{}",
         holdout_returns=_make_returns(seed=0),
+        selection_returns=_make_returns(seed=0),
     )
 
     # record with invalid YAML
@@ -531,6 +535,7 @@ params:
         rejection_reason="bad_config",
         report_json="{}",
         holdout_returns=_make_returns(seed=1),
+        selection_returns=_make_returns(seed=1),
     )
 
     results = store.fetch_attempt_summaries("hash-fp")

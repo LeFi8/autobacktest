@@ -66,12 +66,40 @@ def build_messages(context: AgentContext) -> list[dict[str, str]]:
         "content": SYSTEM_PROMPT,
     }
 
-    # Format the latest evaluation report
+    # Format the latest evaluation — in-sample walk-forward aggregate only.
+    # Holdout metrics are deliberately hidden from the LLM.
     if context.evaluation_report is not None:
+        rep = context.evaluation_report
         try:
-            eval_report_str = context.evaluation_report.to_json(indent=2)
+            m = rep.in_sample_metrics
+            wf_span = f"{m.start_date} → {m.end_date}"
+            wf_count = len(rep.walk_forward_metrics)
+            folds_detail = ""
+            if wf_count > 1:
+                fold_sharpes = [f.sharpe_ratio for f in rep.walk_forward_metrics]
+                min_s = min(fold_sharpes)
+                max_s = max(fold_sharpes)
+                folds_detail = (
+                    f"\n  Per-fold Sharpe:   {min_s:.4f} - {max_s:.4f} "
+                    f"(across {wf_count} windows)"
+                )
+            eval_report_str = (
+                f"In-Sample Walk-Forward Aggregate (selection basis):\n"
+                f"  Window:            {wf_span}\n"
+                f"  Sharpe:            {m.sharpe_ratio:.4f}\n"
+                f"  Sortino:           {m.sortino_ratio:.4f}\n"
+                f"  Information Ratio: {m.information_ratio:.4f}\n"
+                f"  Max Drawdown:      {m.max_drawdown:.4f}\n"
+                f"  Turnover:          {m.turnover:.4f}"
+                f"{folds_detail}\n"
+                f"  DSR (selection):   {rep.deflated_sharpe:.4f}\n"
+                f"  Effective Trials:  {rep.effective_trials}\n"
+                f"  Regime tests:      {'PASS' if rep.regime_passed else 'FAIL'}\n"
+                f"\n"
+                f"> **OOS holdout** is reserved as a **budgeted confirmation gate** — "
+                f"it is never shown here and cannot be optimised against."
+            )
         except Exception:
-            # Fallback if evaluation_report cannot be serialized
             eval_report_str = str(context.evaluation_report)
     else:
         eval_report_str = "First iteration (no prior evaluation report exists)."
@@ -117,8 +145,13 @@ def build_messages(context: AgentContext) -> list[dict[str, str]]:
             s = str(fp)
             return s[:60] + "..." if len(s) > 60 else s
 
-        header = "| iter | outcome | target | DSR | maxDD | turnover | regime | reason | config |"
-        separator = "|------|---------|--------|-----|-------|----------|--------|--------|--------|"
+        def _ho_flag(r: dict[str, Any]) -> str:
+            if r.get("holdout_confirmed"):
+                return "✓ HO"
+            return ""
+
+        header = "| iter | outcome | target | DSR | regime | reason | config | HO |"
+        separator = "|------|---------|--------|-----|--------|--------|--------|-----|"
         table_lines = [header, separator]
         for r in rows_to_render:
             rejection_reason = r.get("rejection_reason") or None
@@ -128,11 +161,10 @@ def build_messages(context: AgentContext) -> list[dict[str, str]]:
                 f"| {_outcome(r)} "
                 f"| {_fmt(r.get('target_metric_value'))} "
                 f"| {_fmt(r.get('deflated_sharpe'))} "
-                f"| {_fmt(r.get('holdout_max_drawdown'))} "
-                f"| {_fmt(r.get('holdout_turnover'))} "
                 f"| {'pass' if r.get('regime_passed') else ('FAIL' if 'regime_passed' in r else '-')} "
                 f"| {reason_col} "
-                f"| {_fingerprint_repr(r)} |"
+                f"| {_fingerprint_repr(r)} "
+                f"| {_ho_flag(r)} |"
             )
             table_lines.append(row)
 
@@ -238,36 +270,36 @@ def build_messages(context: AgentContext) -> list[dict[str, str]]:
         )
         previous_attempt_section = "\n".join(lines) + "\n\n"
 
-    # Build the "Performance Target" section
+    # Build the "Performance Target" section (in-sample walk-forward basis)
     if context.evaluation_report is not None:
         rep = context.evaluation_report
-        incumbent_sharpe = rep.holdout_metrics.sharpe_ratio
-        incumbent_sortino = rep.holdout_metrics.sortino_ratio
-        incumbent_ir = rep.holdout_metrics.information_ratio
-        incumbent_dd = rep.holdout_metrics.max_drawdown
-        incumbent_turnover = rep.holdout_metrics.turnover
+        m = rep.in_sample_metrics
         performance_target_section = (
             f"## Performance Target\n"
-            f"Incumbent holdout metrics (you must beat these):\n"
-            f"  - Sharpe: {incumbent_sharpe:.4f}\n"
-            f"  - Sortino: {incumbent_sortino:.4f}\n"
-            f"  - Information Ratio: {incumbent_ir:.4f}\n"
-            f"  - Max Drawdown: {incumbent_dd:.4f}\n"
-            f"  - Turnover: {incumbent_turnover:.4f}\n\n"
-            f"Hard gate limits (all must pass):\n"
-            f"  - Holdout max drawdown <= 0.20\n"
-            f"  - Holdout turnover <= 2.0\n"
+            f"Incumbent in-sample walk-forward aggregate (you must beat these):\n"
+            f"  - Sharpe: {m.sharpe_ratio:.4f}\n"
+            f"  - Sortino: {m.sortino_ratio:.4f}\n"
+            f"  - Information Ratio: {m.information_ratio:.4f}\n"
+            f"  - Max Drawdown: {m.max_drawdown:.4f}\n"
+            f"  - Turnover: {m.turnover:.4f}\n\n"
+            f"Hard gate limits (select — all must pass):\n"
+            f"  - In-sample max drawdown <= 0.20\n"
+            f"  - In-sample turnover <= 2.0\n"
             f"  - All historical crisis regime stress tests must pass\n"
-            f"  - Target metric must strictly exceed the incumbent value above.\n"
-            f"  - Deflated Sharpe (DSR): reported for overfitting insight only — not a hard gate.\n\n"
+            f"  - Target metric must strictly exceed the incumbent in-sample value above.\n"
+            f"  - Deflated Sharpe (DSR) non-degradation is **always enforced** on the "
+            f"in-sample selection basis.\n\n"
+            f"Strategies that pass the in-sample select gate face a hidden OOS holdout\n"
+            f"confirmation gate before commit. That holdout is **not visible** here.\n\n"
         )
     else:
         performance_target_section = (
             "## Performance Target\n"
             "No incumbent evaluation yet (first iteration). "
-            "Hard gate limits: drawdown <= 0.20, turnover <= 2.0, "
+            "Hard gate limits: in-sample drawdown <= 0.20, turnover <= 2.0, "
             "all regime stress tests must pass. "
-            "DSR reported for overfitting insight only — not a hard gate.\n\n"
+            "DSR non-degradation is always enforced on the in-sample selection basis.\n"
+            "Strategies that pass select are confirmed against a hidden OOS holdout.\n\n"
         )
 
     # Mode-aware instruction section
