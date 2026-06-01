@@ -6,7 +6,9 @@ from typing import cast
 
 import typer
 from rich.console import Console
+from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 from autobacktest.config import settings
 from autobacktest.evaluator.evaluate import evaluate_strategy
@@ -17,6 +19,11 @@ from autobacktest.llm.base import LLMProvider as _LLMProvider
 from autobacktest.llm.litellm_provider import LiteLLMProvider
 from autobacktest.llm.mock_provider import MockProvider
 from autobacktest.orchestrator import OrchestratorResult, run_optimization
+from autobacktest.reports.generator import (
+    compile_failure_summary,
+    compile_strategy_report,
+    plot_equity_curves,
+)
 from autobacktest.strategy.config_schema import StrategyConfig
 from autobacktest.strategy.validator import preflight
 
@@ -82,6 +89,11 @@ def run(
         "--early-stop-patience",
         help="Number of consecutive rejections allowed before early stopping.",
     ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Output raw JSON instead of the Rich summary dashboard.",
+    ),
 ) -> None:
     """Run the optimization loop on a strategy."""
     # Resolve target metric
@@ -128,13 +140,50 @@ def run(
         typer.echo(f"Error: {e}")
         raise typer.Exit(code=1) from e
 
-    # Print results
-    typer.echo("\nRun complete!")
-    typer.echo(f"  Branch:    {result.branch}")
-    typer.echo(f"  Committed: {result.n_committed} / {iterations}")
-    typer.echo(f"  Run ID:    {result.run_id}")
-    typer.echo("\n--- Final Report ---")
-    typer.echo(result.final_report.to_json())
+    if json_output:
+        typer.echo(result.final_report.to_json())
+        return
+
+    # Generate artifacts and render dashboard
+    strategy_path = settings.strategies_dir / f"{strategy}.py"
+    config_path = settings.configs_dir / f"{strategy}.yaml"
+    strategy_code = strategy_path.read_text(encoding="utf-8") if strategy_path.exists() else ""
+    config_yaml = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
+    program_text = program_path.read_text(encoding="utf-8") if program_path.exists() else ""
+
+    output_dir = run_dir_path / result.run_id
+    baseline_report = result.baseline_report
+
+    # Equity curves plot
+    baseline_returns = getattr(baseline_report, "holdout_net_returns", None) if baseline_report else None
+    final_returns = result.final_report.holdout_net_returns
+    if (
+        final_returns is not None
+        and not final_returns.empty
+        and baseline_returns is not None
+        and not baseline_returns.empty
+    ):
+        plot_equity_curves(baseline_returns, final_returns, result.run_id, output_dir)
+
+    # Failure summary from events.jsonl
+    failure_summary = compile_failure_summary(output_dir)
+
+    # Compile Markdown report
+    if baseline_report is not None:
+        compile_strategy_report(
+            baseline_report=baseline_report,
+            final_report=result.final_report,
+            run_id=result.run_id,
+            output_dir=output_dir,
+            program_text=program_text,
+            config_yaml=config_yaml,
+            failure_summary=failure_summary,
+            strategy_code=strategy_code,
+        )
+
+    # Render Rich summary dashboard
+    report_path = output_dir / "strategy_report.md"
+    _render_rich_summary(result, iterations, report_path if report_path.exists() else None)
 
 
 @app.command()
@@ -573,6 +622,113 @@ def llm_test(
     else:
         typer.echo(f"FAILED: Validation failed with error code: {res.error_code}")
         typer.echo(f"Detail: {res.detail}")
+
+
+def _render_rich_summary(
+    result: OrchestratorResult,
+    iterations: int,
+    report_path: Path | None,
+) -> None:
+    """Render a detailed Rich summary dashboard for the completed run."""
+    console = Console()
+    report = result.final_report
+
+    # Header panel
+    header = Panel(
+        Text(f"AutoBacktest Optimization Complete — {result.run_id}", style="bold cyan"),
+        border_style="cyan",
+    )
+    console.print(header)
+
+    # Strategy info
+    info = Table.grid(padding=(0, 2))
+    info.add_column(style="bold")
+    info.add_column()
+    info.add_row("Strategy", result.run_id.split("-")[0] if "-" in result.run_id else "?")
+    info.add_row("Branch", result.branch)
+    info.add_row("Committed", f"{result.n_committed} / {iterations}")
+    console.print(info)
+    console.print("")
+
+    # Metrics table
+    metrics = Table(title="Performance Comparison", show_header=True, header_style="bold magenta")
+    metrics.add_column("Metric", style="cyan")
+    metrics.add_column("Baseline", justify="right")
+    metrics.add_column("Final", justify="right")
+    metrics.add_column("", justify="center")
+
+    bl = result.baseline_report
+    bl_sharpe = bl.observed_sharpe if bl else 0.0
+    bl_dd = bl.in_sample_metrics.max_drawdown if bl else 0.0
+    bl_to = bl.in_sample_metrics.turnover if bl else 0.0
+    bl_reg = bl.regime_passed if bl else False
+
+    def _chg(current: float, baseline: float, higher_is_better: bool = True) -> str:
+        diff = current - baseline
+        if abs(diff) < 1e-8:
+            return ""
+        if higher_is_better:
+            return "[green]▲[/]" if diff > 0 else "[red]▼[/]"
+        return "[red]▲[/]" if diff > 0 else "[green]▼[/]"
+
+    metrics.add_row(
+        "Observed Sharpe",
+        f"{bl_sharpe:.3f}",
+        f"{report.observed_sharpe:.3f}",
+        _chg(report.observed_sharpe, bl_sharpe),
+    )
+    metrics.add_row(
+        "Deflated Sharpe",
+        f"{bl.deflated_sharpe:.3f}" if bl else "—",
+        f"{report.deflated_sharpe:.3f}",
+        _chg(report.deflated_sharpe, bl.deflated_sharpe if bl else 0.0),
+    )
+    metrics.add_row(
+        "Max Drawdown",
+        f"{bl_dd * 100:.2f}%",
+        f"{report.in_sample_metrics.max_drawdown * 100:.2f}%",
+        _chg(report.in_sample_metrics.max_drawdown, bl_dd, higher_is_better=False),
+    )
+    metrics.add_row(
+        "Turnover",
+        f"{bl_to:.2f}x",
+        f"{report.in_sample_metrics.turnover:.2f}x",
+        _chg(report.in_sample_metrics.turnover, bl_to, higher_is_better=False),
+    )
+    metrics.add_row(
+        "Regime Stress",
+        "[green]Pass[/]" if bl_reg else "[red]Fail[/]",
+        "[green]Pass[/]" if report.regime_passed else "[red]Fail[/]",
+    )
+    console.print(metrics)
+    console.print("")
+
+    # Gate results
+    gates = Table(title="Gate Results", show_header=True, header_style="bold blue")
+    gates.add_column("Gate", style="cyan")
+    gates.add_column("Status", justify="center")
+
+    def _gate_pass(passed: bool) -> str:
+        return "[green]✓ PASS[/]" if passed else "[red]✗ FAIL[/]"
+
+    gates.add_row("Max Drawdown ≤ 20%", _gate_pass(report.in_sample_metrics.max_drawdown <= 0.20))
+    gates.add_row("Regime Stress", _gate_pass(report.regime_passed))
+    gates.add_row("Turnover ≤ 2.0x", _gate_pass(report.in_sample_metrics.turnover <= 2.0))
+    console.print(gates)
+    console.print("")
+
+    # Cost summary
+    cost = Table(title="Cost Summary", show_header=True, header_style="bold yellow")
+    cost.add_column("Metric", style="cyan")
+    cost.add_column("Value", justify="right")
+    cost.add_row("Total Prompt Tokens", f"{result.total_prompt_tokens:,}")
+    cost.add_row("Total Completion Tokens", f"{result.total_completion_tokens:,}")
+    cost.add_row("Total Cost", f"[green]${result.total_cost:.4f}[/]")
+    console.print(cost)
+
+    # Report link
+    if report_path:
+        console.print(f"\n[bold]📄 Strategy Report:[/] [link=file://{report_path.resolve()}]{report_path.resolve()}[/]")
 
 
 def main() -> None:

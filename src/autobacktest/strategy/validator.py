@@ -91,6 +91,8 @@ class ValidationError(StrEnum):
     """Pre-flight validation error types."""
 
     AST_BLOCKED_IMPORT = "ast_blocked_import"
+    AST_LINE_LIMIT_EXCEEDED = "ast_line_limit_exceeded"
+    AST_CYCLOMATIC_COMPLEXITY_EXCEEDED = "ast_cyclomatic_complexity_exceeded"
     CONFIG_SCHEMA_INVALID = "config_schema_invalid"
     IMPORT_FAILED = "import_failed"
     SIGNATURE_MISMATCH = "signature_mismatch"
@@ -503,6 +505,41 @@ def _get_attribute_chain(node: ast.AST) -> str | None:
     return None
 
 
+def _count_node_lines(node: ast.AST) -> int:
+    """Measure the line count of a parsed AST node."""
+    end: int | None = getattr(node, "end_lineno", None)
+    start: int | None = getattr(node, "lineno", None)
+    if end is not None and start is not None:
+        return end - start
+    return 0
+
+
+def _calculate_complexity(node: ast.AST) -> int:
+    """Calculate McCabe-style cyclomatic complexity of a function AST.
+
+    Counts decision points (if/for/while/and/or/except-handler/comprehensions)
+    and adds 1 for the base path.
+    """
+    decisions: set[int] = set()
+
+    for child in ast.walk(node):
+        if isinstance(
+            child,
+            (ast.If, ast.For, ast.While, ast.ExceptHandler),
+        ):
+            decisions.add(id(child))
+        elif isinstance(child, ast.BoolOp):
+            if isinstance(child.op, (ast.And, ast.Or)):
+                decisions.add(id(child))
+        elif isinstance(
+            child,
+            (ast.ListComp, ast.DictComp, ast.SetComp),
+        ):
+            decisions.add(id(child))
+
+    return len(decisions) + 1
+
+
 def _check_ast(content: str) -> ValidationResult:
     """Parse strategy code via AST and block non-whitelisted imports or unsafe calls."""
     try:
@@ -596,6 +633,31 @@ def _check_ast(content: str) -> ValidationResult:
                             error_code=ValidationError.AST_BLOCKED_IMPORT,
                             detail=msg,
                         )
+
+    # Complexity and line-count check (second pass over function defs)
+    for func_node in ast.walk(tree):
+        if isinstance(func_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            line_count = _count_node_lines(func_node)
+            if line_count > settings.max_function_lines:
+                return ValidationResult(
+                    passed=False,
+                    error_code=ValidationError.AST_LINE_LIMIT_EXCEEDED,
+                    detail=(
+                        f"Function '{func_node.name}' has {line_count} lines, "
+                        f"exceeding the limit of {settings.max_function_lines}."
+                    ),
+                )
+            complexity = _calculate_complexity(func_node)
+            if complexity > settings.max_cyclomatic_complexity:
+                return ValidationResult(
+                    passed=False,
+                    error_code=ValidationError.AST_CYCLOMATIC_COMPLEXITY_EXCEEDED,
+                    detail=(
+                        f"Function '{func_node.name}' has cyclomatic complexity "
+                        f"{complexity}, exceeding the limit of "
+                        f"{settings.max_cyclomatic_complexity}."
+                    ),
+                )
 
     return ValidationResult(passed=True)
 
