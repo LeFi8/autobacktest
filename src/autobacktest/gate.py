@@ -47,6 +47,7 @@ def accept(
     dd_limit: float | None = None,
     turnover_limit: float | None = None,
     min_improvement: float | None = None,
+    require_dsr_non_degradation: bool | None = None,
     config: Any = None,
 ) -> GateResult:
     """Evaluate candidate EvaluationReport against lexicographic gates.
@@ -59,9 +60,11 @@ def accept(
     If all pass, tie-breaker:
     4. Improvement: target metric value > baseline target metric value + min_improvement
        (if baseline is present)
+    5. DSR non-degradation: report.deflated_sharpe >= baseline.deflated_sharpe - eps
+       (if require_dsr_non_degradation is True and baseline is present)
 
     Note: Deflated Sharpe Ratio (DSR) is computed and stored on the report for
-    overfitting insight but is NOT a hard gate.
+    overfitting insight but is NOT a hard gate by default.
 
     Args:
         report: EvaluationReport of candidate strategy.
@@ -70,6 +73,7 @@ def accept(
         dd_limit: Maximum allowed drawdown in holdout.
         turnover_limit: Maximum allowed annualized turnover rate in holdout.
         min_improvement: Minimum required improvement epsilon.
+        require_dsr_non_degradation: If True and baseline exists, require DSR does not degrade.
         config: Optional strategy configuration to resolve limits.
 
     Returns:
@@ -80,6 +84,11 @@ def accept(
     turnover_limit = turnover_limit if turnover_limit is not None else _get_config_val(config, "turnover_limit", 2.0)
     min_improvement = (
         min_improvement if min_improvement is not None else _get_config_val(config, "min_improvement", 0.0)
+    )
+    require_dsr_non_degradation = (
+        require_dsr_non_degradation
+        if require_dsr_non_degradation is not None
+        else _get_config_val(config, "require_dsr_non_degradation", False)
     )
 
     # Evaluate gates individually and populate gates_passed
@@ -166,6 +175,18 @@ def accept(
                 reason=msg,
                 failed_gate="target_metric_improvement",
             )
+
+    # 5. DSR Non-Degradation (optional gate)
+    if require_dsr_non_degradation and baseline is not None:
+        eps = 1e-6
+        if report.deflated_sharpe < baseline.deflated_sharpe - eps:
+            msg = (
+                f"Candidate DSR ({report.deflated_sharpe:.6f}) degrades below "
+                f"baseline DSR ({baseline.deflated_sharpe:.6f}) by more than {eps}."
+            )
+            report.is_accepted = False
+            report.rejection_reason = msg
+            return GateResult(accepted=False, reason=msg, failed_gate="dsr_non_degradation")
 
     report.is_accepted = True
     report.rejection_reason = None

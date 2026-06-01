@@ -194,3 +194,46 @@ def test_gate_respects_min_improvement() -> None:
     res_fail = accept(cand, baseline=base, min_improvement=0.05)
     assert not res_fail.accepted
     assert res_fail.failed_gate == "target_metric_improvement"
+
+
+def test_gate_dsr_non_degradation_default_off() -> None:
+    """Verifies DSR non-degradation gate is off by default and explicit False skips it."""
+    base = _create_mock_report(sharpe=1.0, deflated_sharpe=0.90)
+    # Candidate DSR is much worse than baseline — gate should still pass (default off)
+    cand = _create_mock_report(sharpe=1.1, deflated_sharpe=0.50)
+    res = accept(cand, baseline=base, require_dsr_non_degradation=False)
+    assert res.accepted
+
+
+def test_gate_dsr_non_degradation_accepts_when_dsr_improves() -> None:
+    """Verifies DSR non-degradation gate accepts when candidate DSR is above baseline."""
+    base = _create_mock_report(sharpe=1.0, deflated_sharpe=0.80)
+    cand = _create_mock_report(sharpe=1.1, deflated_sharpe=0.85)
+    res = accept(cand, baseline=base, require_dsr_non_degradation=True)
+    assert res.accepted
+
+
+def test_gate_dsr_non_degradation_rejects_when_dsr_degrades() -> None:
+    """Verifies DSR non-degradation gate rejects when candidate DSR significantly degrades."""
+    base = _create_mock_report(sharpe=1.0, deflated_sharpe=0.80)
+    cand = _create_mock_report(sharpe=1.1, deflated_sharpe=0.50)
+    res = accept(cand, baseline=base, require_dsr_non_degradation=True)
+    assert not res.accepted
+    assert res.failed_gate == "dsr_non_degradation"
+
+
+def test_gate_dsr_non_degradation_no_baseline_skipped() -> None:
+    """Verifies DSR non-degradation gate is skipped when no baseline exists."""
+    cand = _create_mock_report(deflated_sharpe=0.10)
+    res = accept(cand, baseline=None, require_dsr_non_degradation=True)
+    assert res.accepted
+
+
+def test_gate_dsr_non_degradation_via_config_dict() -> None:
+    """Verifies DSR non-degradation gate is resolved correctly from a config dict."""
+    config = {"require_dsr_non_degradation": True}
+    base = _create_mock_report(sharpe=1.0, deflated_sharpe=0.80)
+    cand = _create_mock_report(sharpe=1.1, deflated_sharpe=0.50)
+    res = accept(cand, baseline=base, config=config)
+    assert not res.accepted
+    assert res.failed_gate == "dsr_non_degradation"
