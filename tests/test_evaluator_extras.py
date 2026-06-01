@@ -1,10 +1,12 @@
 """Unit tests for holdout validation, regimes, and metric calculations."""
 
+import numpy as np
 import pandas as pd
 
 from autobacktest.evaluator.evaluate import (
     calculate_information_ratio,
     calculate_sortino_ratio,
+    evaluate_strategy_detailed,
 )
 from autobacktest.evaluator.holdout import partition_holdout_data
 from autobacktest.evaluator.regime import evaluate_stress_regimes
@@ -73,3 +75,62 @@ def test_stress_regimes_overlapping() -> None:
     assert drawdowns["2020_COVID"] > 0.10
     # Covid max drawdown limit is 15%. Passed should be False
     assert passed is False
+
+
+def test_wf_selection_returns_no_holdout_leakage() -> None:
+    """Regression test: selection returns must not leak into the holdout period.
+
+    Ensures the in-sample pooled walk-forward returns are sliced to the
+    contiguous test-window span ``[wf_start, wf_end]`` so that leading
+    zero-return days (pre-first-window cash) and holdout-contaminated
+    tail days do not pollute ``observed_sharpe``, the selection DSR, or
+    the historical-returns matrix used for diversity and deflation.
+    """
+    dates = pd.date_range("2008-01-01", "2025-06-01", freq="D")
+    n = len(dates)
+    rng = np.random.default_rng(42)
+    fake_prices = pd.DataFrame(
+        {"SPY": 100.0 * np.exp(np.cumsum(rng.normal(0.0005, 0.01, n)))},
+        index=dates,
+    )
+
+    def _constant_long(prices: pd.DataFrame, _config: dict) -> pd.DataFrame:
+        idx = prices.index
+        w = pd.DataFrame(0.0, index=idx, columns=prices.columns)
+        w["SPY"] = 1.0
+        return w
+
+    _, selection_returns = evaluate_strategy_detailed(
+        "test_no_leak",
+        _constant_long,
+        {"universe": ["SPY"], "benchmark": "SPY"},
+        start_date="2008-01-01",
+        end_date="2025-06-01",
+        _prices=fake_prices,
+    )
+
+    # Compute expected holdout start from the same logic used inside
+    # evaluate_strategy_detailed.
+    in_sample_idx, holdout_idx = partition_holdout_data(
+        fake_prices.index,
+        holdout_years=3,
+    )
+    holdout_start = holdout_idx.min()
+
+    # Compute first walk-forward test window start
+    wf_windows = generate_walk_forward_windows(in_sample_idx, train_years=5, test_years=1)
+    wf_start = wf_windows[0][2]
+
+    # (1) Selection returns must NOT extend into the holdout period
+    assert selection_returns.index.max() < holdout_start, (
+        f"Selection returns leak into holdout: "
+        f"last selection date = {selection_returns.index.max()}, "
+        f"holdout start = {holdout_start}"
+    )
+
+    # (2) Selection returns must start at or after the first test window
+    assert selection_returns.index.min() >= wf_start, (
+        f"Selection returns start before first WF window: "
+        f"first selection date = {selection_returns.index.min()}, "
+        f"first WF window start = {wf_start}"
+    )

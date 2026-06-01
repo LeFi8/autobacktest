@@ -28,10 +28,19 @@ def run_block_bootstrap(
 
     ret_arr = returns.values
     n_samples = len(ret_arr)
+
+    # Pad the array with the first ``block_size`` values so that every
+    # element has an equal chance of being a block start (circular
+    # block bootstrap).  This eliminates the end-sampling bias where
+    # the final ``block_size - 1`` positions can never start a block.
+    pad = min(block_size, n_samples)
+    ret_arr = np.concatenate([ret_arr, ret_arr[:pad]])
+
     n_blocks = int(np.ceil(n_samples / block_size))
 
-    # Determine permissible starting indices
-    max_start = n_samples - block_size + 1
+    # The padded array has ``n_padded = n_samples + pad`` elements;
+    # permissible start indices cover the entire original span.
+    max_start = n_samples
     if max_start <= 0:
         return 0.0, 0.0, 0.0
 
@@ -45,7 +54,7 @@ def run_block_bootstrap(
     indices = starts[:, :, np.newaxis] + np.arange(block_size)
     indices = indices.reshape(n_paths, -1)[:, :n_samples]
 
-    # Index into the raw returns array
+    # Index into the raw returns array (padded, so all indices are valid)
     boot_returns = ret_arr[indices]
 
     # Calculate Sharpe Ratio across paths

@@ -39,6 +39,7 @@ class YFinanceProvider(DataProvider):
             end=end,
             interval=interval,
             progress=False,
+            auto_adjust=False,
         )
 
         if df.empty:

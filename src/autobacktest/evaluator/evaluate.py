@@ -359,6 +359,14 @@ def evaluate_strategy_detailed(
         prices,
         asset_returns=_asset_returns,
     )
+
+    # Slice pooled returns to the contiguous walk-forward test-window span
+    # to avoid leading zeros (pre-first-window cash) and holdout leakage.
+    wf_start = wf_windows[0][2]
+    wf_end = wf_windows[-1][3]
+    wf_net_returns = wf_net_returns.loc[wf_start:wf_end]
+    wf_net_equity = wf_net_equity.loc[wf_start:wf_end]
+
     if wf_net_returns.empty:
         raise ValueError("Walk-forward test returns are empty after backtest.")
 
@@ -443,7 +451,11 @@ def evaluate_strategy_detailed(
         asset_returns=_asset_returns,
     )
 
-    regime_drawdowns, regime_passed = evaluate_stress_regimes(net_returns)
+    regime_drawdowns, regime_passed = evaluate_stress_regimes(
+        net_returns,
+        daily_weights=daily_weights,
+        n_tickers=len(tickers),
+    )
     mc_5th, mc_50th, mc_95th = run_block_bootstrap(net_returns, n_paths=1000, seed=42)
 
     # --- DSR accounting ---

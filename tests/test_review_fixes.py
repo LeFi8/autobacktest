@@ -124,6 +124,8 @@ def test_dynamic_config_collision_guard() -> None:
     assert "collide with top-level schema fields" in str(exc_info.value)
 
     # 2. Extra field collision (dynamic guard - Finding 11)
+    # With extra="forbid", root-level extra fields are caught first
+    # before the collision validator runs.
     with pytest.raises(PydanticValidationError) as exc_info:
         StrategyConfig.model_validate(
             {
@@ -132,7 +134,7 @@ def test_dynamic_config_collision_guard() -> None:
                 "params": {"custom_factor": 20.0},
             }
         )
-    assert "collide with top-level schema fields" in str(exc_info.value)
+    assert "Extra inputs are not permitted" in str(exc_info.value)
 
 
 class MockModule:
@@ -449,7 +451,7 @@ def test_db_schema_migration_and_custom_sorting(tmp_path: Path) -> None:
     store = LedgerStore(db_file)
     try:
         # Verify columns are added and backfilled
-        cursor = store._conn.cursor()
+        cursor = store._conn().cursor()
         cursor.execute("PRAGMA table_info(attempts)")
         columns = [row[1] for row in cursor.fetchall()]
         assert "target_metric" in columns

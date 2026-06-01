@@ -51,9 +51,10 @@ def test_costs_turnover_and_friction() -> None:
         spread_bps=50.0,
     )
 
-    # 1.0 turnover over 10 business days (10/252 years)
-    # expected turnover rate should be 1.0 / (10/252) = 25.2
-    assert turnover > 25.0
+    # 1.0 notional turnover over 10 business days (10/252 years).
+    # With the one-sided convention (divide total abs changes by 2),
+    # the expected rate is 0.5 / (10/252) = 12.6
+    assert 12.0 < turnover < 13.0
     # Cost should be deducted on day 5 rebalance date
     # Weight drifted is 0.0, target is 1.0 -> trade is 1.0 -> fee is 100bps = 0.01
     assert net_returns.iloc[5] == -0.01

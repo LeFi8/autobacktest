@@ -2,6 +2,7 @@
 
 import logging
 
+import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
@@ -11,6 +12,11 @@ REGIMES = {
     "2020_COVID": ("2020-02-20", "2020-04-30", 0.15),  # Max 15% drawdown threshold
     "2022_BEAR": ("2022-01-01", "2022-12-31", 0.20),  # Max 20% drawdown threshold
 }
+
+# Minimum-exposure check thresholds
+MAX_CASH_RATIO = 0.80  # >80% cash triggers the warning
+MAX_CASH_CONSECUTIVE_DAYS = 10  # sustained for >10 trading days
+MIN_TICKERS_FOR_REJECT = 3  # only hard-reject when universe >= 3 tickers
 
 
 def calculate_max_drawdown(equity: pd.Series) -> float:
@@ -22,11 +28,66 @@ def calculate_max_drawdown(equity: pd.Series) -> float:
     return float(abs(drawdowns.min()))
 
 
-def evaluate_stress_regimes(net_returns: pd.Series) -> tuple[dict[str, float], bool]:
+def _check_regime_exposure(
+    daily_weights: pd.DataFrame,
+    regime_start: str,
+    regime_end: str,
+    n_tickers: int,
+) -> str | None:
+    """Check for excessive cash holding during a regime period.
+
+    Returns:
+        A warning string if the condition is triggered, or ``None``.
+    """
+    regime_weights = daily_weights.loc[regime_start:regime_end]
+    if regime_weights.empty:
+        return None
+
+    exposure = regime_weights.sum(axis=1)
+    low_exposure = (exposure < 1.0 - MAX_CASH_RATIO).astype(int)
+
+    # Find the longest consecutive run of low-exposure days
+    transitions = np.diff(low_exposure, prepend=0)
+    run_starts = np.where(transitions == 1)[0]
+    run_ends = np.where(transitions == -1)[0]
+    if len(run_starts) > 0 and len(run_ends) > 0:
+        # Handle case where the series ends in a low-exposure state
+        if len(run_ends) < len(run_starts):
+            run_ends = np.append(run_ends, len(low_exposure))
+        longest_run = int(np.max(run_ends - run_starts))
+    else:
+        longest_run = 0
+
+    if longest_run > MAX_CASH_CONSECUTIVE_DAYS:
+        msg = (
+            f"Regime {regime_start}..{regime_end}: strategy held >{MAX_CASH_RATIO * 100:.0f}% cash "
+            f"for {longest_run} consecutive trading days (limit: {MAX_CASH_CONSECUTIVE_DAYS})."
+        )
+        # Hard-reject if the universe is genuinely multi-asset
+        if n_tickers >= MIN_TICKERS_FOR_REJECT:
+            return f"[HARD REJECT] {msg}"
+        return f"[WARNING] {msg}"
+    return None
+
+
+def evaluate_stress_regimes(
+    net_returns: pd.Series,
+    daily_weights: pd.DataFrame | None = None,
+    n_tickers: int = 0,
+) -> tuple[dict[str, float], bool]:
     """Calculate drawdowns during stress regimes and return passed indicator.
+
+    When ``daily_weights`` is provided an additional minimum-exposure check
+    is performed — sustained >80% cash positions during a crisis regime
+    are flagged and may produce a hard rejection for genuinely multi-asset
+    strategies (universe >= 3 tickers).
 
     Args:
         net_returns: Daily portfolio net returns.
+        daily_weights: Optional daily portfolio weights (used for
+            minimum-exposure check).
+        n_tickers: Number of tickers in the strategy universe (used for
+            exposure-reject logic).
 
     Returns:
         tuple containing:
@@ -52,6 +113,16 @@ def evaluate_stress_regimes(net_returns: pd.Series) -> tuple[dict[str, float], b
             drawdowns[name] = max_dd
             if max_dd > limit:
                 passed = False
+
+            # Minimum-exposure check
+            if daily_weights is not None:
+                exposure_warning = _check_regime_exposure(daily_weights, start, end, n_tickers)
+                if exposure_warning:
+                    if exposure_warning.startswith("[HARD REJECT]"):
+                        logger.warning("Regime exposure: %s", exposure_warning)
+                        passed = False
+                    else:
+                        logger.warning("Regime exposure: %s", exposure_warning)
         else:
             # If data doesn't overlap the regime, we assume 0 drawdown and pass
             logger.warning(

@@ -230,9 +230,11 @@ def run_optimization(
         # 7. Baseline evaluation (iteration 0 — not written to events.jsonl)
         baseline_exists = False
         if resume:
-            check_baseline = ledger._conn.execute(
-                "SELECT COUNT(*) FROM attempts WHERE run_id = ? AND iteration = 0", (run_id,)
-            ).fetchone()
+            check_baseline = (
+                ledger._conn()
+                .execute("SELECT COUNT(*) FROM attempts WHERE run_id = ? AND iteration = 0", (run_id,))
+                .fetchone()
+            )
             if check_baseline and check_baseline[0] > 0:
                 baseline_exists = True
 
@@ -282,11 +284,15 @@ def run_optimization(
             )
         else:
             # Reconstruct incumbent from the latest accepted/committed attempt
-            rows = ledger._conn.execute(
-                "SELECT iteration, accepted, committed, report_json "
-                "FROM attempts WHERE run_id = ? ORDER BY iteration ASC",
-                (run_id,),
-            ).fetchall()
+            rows = (
+                ledger._conn()
+                .execute(
+                    "SELECT iteration, accepted, committed, report_json "
+                    "FROM attempts WHERE run_id = ? ORDER BY iteration ASC",
+                    (run_id,),
+                )
+                .fetchall()
+            )
 
             latest_accepted = None
             if rows:
@@ -302,10 +308,14 @@ def run_optimization(
 
                 incumbent = EvaluationReport.from_json(latest_accepted[3])
 
-                ret_row = ledger._conn.execute(
-                    "SELECT returns_blob, holdout_returns_blob FROM attempts WHERE run_id = ? AND iteration = ?",
-                    (run_id, latest_accepted[0]),
-                ).fetchone()
+                ret_row = (
+                    ledger._conn()
+                    .execute(
+                        "SELECT returns_blob, holdout_returns_blob FROM attempts WHERE run_id = ? AND iteration = ?",
+                        (run_id, latest_accepted[0]),
+                    )
+                    .fetchone()
+                )
                 incumbent_returns = _deserialize_returns(bytes(ret_row[0])) if ret_row else pd.Series(dtype=float)
                 if ret_row and ret_row[1] is not None:
                     incumbent.holdout_net_returns = _deserialize_returns(bytes(ret_row[1]))
@@ -349,7 +359,7 @@ def run_optimization(
         total_cost = 0.0
         start_k = 1
         if resume:
-            rows = ledger._conn.execute("SELECT iteration FROM attempts WHERE run_id = ?", (run_id,)).fetchall()
+            rows = ledger._conn().execute("SELECT iteration FROM attempts WHERE run_id = ?", (run_id,)).fetchall()
             if rows:
                 start_k = max(row[0] for row in rows) + 1
 
@@ -615,19 +625,20 @@ def run_optimization(
                             ev["detail"] = sel.reason
                             ev["_failed_gate"] = sel.failed_gate
 
-                    # --- Commit winner (if any) — atomic: write + git + ledger ---
+                    # --- Commit winner (if any) — atomic: record → commit → mark ---
                     if winner is not None:
                         w_edit = winner["edit"]
                         w_report = winner["_report"]
                         w_returns = winner["_returns"]
+                        attempt_id: int | None = None
                         try:
                             strat_path.write_text(w_edit.strategy_code, encoding="utf-8")
                             cfg_path.write_text(w_edit.config_yaml, encoding="utf-8")
-                            sha = git_ledger.commit_strategy(
-                                strategy_name,
-                                f"iter {k}: {w_edit.reasoning[:72] if w_edit.reasoning else 'multi-candidate'}",
-                            )
-                            ledger.record_attempt(
+
+                            # Phase 1: Record in ledger (committed=False) — safe
+                            # even if the process dies after this step because
+                            # the row is already persisted with committed=0.
+                            attempt_id = ledger.record_attempt(
                                 run_id=run_id,
                                 iteration=k,
                                 strategy_name=strategy_name,
@@ -641,8 +652,8 @@ def run_optimization(
                                 in_sample_turnover=w_report.in_sample_metrics.turnover,
                                 regime_passed=w_report.regime_passed,
                                 accepted=True,
-                                committed=True,
-                                commit_sha=sha,
+                                committed=False,
+                                commit_sha=None,
                                 rejection_reason=None,
                                 report_json=w_report.to_json(),
                                 selection_returns=w_returns,
@@ -654,6 +665,16 @@ def run_optimization(
                                 holdout_observed_sharpe=w_report.holdout_metrics.sharpe_ratio,
                                 holdout_returns=w_report.holdout_net_returns,
                             )
+
+                            # Phase 2: Git commit — returns the SHA
+                            sha = git_ledger.commit_strategy(
+                                strategy_name,
+                                f"iter {k}: {w_edit.reasoning[:72] if w_edit.reasoning else 'multi-candidate'}",
+                            )
+
+                            # Phase 3: Mark committed in ledger (two-phase finalize)
+                            ledger.mark_committed(attempt_id, sha)
+
                             incumbent = w_report
                             incumbent_returns = w_returns
                             n_committed += 1
@@ -664,7 +685,13 @@ def run_optimization(
                             winner["_recorded"] = True
                         except Exception:
                             git_ledger.rollback_strategy(strategy_name)
-                            logger.exception("Atomic commit failed for iteration %d — rolled back.", k)
+                            aid = attempt_id if attempt_id is not None else "unknown"
+                            logger.exception(
+                                "Atomic commit failed for iteration %d — rolled back. "
+                                "Ledger row id=%s remains as committed=0 for resume recovery.",
+                                k,
+                                aid,
+                            )
                             raise
 
                     # --- Record ALL candidates in ledger ---
