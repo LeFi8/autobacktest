@@ -40,3 +40,5 @@ tmp/
 *_candidate_*.py
 *_candidate_*.yaml
 
+# Intellij
+.idea/

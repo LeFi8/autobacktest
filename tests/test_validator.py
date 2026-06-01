@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from autobacktest.config import settings
 from autobacktest.strategy.validator import ValidationError, preflight
 
 
@@ -300,7 +301,6 @@ def generate_signals(_prices: pd.DataFrame, _config: dict) -> pd.DataFrame:
 
 def test_validator_file_size_limit(mock_dirs: tuple[Path, Path]) -> None:
     """Verifies that strategy files exceeding size limits are rejected."""
-    from autobacktest.config import settings
     strat_dir, conf_dir = mock_dirs
 
     strat_file = strat_dir / "large_file.py"
