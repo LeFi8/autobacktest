@@ -41,6 +41,10 @@ class Settings(BaseModel):
 
     # --- SAFETY GATES ---
     max_file_size_kb: int = Field(default_factory=lambda: int(os.getenv("AUTOBACKTEST_MAX_FILE_SIZE_KB", "100")))
+    max_cyclomatic_complexity: int = Field(
+        default_factory=lambda: int(os.getenv("AUTOBACKTEST_MAX_CYCLOMATIC_COMPLEXITY", "15"))
+    )
+    max_function_lines: int = Field(default_factory=lambda: int(os.getenv("AUTOBACKTEST_MAX_FUNCTION_LINES", "100")))
     safe_imports_whitelist: str = Field(
         default_factory=lambda: os.getenv(
             "AUTOBACKTEST_SAFE_IMPORTS_WHITELIST",

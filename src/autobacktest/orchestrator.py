@@ -61,6 +61,10 @@ class OrchestratorResult:
     branch: str
     n_committed: int
     final_report: EvaluationReport
+    total_prompt_tokens: int = 0
+    total_completion_tokens: int = 0
+    total_cost: float = 0.0
+    baseline_report: EvaluationReport | None = None
 
 
 def run_optimization(
@@ -287,6 +291,10 @@ def run_optimization(
                 incumbent_returns = pd.Series(dtype=float)
 
         # 8. Optimization loop
+        baseline_at_start = incumbent
+        total_prompt_tokens = 0
+        total_completion_tokens = 0
+        total_cost = 0.0
         start_k = 1
         if resume:
             rows = ledger._conn.execute("SELECT iteration FROM attempts WHERE run_id = ?", (run_id,)).fetchall()
@@ -374,6 +382,9 @@ def run_optimization(
                         try:
                             edit = provider.generate_edit(ctx)
                             n_llm_ok += 1
+                            total_prompt_tokens += edit.prompt_tokens
+                            total_completion_tokens += edit.completion_tokens
+                            total_cost += edit.cost
                             break
                         except LLMError as e:
                             # 1. Length cutoff retry
@@ -852,6 +863,10 @@ def run_optimization(
         branch=branch,
         n_committed=n_committed,
         final_report=incumbent,
+        total_prompt_tokens=total_prompt_tokens,
+        total_completion_tokens=total_completion_tokens,
+        total_cost=total_cost,
+        baseline_report=baseline_at_start,
     )
 
 

@@ -388,9 +388,50 @@ Manages system configuration settings loaded from environment variables with saf
 - `configs_dir`: Configuration templates folder path.
 - `ledger_db_name`: Relational ledger storage filename.
 - `max_file_size_kb`: Maximum allowed candidate code file length (default: `100`).
+- `max_cyclomatic_complexity`: Maximum cyclomatic complexity allowed for functions (default: `15`).
+- `max_function_lines`: Maximum physical lines allowed for functions (default: `100`).
 - `safe_imports_whitelist`: Comma-separated allowed module imports.
 - `sandbox_timeout`: Strategy signal execution limit integer (default: `15`).
 - `db_timeout`: Database block lock timeout limit (default: `15.0`).
+
+---
+
+## 8. Reporting Module (`autobacktest.reports`)
+
+### `plot_equity_curves`
+Generates a Matplotlib cumulative returns comparison chart.
+```python
+def plot_equity_curves(
+    baseline_returns: pd.Series,
+    final_returns: pd.Series,
+    run_id: str,
+    output_dir: Path,
+) -> Path:
+    """Generate a comparison chart of cumulative returns and save as equity_curves.png."""
+```
+
+### `compile_failure_summary`
+Aggregates candidate rejections and compiler exceptions from the events log.
+```python
+def compile_failure_summary(run_dir: Path) -> dict[str, Any]:
+    """Parse events.jsonl and compile failure statistics."""
+```
+
+### `compile_strategy_report`
+Compiles the self-contained institutional quantitative Markdown strategy report.
+```python
+def compile_strategy_report(
+    baseline_report: EvaluationReport,
+    final_report: EvaluationReport,
+    run_id: str,
+    output_dir: Path,
+    program_text: str,
+    config_yaml: str,
+    failure_summary: dict[str, Any],
+    strategy_code: str,
+) -> Path:
+    """Generate and write strategy_report.md inside the run directory."""
+```
 
 
 

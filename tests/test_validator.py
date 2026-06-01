@@ -1,11 +1,18 @@
 """Unit tests for the pre-flight strategy and config validator."""
 
+import ast
 from pathlib import Path
 
 import pytest
 
 from autobacktest.config import settings
-from autobacktest.strategy.validator import ValidationError, preflight
+from autobacktest.strategy.validator import (
+    ValidationError,
+    ValidationResult,
+    _calculate_complexity,
+    _count_node_lines,
+    preflight,
+)
 
 
 @pytest.fixture
@@ -324,3 +331,187 @@ def generate_signals(prices: pd.DataFrame, config: dict) -> pd.DataFrame:
     assert not res.passed
     assert res.error_code == ValidationError.IMPORT_FAILED
     assert "exceeds size limit" in res.detail
+
+
+# ---------------------------------------------------------------------------
+# AST Complexity guard unit tests (Tasks 1.3, 1.4, 1.5)
+# ---------------------------------------------------------------------------
+
+
+def _parse_func(code: str) -> ast.FunctionDef:
+    """Parse a single function definition and return its AST node."""
+    tree = ast.parse(code)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef):
+            return node
+    raise ValueError("No function definition found in code")
+
+
+def test_count_node_lines_one_line() -> None:
+    """A one-line function has line count = 1."""
+    func = _parse_func("def f(): pass\n")
+    assert _count_node_lines(func) == 1
+
+
+def test_count_node_lines_multi_line() -> None:
+    """A multi-line function returns the correct physical line count."""
+    code = """
+def f():
+    x = 1
+    y = 2
+    z = x + y
+    return z
+"""
+    func = _parse_func(code)
+    assert _count_node_lines(func) == 5
+
+
+def test_count_node_lines_large() -> None:
+    """A function exceeding the default limit is detected by the helper."""
+    lines = ["def f():"]
+    for i in range(150):
+        lines.append(f"    x{i} = {i}")
+    code = "\n".join(lines)
+    func = _parse_func(code)
+    assert _count_node_lines(func) > settings.max_function_lines
+
+
+def test_calculate_complexity_flat() -> None:
+    """A function with no decision points has complexity 1."""
+    func = _parse_func("def f(): return 42\n")
+    assert _calculate_complexity(func) == 1
+
+
+def test_calculate_complexity_one_if() -> None:
+    """A single if-statement adds 1 to complexity."""
+    func = _parse_func("def f(x):\n    if x > 0:\n        return x\n    return 0\n")
+    assert _calculate_complexity(func) == 2
+
+
+def test_calculate_complexity_nested_control_flow() -> None:
+    """Nested if/for/while branches all contribute to complexity."""
+    func = _parse_func(
+        "def f(x, n):\n"
+        "    if x > 0:\n"
+        "        for i in range(n):\n"
+        "            while i < 10:\n"
+        "                i += 1\n"
+        "    else:\n"
+        "        return 0\n"
+        "    return x\n"
+    )
+    # 1 (base) + 1 (if) + 1 (for) + 1 (while) = 4
+    assert _calculate_complexity(func) == 4
+
+
+def test_calculate_complexity_boolean_operators() -> None:
+    """ast.And and ast.Or each count as decision points."""
+    func = _parse_func("def f(a, b, c):\n    if a and b or c:\n        return 1\n    return 0\n")
+    # 1 (base) + 1 (if) + 1 (and) + 1 (or) = 4
+    assert _calculate_complexity(func) == 4
+
+
+def test_calculate_complexity_comprehension() -> None:
+    """List comprehensions count as decision points.
+
+    Note: the 'if' clause inside a comprehension is an expression
+    (Compare node), not an ast.If, so it does NOT add an extra branch.
+    """
+    func = _parse_func("def f(items):\n    return [x for x in items if x > 0]\n")
+    # 1 (base) + 1 (list comp) = 2
+    assert _calculate_complexity(func) == 2
+
+
+def test_preflight_rejects_overly_long_function() -> None:
+    """preflight rejects a function exceeding max_function_lines."""
+    lines = ["import pandas as pd\n", "\n", "def generate_signals(prices, config):\n"]
+    for i in range(120):
+        lines.append(f"    x{i} = {i}\n")
+    lines.append("    return pd.DataFrame()\n")
+    code = "".join(lines)
+    # Override to a low limit for testing
+    original = settings.max_function_lines
+    settings.max_function_lines = 50
+    try:
+        mock_dirs_result = _run_with_code(code)
+        assert mock_dirs_result is not None
+        res = mock_dirs_result
+        assert not res.passed
+        assert res.error_code == ValidationError.AST_LINE_LIMIT_EXCEEDED
+        assert "exceeding the limit" in res.detail
+    finally:
+        settings.max_function_lines = original
+
+
+def test_preflight_rejects_overly_complex_function() -> None:
+    """preflight rejects a function exceeding max_cyclomatic_complexity."""
+    code = (
+        "import pandas as pd\n"
+        "\n"
+        "def generate_signals(prices, config):\n"
+        "    if True:\n"
+        "        pass\n"
+        "    if True:\n"
+        "        pass\n"
+        "    if True:\n"
+        "        pass\n"
+        "    if True:\n"
+        "        pass\n"
+        "    if True:\n"
+        "        pass\n"
+        "    if True:\n"
+        "        pass\n"
+        "    if True:\n"
+        "        pass\n"
+        "    if True:\n"
+        "        pass\n"
+        "    if True:\n"
+        "        pass\n"
+        "    if True:\n"
+        "        pass\n"
+        "    if True:\n"
+        "        pass\n"
+        "    if True:\n"
+        "        pass\n"
+        "    if True:\n"
+        "        pass\n"
+        "    if True:\n"
+        "        pass\n"
+        "    if True:\n"
+        "        pass\n"
+        "    if True:\n"
+        "        pass\n"
+        "    if True:\n"
+        "        pass\n"
+        "    if True:\n"
+        "        pass\n"
+        "    return pd.DataFrame()\n"
+    )
+    # 1 (base) + 18 (ifs) = 19 > default 15
+    original = settings.max_cyclomatic_complexity
+    settings.max_cyclomatic_complexity = 5
+    try:
+        mock_dirs_result = _run_with_code(code)
+        assert mock_dirs_result is not None
+        res = mock_dirs_result
+        assert not res.passed
+        assert res.error_code == ValidationError.AST_CYCLOMATIC_COMPLEXITY_EXCEEDED
+        assert "cyclomatic complexity" in res.detail
+    finally:
+        settings.max_cyclomatic_complexity = original
+
+
+def _run_with_code(code: str) -> ValidationResult | None:
+    """Helper: run preflight on a temporary strategy file."""
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as d:
+        strat_dir = Path(d) / "strategies"
+        conf_dir = Path(d) / "configs"
+        strat_dir.mkdir()
+        conf_dir.mkdir()
+        (strat_dir / "x.py").write_text(code, encoding="utf-8")
+        (conf_dir / "x.yaml").write_text("universe: [SPY]\n", encoding="utf-8")
+        return preflight("x", strat_dir, conf_dir)
+    return None
