@@ -57,20 +57,14 @@ def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFra
         inv_vol = 1.0 / ann_vol
         total_inv_vol = inv_vol.sum()
 
-        if total_inv_vol > 1e-8:
-            w_raw = inv_vol / total_inv_vol
-        else:
-            w_raw = pd.Series(0.0, index=risky_assets)
+        w_raw = inv_vol / total_inv_vol if total_inv_vol > 1e-8 else pd.Series(0.0, index=risky_assets)
 
         # Estimate portfolio volatility under zero correlation assumption
         port_var = (w_raw**2 * ann_vol**2).sum()
         port_vol = np.sqrt(port_var) if port_var > 0 else 0.0
 
         # Scale to target volatility; cap at 1.0
-        if port_vol > 1e-8:
-            leverage = min(1.0, target_vol / port_vol)
-        else:
-            leverage = 0.0
+        leverage = min(1.0, target_vol / port_vol) if port_vol > 1e-8 else 0.0
 
         # Final risky weights
         w_risky = w_raw * leverage
