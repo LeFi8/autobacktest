@@ -52,6 +52,7 @@ def test_build_messages_with_report() -> None:
         is_accepted=True,
         rejection_reason=None,
         holdout_metrics=mock_window,
+        in_sample_metrics=mock_window,
         walk_forward_metrics=[mock_window],
         regime_drawdowns={"2008": 0.12},
         regime_passed=True,
@@ -76,8 +77,8 @@ def test_build_messages_with_report() -> None:
     user_msg = messages[1]["content"]
     assert "## Iteration" in user_msg
     assert "Current Loop Iteration: 3" in user_msg
-    assert "hash123" in user_msg
-    assert "observed_sharpe" in user_msg
+    assert "In-Sample Walk-Forward Aggregate" in user_msg
+    assert "Sharpe:" in user_msg
 
 
 def test_build_messages_lessons_warning() -> None:
@@ -118,6 +119,7 @@ def _make_mock_report() -> EvaluationReport:
         is_accepted=True,
         rejection_reason=None,
         holdout_metrics=mock_window,
+        in_sample_metrics=mock_window,
         walk_forward_metrics=[mock_window],
         regime_drawdowns={},
         regime_passed=True,
@@ -203,8 +205,8 @@ def test_build_messages_gate_failure_renders_section() -> None:
             "candidate_metrics": {
                 "observed_sharpe": 1.1,
                 "holdout_sharpe": 0.9,
-                "holdout_max_drawdown": 0.20,
-                "holdout_turnover": 0.6,
+                "in_sample_max_drawdown": 0.20,
+                "in_sample_turnover": 0.6,
                 "regime_passed": True,
             },
         },
@@ -215,7 +217,7 @@ def test_build_messages_gate_failure_renders_section() -> None:
     assert "gate" in user_msg
     assert "max_drawdown" in user_msg
     assert "Holdout max drawdown 0.2000 exceeds limit of 0.1500." in user_msg
-    assert "holdout_max_drawdown" in user_msg
+    assert "in_sample_max_drawdown" in user_msg
     assert "Diagnose the failure above" in user_msg
 
 
@@ -257,7 +259,7 @@ def test_build_messages_performance_target_with_report() -> None:
     assert "## Performance Target" in user_msg
     assert "1.2000" in user_msg
     assert "0.20" in user_msg
-    assert "overfitting insight only" in user_msg
+    assert "always enforced" in user_msg
     assert "regime stress tests" in user_msg
 
 
@@ -274,7 +276,7 @@ def test_build_messages_performance_target_no_report() -> None:
     user_msg = messages[1]["content"]
     assert "## Performance Target" in user_msg
     assert "drawdown <= 0.20" in user_msg
-    assert "overfitting insight only" in user_msg
+    assert "always enforced" in user_msg
 
 
 def test_build_messages_previous_attempt_before_instructions() -> None:
@@ -297,3 +299,128 @@ def test_build_messages_previous_attempt_before_instructions() -> None:
     prev_pos = user_msg.index("## Previous Attempt Result")
     instructions_pos = user_msg.index("## Instructions")
     assert prev_pos < instructions_pos
+
+
+# ── Attempt History tests ──────────────────────────────────────────────────────
+
+_ATTEMPT_COMMITTED = {
+    "iteration": 1,
+    "accepted": True,
+    "committed": True,
+    "target_metric_value": 1.25,
+    "observed_sharpe": 1.3,
+    "deflated_sharpe": 1.1,
+    "in_sample_max_drawdown": 0.08,
+    "in_sample_turnover": 0.4,
+    "regime_passed": True,
+    "rejection_reason": None,
+    "config_fingerprint": {"universe": ["SPY", "TIP"], "params": {"top_n": 3}},
+}
+
+_ATTEMPT_REJECTED = {
+    "iteration": 2,
+    "accepted": False,
+    "committed": False,
+    "target_metric_value": 0.95,
+    "observed_sharpe": 1.0,
+    "deflated_sharpe": 0.8,
+    "in_sample_max_drawdown": 0.22,
+    "in_sample_turnover": 1.5,
+    "regime_passed": False,
+    "rejection_reason": "Drawdown exceeds limit",
+    "config_fingerprint": {"universe": ["SPY"], "params": {"top_n": 5}},
+}
+
+
+def _make_context(**kwargs) -> AgentContext:  # type: ignore[no-untyped-def]
+    defaults = {
+        "strategy_name": "haa",
+        "strategy_code": "def generate_signals(): pass",
+        "config_yaml": "universe: [SPY]",
+        "program_text": "make it conservative",
+        "evaluation_report": None,
+        "iteration": 1,
+    }
+    defaults.update(kwargs)
+    return AgentContext(**defaults)
+
+
+def test_build_messages_attempt_history_omitted_when_none() -> None:
+    context = _make_context(attempt_history=None)
+    messages = build_messages(context)
+    user_msg = messages[1]["content"]
+    assert "## Attempt History" not in user_msg
+
+
+def test_build_messages_attempt_history_omitted_when_empty() -> None:
+    context = _make_context(attempt_history=[])
+    messages = build_messages(context)
+    user_msg = messages[1]["content"]
+    assert "## Attempt History" not in user_msg
+
+
+def test_build_messages_attempt_history_rendered() -> None:
+    accepted_not_committed = {
+        "iteration": 3,
+        "accepted": True,
+        "committed": False,
+        "target_metric_value": 1.10,
+        "observed_sharpe": 1.15,
+        "deflated_sharpe": 0.95,
+        "in_sample_max_drawdown": 0.10,
+        "in_sample_turnover": 0.6,
+        "regime_passed": True,
+        "rejection_reason": None,
+        "config_fingerprint": {"universe": ["AGG"], "params": {"top_n": 4}},
+    }
+    history = [_ATTEMPT_COMMITTED, _ATTEMPT_REJECTED, accepted_not_committed]
+    context = _make_context(attempt_history=history)
+    messages = build_messages(context)
+    user_msg = messages[1]["content"]
+    assert "## Attempt History" in user_msg
+    assert "| iter | outcome |" in user_msg
+    assert "✓ committed" in user_msg
+
+
+def test_build_messages_attempt_history_truncation() -> None:
+    # 30 non-committed rows — only 25 should be shown, triggering the omit note
+    history = [
+        {
+            "iteration": i,
+            "accepted": False,
+            "committed": False,
+            "target_metric_value": 0.9,
+            "observed_sharpe": 0.9,
+            "deflated_sharpe": 0.7,
+            "in_sample_max_drawdown": 0.15,
+            "in_sample_turnover": 1.0,
+            "regime_passed": True,
+            "rejection_reason": "Below target",
+            "config_fingerprint": {"universe": ["SPY"], "params": {"top_n": i}},
+        }
+        for i in range(1, 31)
+    ]
+    context = _make_context(attempt_history=history)
+    messages = build_messages(context)
+    user_msg = messages[1]["content"]
+    assert "## Attempt History" in user_msg
+    assert "oldest non-committed omitted" in user_msg
+
+
+# ── Mode section tests ─────────────────────────────────────────────────────────
+
+
+def test_build_messages_mode_explore_section() -> None:
+    context = _make_context()  # default mode is "explore"
+    messages = build_messages(context)
+    user_msg = messages[1]["content"]
+    assert "## Mode" in user_msg
+    assert "**EXPLORE**" in user_msg
+
+
+def test_build_messages_mode_exploit_section() -> None:
+    context = _make_context(mode="exploit")
+    messages = build_messages(context)
+    user_msg = messages[1]["content"]
+    assert "## Mode" in user_msg
+    assert "**EXPLOIT**" in user_msg

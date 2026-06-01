@@ -1,7 +1,7 @@
 """Unit tests for the lexicographic improvement gate."""
 
 from autobacktest.evaluator.report import EvaluationReport, WindowReport
-from autobacktest.gate import TargetMetric, accept
+from autobacktest.gate import TargetMetric, accept, confirm, select
 
 
 def _create_mock_report(
@@ -32,6 +32,7 @@ def _create_mock_report(
         is_accepted=True,
         rejection_reason=None,
         holdout_metrics=window,
+        in_sample_metrics=window,
         walk_forward_metrics=[window],
         regime_drawdowns={},
         regime_passed=regime_passed,
@@ -194,3 +195,171 @@ def test_gate_respects_min_improvement() -> None:
     res_fail = accept(cand, baseline=base, min_improvement=0.05)
     assert not res_fail.accepted
     assert res_fail.failed_gate == "target_metric_improvement"
+
+
+def test_gate_select_rejects_dsr_degradation() -> None:
+    """Verifies select gate rejects DSR degradation (always-on by default)."""
+    base = _create_mock_report(sharpe=1.0, deflated_sharpe=0.90)
+    cand = _create_mock_report(sharpe=1.1, deflated_sharpe=0.50)
+    # The accept wrapper calls select (DSR always-on by default) -> DSR degrades
+    res = accept(cand, baseline=base)
+    assert not res.accepted
+    assert res.failed_gate == "dsr_non_degradation"
+
+
+def test_gate_dsr_non_degradation_accepts_when_dsr_improves() -> None:
+    """Verifies DSR non-degradation gate accepts when candidate DSR is above baseline."""
+    base = _create_mock_report(sharpe=1.0, deflated_sharpe=0.80)
+    cand = _create_mock_report(sharpe=1.1, deflated_sharpe=0.85)
+    res = accept(cand, baseline=base, require_dsr_non_degradation=True)
+    assert res.accepted
+
+
+def test_gate_dsr_non_degradation_rejects_when_dsr_degrades() -> None:
+    """Verifies DSR non-degradation gate rejects when candidate DSR significantly degrades."""
+    base = _create_mock_report(sharpe=1.0, deflated_sharpe=0.80)
+    cand = _create_mock_report(sharpe=1.1, deflated_sharpe=0.50)
+    res = accept(cand, baseline=base, require_dsr_non_degradation=True)
+    assert not res.accepted
+    assert res.failed_gate == "dsr_non_degradation"
+
+
+def test_gate_dsr_non_degradation_no_baseline_skipped() -> None:
+    """Verifies DSR non-degradation gate is skipped when no baseline exists."""
+    cand = _create_mock_report(deflated_sharpe=0.10)
+    res = accept(cand, baseline=None, require_dsr_non_degradation=True)
+    assert res.accepted
+
+
+def test_gate_dsr_non_degradation_via_config_dict() -> None:
+    """Verifies DSR non-degradation gate is resolved correctly from a config dict."""
+    config = {"require_dsr_non_degradation": True}
+    base = _create_mock_report(sharpe=1.0, deflated_sharpe=0.80)
+    cand = _create_mock_report(sharpe=1.1, deflated_sharpe=0.50)
+    res = accept(cand, baseline=base, config=config)
+    assert not res.accepted
+    assert res.failed_gate == "dsr_non_degradation"
+
+
+# ---------------------------------------------------------------------------
+# New two-phase gate: select + confirm
+# ---------------------------------------------------------------------------
+
+
+def _create_split_report(
+    in_dd: float = 0.10,
+    in_turnover: float = 0.5,
+    in_sharpe: float = 1.5,
+    in_dsr: float = 0.98,
+    ho_dd: float = 0.10,
+    ho_turnover: float = 0.5,
+    ho_sharpe: float = 1.5,
+    ho_dsr: float = 0.98,
+    regime_passed: bool = True,
+) -> EvaluationReport:
+    """Helper with distinct in-sample and holdout windows."""
+    in_window = WindowReport(
+        start_date="2020-01-01",
+        end_date="2024-12-31",
+        annualized_return=0.12,
+        annualized_volatility=0.10,
+        sharpe_ratio=in_sharpe,
+        sortino_ratio=in_sharpe * 1.3,
+        max_drawdown=in_dd,
+        turnover=in_turnover,
+        information_ratio=in_sharpe * 0.6,
+    )
+    ho_window = WindowReport(
+        start_date="2025-01-01",
+        end_date="2025-12-31",
+        annualized_return=0.10,
+        annualized_volatility=0.12,
+        sharpe_ratio=ho_sharpe,
+        sortino_ratio=ho_sharpe * 1.3,
+        max_drawdown=ho_dd,
+        turnover=ho_turnover,
+        information_ratio=ho_sharpe * 0.6,
+    )
+    return EvaluationReport(
+        strategy_name="split_strat",
+        dataset_hash="def",
+        gates_passed={},
+        is_accepted=True,
+        rejection_reason=None,
+        holdout_metrics=ho_window,
+        in_sample_metrics=in_window,
+        walk_forward_metrics=[in_window],
+        regime_drawdowns={},
+        regime_passed=regime_passed,
+        mc_sharpe_5th=0.5,
+        mc_sharpe_50th=1.2,
+        mc_sharpe_95th=2.0,
+        observed_sharpe=in_sharpe,
+        effective_trials=1,
+        deflated_sharpe=in_dsr,
+        holdout_deflated_sharpe=ho_dsr,
+    )
+
+
+def test_select_rejects_weak_in_sample_strong_holdout() -> None:
+    """select rejects a candidate with poor in-sample metrics but good holdout."""
+    # Strong on holdout (good Sharpe, low DD/turn) but weak in-sample
+    cand = _create_split_report(in_sharpe=0.5, in_dd=0.35, ho_sharpe=2.0, ho_dd=0.05)
+    base = _create_split_report(in_sharpe=1.0, in_dd=0.10)
+    res = select(cand, baseline=base)
+    assert not res.accepted
+    assert res.failed_gate in ("max_drawdown", "target_metric_improvement")
+
+
+def test_confirm_rejects_holdout_drawdown_breach() -> None:
+    """confirm rejects a select-passing candidate that fails holdout drawdown."""
+    # Strong in-sample, but holdout DD too high
+    cand = _create_split_report(in_sharpe=2.0, in_dd=0.05, ho_dd=0.35)
+    base = _create_split_report(in_sharpe=1.0, in_dd=0.10, ho_dd=0.05)
+    # select passes (strong in-sample)
+    sel = select(cand, baseline=base)
+    assert sel.accepted
+    # confirm fails (holdout DD)
+    cnf = confirm(cand, baseline=base)
+    assert not cnf.accepted
+    assert cnf.failed_gate == "max_drawdown"
+
+
+def test_confirm_rejects_holdout_dsr_degradation() -> None:
+    """confirm rejects a select-passing candidate whose holdout DSR degrades."""
+    cand = _create_split_report(
+        in_sharpe=2.0,
+        in_dsr=0.90,
+        ho_sharpe=1.8,
+        ho_dsr=0.30,
+    )
+    base = _create_split_report(
+        in_sharpe=1.0,
+        in_dsr=0.80,
+        ho_sharpe=1.5,
+        ho_dsr=0.70,
+    )
+    sel = select(cand, baseline=base)
+    assert sel.accepted
+    cnf = confirm(cand, baseline=base)
+    assert not cnf.accepted
+    assert cnf.failed_gate == "holdout_dsr_non_degradation"
+
+
+def test_select_confirm_full_accept() -> None:
+    """select + confirm accept a candidate strong on both axes."""
+    cand = _create_split_report(in_sharpe=2.0, in_dd=0.05, ho_sharpe=1.8, ho_dd=0.05)
+    base = _create_split_report(in_sharpe=1.0, in_dd=0.10, ho_sharpe=1.2, ho_dd=0.10)
+    sel = select(cand, baseline=base)
+    assert sel.accepted
+    cnf = confirm(cand, baseline=base)
+    assert cnf.accepted
+
+
+def test_select_always_on_dsr() -> None:
+    """select always enforces DSR non-degradation (no config needed)."""
+    base = _create_split_report(in_sharpe=1.0, in_dsr=0.80)
+    cand = _create_split_report(in_sharpe=2.0, in_dsr=0.40)
+    res = select(cand, baseline=base)
+    assert not res.accepted
+    assert res.failed_gate == "dsr_non_degradation"

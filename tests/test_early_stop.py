@@ -41,6 +41,7 @@ def _make_canned_report(sharpe: float = 1.0) -> tuple[EvaluationReport, pd.Serie
         is_accepted=False,
         rejection_reason=None,
         holdout_metrics=window,
+        in_sample_metrics=window,
         walk_forward_metrics=[window],
         regime_drawdowns={},
         regime_passed=True,
@@ -150,7 +151,7 @@ def test_early_stop_fires_before_all_iterations(
 
     # Gate always rejects — consecutive_no_accept will climb every iteration.
     monkeypatch.setattr(
-        "autobacktest.orchestrator.accept",
+        "autobacktest.orchestrator.select",
         lambda *_a, **_kw: GateResult(
             accepted=False,
             reason="test rejection",
@@ -204,7 +205,7 @@ def test_early_stop_counter_resets_on_acceptance(
     accept_at = EARLY_STOP_PATIENCE // 2  # iteration 5 (1-indexed)
     gate_call_count = [0]
 
-    def patched_accept(*_a: Any, **_kw: Any) -> GateResult:
+    def patched_select(*_a: Any, **_kw: Any) -> GateResult:
         gate_call_count[0] += 1
         if gate_call_count[0] == accept_at:
             return GateResult(accepted=True)
@@ -214,7 +215,11 @@ def test_early_stop_counter_resets_on_acceptance(
             failed_gate="target_metric_improvement",
         )
 
-    monkeypatch.setattr("autobacktest.orchestrator.accept", patched_accept)
+    monkeypatch.setattr("autobacktest.orchestrator.select", patched_select)
+    monkeypatch.setattr(
+        "autobacktest.orchestrator.confirm",
+        lambda *_a, **_kw: GateResult(accepted=True),
+    )
 
     # Run with enough iterations that without reset the loop would have stopped
     # at EARLY_STOP_PATIENCE, but with reset it runs longer.

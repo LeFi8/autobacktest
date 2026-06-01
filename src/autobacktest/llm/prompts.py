@@ -1,5 +1,8 @@
 """System and user prompts construction for the LLM strategy optimizer."""
 
+import re
+from typing import Any
+
 from autobacktest.config import settings
 from autobacktest.llm.base import AgentContext
 
@@ -25,7 +28,9 @@ You operate in a strict execution loop and MUST adhere to the following rules:
    principles discovered.
    - Summarize findings of the previous iteration (e.g. if the previous
      edit failed AST checks, execution, or the gate, analyze why and record it).
-   - Keep lessons structured, concise, and action-oriented.
+    - Keep lessons structured, concise, and action-oriented.
+     - Each lesson block MUST include a type tag of format: `- **Type:** <ENUM>` (ENUM:
+       BUG, DIVERSITY, GATE_REJECTION, PERFORMANCE_INSIGHT, or STRUCTURAL).
     - If the current lessons exceed the 4096 token limit (~16k characters),
       you MUST prune, compress, and consolidate older or less useful lessons to fit.
 8. Diversity Rule: Your proposed strategy config YAML will be compared
@@ -42,7 +47,75 @@ You operate in a strict execution loop and MUST adhere to the following rules:
    the very first character immediately following the closing </think>
    tag must be the opening {{ of the JSON payload. No markdown
    wrapping (like ```json) is permitted.
+10. Attempt History Rule: Before proposing a strategy, consult the
+    ## Attempt History section. Do NOT re-propose configs in already-explored
+    regions — cross-reference the history table to identify which metric
+    directions or structural approaches remain unexplored and target those.
+    Reason explicitly about gaps in the explored space.
 """
+
+
+def parse_lessons(lessons_text: str) -> list[dict[str, str]]:
+    """Parse lessons.md markdown content into a list of parsed lesson dicts.
+    Each dict has keys: 'title', 'type', 'body'.
+    """
+    if not lessons_text:
+        return []
+
+    # Split by h3 header: '### ' at the beginning of a line
+    pattern = r"^###\s+(.+)$"
+    parts = re.split(pattern, lessons_text, flags=re.MULTILINE)
+
+    lessons = []
+    for i in range(1, len(parts), 2):
+        title = parts[i].strip()
+        body = parts[i + 1].strip() if i + 1 < len(parts) else ""
+
+        # Search for Type metadata, e.g., "- **Type:** BUG" or "- **Type:** DIVERSITY"
+        type_match = re.search(r"-\s+\*\*Type:\*\*\s*(\w+)", body, re.IGNORECASE)
+        lesson_type = type_match.group(1).upper() if type_match else "STRUCTURAL"
+
+        lessons.append(
+            {
+                "title": title,
+                "type": lesson_type,
+                "body": body,
+            }
+        )
+    return lessons
+
+
+def filter_lessons(lessons_text: str, context_stage: str | None) -> str:
+    """Filter and reconstruct lessons based on the active stage/context."""
+    if not lessons_text:
+        return "No lessons recorded yet."
+
+    lessons = parse_lessons(lessons_text)
+    if not lessons:
+        return lessons_text.strip()
+
+    # Determine the target lesson type based on context_stage
+    target_type = None
+    if context_stage in ("validation", "eval_error"):
+        target_type = "BUG"
+    elif context_stage in ("diversity_config", "diversity_returns"):
+        target_type = "DIVERSITY"
+    elif context_stage == "gate":
+        target_type = "GATE_REJECTION"
+
+    if not target_type:
+        return lessons_text.strip()
+
+    # Prioritize target_type first, followed by others (or target_type + general STRUCTURAL)
+    filtered = []
+    for lesson in lessons:
+        if lesson["type"] == target_type or lesson["type"] == "STRUCTURAL":
+            filtered.append(f"### {lesson['title']}\n{lesson['body']}")
+
+    if not filtered:
+        return lessons_text.strip()
+
+    return "\n\n".join(filtered)
 
 
 def build_messages(context: AgentContext) -> list[dict[str, str]]:
@@ -59,12 +132,40 @@ def build_messages(context: AgentContext) -> list[dict[str, str]]:
         "content": SYSTEM_PROMPT,
     }
 
-    # Format the latest evaluation report
+    context_stage = context.last_attempt.get("stage") if context.last_attempt else None
+    injected_lessons = filter_lessons(context.lessons_text, context_stage)
+
+    # Format the latest evaluation — in-sample walk-forward aggregate only.
+    # Holdout metrics are deliberately hidden from the LLM.
     if context.evaluation_report is not None:
+        rep = context.evaluation_report
         try:
-            eval_report_str = context.evaluation_report.to_json(indent=2)
+            m = rep.in_sample_metrics
+            wf_span = f"{m.start_date} → {m.end_date}"
+            wf_count = len(rep.walk_forward_metrics)
+            folds_detail = ""
+            if wf_count > 1:
+                fold_sharpes = [f.sharpe_ratio for f in rep.walk_forward_metrics]
+                min_s = min(fold_sharpes)
+                max_s = max(fold_sharpes)
+                folds_detail = f"\n  Per-fold Sharpe:   {min_s:.4f} - {max_s:.4f} (across {wf_count} windows)"
+            eval_report_str = (
+                f"In-Sample Walk-Forward Aggregate (selection basis):\n"
+                f"  Window:            {wf_span}\n"
+                f"  Sharpe:            {m.sharpe_ratio:.4f}\n"
+                f"  Sortino:           {m.sortino_ratio:.4f}\n"
+                f"  Information Ratio: {m.information_ratio:.4f}\n"
+                f"  Max Drawdown:      {m.max_drawdown:.4f}\n"
+                f"  Turnover:          {m.turnover:.4f}"
+                f"{folds_detail}\n"
+                f"  DSR (selection):   {rep.deflated_sharpe:.4f}\n"
+                f"  Effective Trials:  {rep.effective_trials}\n"
+                f"  Regime tests:      {'PASS' if rep.regime_passed else 'FAIL'}\n"
+                f"\n"
+                f"> **OOS holdout** is reserved as a **budgeted confirmation gate** — "
+                f"it is never shown here and cannot be optimised against."
+            )
         except Exception:
-            # Fallback if evaluation_report cannot be serialized
             eval_report_str = str(context.evaluation_report)
     else:
         eval_report_str = "First iteration (no prior evaluation report exists)."
@@ -80,6 +181,68 @@ def build_messages(context: AgentContext) -> list[dict[str, str]]:
             f"> You MUST compress, consolidate, or prune the lessons in lessons_text "
             f"to keep them under the cap.\n"
         )
+
+    # Attempt history table section
+    attempt_history_section = ""
+    if context.attempt_history:
+        committed_rows = [r for r in context.attempt_history if r.get("committed")]
+        non_committed_rows = [r for r in context.attempt_history if not r.get("committed")]
+        total_non_committed = len(non_committed_rows)
+        omitted_count = max(0, total_non_committed - 25)
+        displayed_non_committed = non_committed_rows[-25:] if omitted_count > 0 else non_committed_rows
+        rows_to_render = committed_rows + displayed_non_committed
+
+        def _fmt(val: Any, default: float = 0.0) -> str:
+            try:
+                return f"{float(val if val is not None else default):.4f}"
+            except (TypeError, ValueError):
+                return "-"
+
+        def _outcome(r: dict[str, Any]) -> str:
+            if r.get("committed"):
+                return "✓ committed"
+            if r.get("accepted"):
+                return "✓ accepted"
+            reason = r.get("rejection_reason") or ""
+            return f"✗ {str(reason)[:30]}"
+
+        def _fingerprint_repr(r: dict[str, Any]) -> str:
+            fp = r.get("config_fingerprint", {})
+            s = str(fp)
+            return s[:60] + "..." if len(s) > 60 else s
+
+        def _ho_flag(r: dict[str, Any]) -> str:
+            if r.get("holdout_confirmed"):
+                return "✓ HO"
+            return ""
+
+        header = "| iter | outcome | target | DSR | regime | reason | config | HO |"
+        separator = "|------|---------|--------|-----|--------|--------|--------|-----|"
+        table_lines = [header, separator]
+        for r in rows_to_render:
+            rejection_reason = r.get("rejection_reason") or None
+            reason_col = "-" if (r.get("committed") or rejection_reason is None) else str(rejection_reason)[:30]
+            row = (
+                f"| {r.get('iteration', '')} "
+                f"| {_outcome(r)} "
+                f"| {_fmt(r.get('target_metric_value'))} "
+                f"| {_fmt(r.get('deflated_sharpe'))} "
+                f"| {'pass' if r.get('regime_passed') else ('FAIL' if 'regime_passed' in r else '-')} "
+                f"| {reason_col} "
+                f"| {_fingerprint_repr(r)} "
+                f"| {_ho_flag(r)} |"
+            )
+            table_lines.append(row)
+
+        table_str = "\n".join(table_lines)
+        omit_note = ""
+        if omitted_count > 0:
+            total_non_committed_shown = len(displayed_non_committed)
+            omit_note = (
+                f"\n(showing {total_non_committed_shown + len(committed_rows)} of "
+                f"{len(context.attempt_history)} total — oldest non-committed omitted)"
+            )
+        attempt_history_section = f"\n## Attempt History\n{table_str}{omit_note}\n"
 
     # Diversity warning section
     diversity_warning = ""
@@ -173,46 +336,63 @@ def build_messages(context: AgentContext) -> list[dict[str, str]]:
         )
         previous_attempt_section = "\n".join(lines) + "\n\n"
 
-    # Build the "Performance Target" section
+    # Build the "Performance Target" section (in-sample walk-forward basis)
     if context.evaluation_report is not None:
         rep = context.evaluation_report
-        incumbent_sharpe = rep.holdout_metrics.sharpe_ratio
-        incumbent_sortino = rep.holdout_metrics.sortino_ratio
-        incumbent_ir = rep.holdout_metrics.information_ratio
-        incumbent_dd = rep.holdout_metrics.max_drawdown
-        incumbent_turnover = rep.holdout_metrics.turnover
+        m = rep.in_sample_metrics
         performance_target_section = (
             f"## Performance Target\n"
-            f"Incumbent holdout metrics (you must beat these):\n"
-            f"  - Sharpe: {incumbent_sharpe:.4f}\n"
-            f"  - Sortino: {incumbent_sortino:.4f}\n"
-            f"  - Information Ratio: {incumbent_ir:.4f}\n"
-            f"  - Max Drawdown: {incumbent_dd:.4f}\n"
-            f"  - Turnover: {incumbent_turnover:.4f}\n\n"
-            f"Hard gate limits (all must pass):\n"
-            f"  - Holdout max drawdown <= 0.20\n"
-            f"  - Holdout turnover <= 2.0\n"
+            f"Incumbent in-sample walk-forward aggregate (you must beat these):\n"
+            f"  - Sharpe: {m.sharpe_ratio:.4f}\n"
+            f"  - Sortino: {m.sortino_ratio:.4f}\n"
+            f"  - Information Ratio: {m.information_ratio:.4f}\n"
+            f"  - Max Drawdown: {m.max_drawdown:.4f}\n"
+            f"  - Turnover: {m.turnover:.4f}\n\n"
+            f"Hard gate limits (select — all must pass):\n"
+            f"  - In-sample max drawdown <= 0.20\n"
+            f"  - In-sample turnover <= 2.0\n"
             f"  - All historical crisis regime stress tests must pass\n"
-            f"  - Target metric must strictly exceed the incumbent value above.\n"
-            f"  - Deflated Sharpe (DSR): reported for overfitting insight only — not a hard gate.\n\n"
+            f"  - Target metric must strictly exceed the incumbent in-sample value above.\n"
+            f"  - Deflated Sharpe (DSR) non-degradation is **always enforced** on the "
+            f"in-sample selection basis.\n\n"
+            f"Strategies that pass the in-sample select gate face a hidden OOS holdout\n"
+            f"confirmation gate before commit. That holdout is **not visible** here.\n\n"
         )
     else:
         performance_target_section = (
             "## Performance Target\n"
             "No incumbent evaluation yet (first iteration). "
-            "Hard gate limits: drawdown <= 0.20, turnover <= 2.0, "
+            "Hard gate limits: in-sample drawdown <= 0.20, turnover <= 2.0, "
             "all regime stress tests must pass. "
-            "DSR reported for overfitting insight only — not a hard gate.\n\n"
+            "DSR non-degradation is always enforced on the in-sample selection basis.\n"
+            "Strategies that pass select are confirmed against a hidden OOS holdout.\n\n"
+        )
+
+    # Mode-aware instruction section
+    if context.mode == "exploit":
+        mode_section = (
+            "## Mode\n"
+            "**EXPLOIT** — Locally refine the incumbent strategy. The diversity gate is suspended this round.\n"
+            "Make small, targeted parameter tweaks or minor signal adjustments to the best strategy found so far.\n"
+            "Do NOT make large structural changes. Focus on squeezing out marginal improvements."
+        )
+    else:
+        mode_section = (
+            "## Mode\n"
+            "**EXPLORE** — Search for structurally different strategies. The diversity gate is active.\n"
+            "You MUST propose approaches that differ meaningfully from previous attempts (see Attempt History)."
         )
 
     user_content = f"""## Iteration
 Current Loop Iteration: {context.iteration}
 
+{mode_section}
+
 ## Objective
 {context.program_text}
 
 ## Lessons
-{context.lessons_text or "No lessons recorded yet."}
+{injected_lessons}
 {warning_str}
 ## Current Strategy Code
 ```python
@@ -225,7 +405,7 @@ Current Loop Iteration: {context.iteration}
 ```
 
 ## Latest Evaluation
-{eval_report_str}
+{eval_report_str}{attempt_history_section}
 {diversity_warning}
 {previous_attempt_section}{performance_target_section}## Instructions
 Improve the strategy per the objective. Optimize parameters, signal

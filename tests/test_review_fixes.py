@@ -201,6 +201,7 @@ def test_gate_nan_error_message_formatting() -> None:
         is_accepted=True,
         rejection_reason=None,
         holdout_metrics=window,
+        in_sample_metrics=window,
         walk_forward_metrics=[window],
         regime_drawdowns={},
         regime_passed=True,
@@ -339,6 +340,7 @@ def test_gate_dsr_none_handling() -> None:
         is_accepted=True,
         rejection_reason=None,
         holdout_metrics=window,
+        in_sample_metrics=window,
         walk_forward_metrics=[window],
         regime_drawdowns={},
         regime_passed=True,
@@ -401,8 +403,8 @@ def test_db_schema_migration_and_custom_sorting(tmp_path: Path) -> None:
             config_yaml TEXT NOT NULL,
             observed_sharpe REAL NOT NULL,
             deflated_sharpe REAL NOT NULL,
-            holdout_max_drawdown REAL NOT NULL,
-            holdout_turnover REAL NOT NULL,
+            in_sample_max_drawdown REAL NOT NULL,
+            in_sample_turnover REAL NOT NULL,
             regime_passed INTEGER NOT NULL,
             accepted INTEGER NOT NULL,
             committed INTEGER NOT NULL,
@@ -418,7 +420,7 @@ def test_db_schema_migration_and_custom_sorting(tmp_path: Path) -> None:
         """
         INSERT INTO attempts (
             run_id, iteration, strategy_name, dataset_hash, config_yaml,
-            observed_sharpe, deflated_sharpe, holdout_max_drawdown, holdout_turnover,
+            observed_sharpe, deflated_sharpe, in_sample_max_drawdown, in_sample_turnover,
             regime_passed, accepted, committed, report_json, returns_blob, created_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """,
@@ -470,8 +472,8 @@ def test_db_schema_migration_and_custom_sorting(tmp_path: Path) -> None:
             deflated_sharpe=0.7,
             target_metric="sortino",
             target_metric_value=2.5,  # Higher value than the Sharpe attempt
-            holdout_max_drawdown=0.08,
-            holdout_turnover=0.4,
+            in_sample_max_drawdown=0.08,
+            in_sample_turnover=0.4,
             regime_passed=True,
             accepted=True,
             committed=True,
@@ -479,6 +481,7 @@ def test_db_schema_migration_and_custom_sorting(tmp_path: Path) -> None:
             rejection_reason=None,
             report_json="{}",
             holdout_returns=pd.Series([0.01, 0.02]),
+            selection_returns=pd.Series([0.01, 0.02]),
         )
 
         # Leaderboard should return the Sortino attempt as best
@@ -658,11 +661,8 @@ def test_orchestrator_lessons_persistence(tmp_path: Path) -> None:
     # Verify that:
     # 1. At the start of Iteration 2, the context received updated lessons!
     # Iteration 1 produces 1 call (validation failure — no diversity check reached).
-    # Iteration 2 produces 1 initial call + up to MAX_DIVERSITY_RETRIES retries (because
-    # STRATEGY_CONFIG is identical to the baseline → diversity rejected each time).
-    from autobacktest.orchestrator import MAX_DIVERSITY_RETRIES
-
-    assert len(called_contexts) == 1 + (1 + MAX_DIVERSITY_RETRIES)
+    # Iteration 2 produces 1 call (identical to the baseline -> rejected immediately, 0 retries).
+    assert len(called_contexts) == 2
     assert called_contexts[0].lessons_text == "# Initial Lessons\n"
     assert called_contexts[1].lessons_text == "# Lessons: validation failed because of os import."
 

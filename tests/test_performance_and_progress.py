@@ -99,6 +99,10 @@ None.
         mock_git_ledger.commit_strategy.return_value = "mock-sha"
         mock_git_ledger_cls.return_value = mock_git_ledger
 
+        import pandas as pd
+
+        dummy_returns = pd.Series([0.001] * 5, index=pd.date_range("2025-01-01", periods=5))
+
         mock_report = MagicMock()
         mock_report.dataset_hash = "abc"
         mock_report.observed_sharpe = 1.5
@@ -107,12 +111,12 @@ None.
         mock_report.holdout_metrics.sharpe_ratio = 1.5
         mock_report.holdout_metrics.max_drawdown = 0.05
         mock_report.holdout_metrics.turnover = 0.2
+        mock_report.in_sample_metrics.sharpe_ratio = 1.5
+        mock_report.in_sample_metrics.max_drawdown = 0.05
+        mock_report.in_sample_metrics.turnover = 0.2
         mock_report.regime_passed = True
+        mock_report.holdout_net_returns = dummy_returns
         mock_report.to_json.return_value = "{}"
-
-        import pandas as pd
-
-        dummy_returns = pd.Series([0.001] * 5, index=pd.date_range("2025-01-01", periods=5))
 
         mock_evaluate.return_value = (mock_report, dummy_returns)
 

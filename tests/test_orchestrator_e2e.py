@@ -281,13 +281,9 @@ def test_e2e_full_run_commits_improved_strategy(project_root: Path) -> None:
     assert len(branch_commits) >= 2, f"Expected ≥2 commits on {run_branch}, got {len(branch_commits)}"
 
     # --- MockProvider call count ---
-    # Iteration 1: IMPROVED_CONFIG passes diversity on first try (1 call).
-    # Iterations 2-3: IMPROVED_CONFIG is already in history → diversity rejected,
-    # bounded retry fires up to MAX_DIVERSITY_RETRIES additional times before
-    # consuming the iteration.  Total = 1 + (1 + MAX_DIVERSITY_RETRIES) * 2.
-    from autobacktest.orchestrator import MAX_DIVERSITY_RETRIES
-
-    expected_calls = 1 + (1 + MAX_DIVERSITY_RETRIES) * 2
+    # Iter 1: EXPLORE, 1 call, accepted → EXPLOIT
+    # Iters 2-3: EXPLOIT, 1 call each (no diversity gates)
+    expected_calls = 3
     assert len(mock_provider.calls) == expected_calls
 
 
@@ -439,12 +435,109 @@ def test_orchestrator_retries_transient_error_with_backoff(mock_sleep: MagicMock
 
     # Calls 1-2: transient LLMError → retried with backoff.
     # Call 3: succeeds, returns STRATEGY_CONFIG (identical to baseline).
-    # Diversity gate fires: STRATEGY_CONFIG == baseline → retry up to MAX_DIVERSITY_RETRIES.
-    # Calls 4 to (3 + MAX_DIVERSITY_RETRIES): each returns STRATEGY_CONFIG → diversity rejected.
-    from autobacktest.orchestrator import MAX_DIVERSITY_RETRIES
-
-    assert call_count == 3 + MAX_DIVERSITY_RETRIES
+    # Diversity gate fires: STRATEGY_CONFIG == baseline → rejected immediately (0 retries).
+    # Total calls should be exactly 3.
+    assert call_count == 3
     # time.sleep called twice with exponential backoff: 2.0 ** 1 = 2.0s, and 2.0 ** 2 = 4.0s
     assert mock_sleep.call_count == 2
     mock_sleep.assert_any_call(2.0)
     mock_sleep.assert_any_call(4.0)
+
+
+def test_exploit_mode_skips_diversity_gates(project_root: Path) -> None:
+    """After acceptance, EXPLOIT mode should skip both diversity gates."""
+    synthetic_prices = _make_synthetic_prices()
+    fake_instance = _make_fake_provider(synthetic_prices)
+
+    scripted_edit = AgentEdit(
+        strategy_code=IMPROVED_STRATEGY,
+        config_yaml=IMPROVED_CONFIG,
+        reasoning="Switch to HIGH",
+        raw_response="{}",
+    )
+    mock_provider = MockProvider(response=scripted_edit)
+
+    diversity_config_calls: list[int] = []
+    diversity_returns_calls: list[int] = []
+
+    import autobacktest.orchestrator as orch_mod
+
+    original_max_config_sim = orch_mod.max_config_similarity
+    original_check_returns = orch_mod.check_returns_correlation
+
+    def tracking_max_config_sim(*args: object, **kwargs: object) -> object:
+        diversity_config_calls.append(1)
+        return original_max_config_sim(*args, **kwargs)  # type: ignore[arg-type]
+
+    def tracking_check_returns(*args: object, **kwargs: object) -> object:
+        diversity_returns_calls.append(1)
+        return original_check_returns(*args, **kwargs)  # type: ignore[arg-type]
+
+    with (
+        patch("autobacktest.orchestrator.max_config_similarity", side_effect=tracking_max_config_sim),
+        patch("autobacktest.orchestrator.check_returns_correlation", side_effect=tracking_check_returns),
+        patch("autobacktest.evaluator.evaluate.CachedDataProvider", return_value=fake_instance),
+    ):
+        result = run_optimization(
+            program_path=project_root / "program.md",
+            strategy_name="toy",
+            iterations=3,
+            provider=mock_provider,
+            run_dir=project_root / "runs",
+            strategies_dir=project_root / "strategies",
+            configs_dir=project_root / "configs",
+            target_metric=TargetMetric.SHARPE,
+            repo_path=project_root,
+            start_date="2013-01-01",
+            end_date="2025-01-01",
+        )
+
+    # Iter 1 is in EXPLORE mode → diversity gates called
+    # Iters 2-3 are in EXPLOIT mode → diversity gates NOT called
+    assert result.n_committed >= 1
+    from autobacktest.orchestrator import MAX_DIVERSITY_RETRIES
+
+    # Diversity config gate called only for iter 1 (EXPLORE)
+    # After acceptance, mode=EXPLOIT, no diversity calls
+    assert len(diversity_config_calls) <= 1 + MAX_DIVERSITY_RETRIES  # iter 1 only
+    # In iters 2-3 (EXPLOIT), diversity gates not called
+    # Total calls should be from iter 1 only
+    assert len(diversity_returns_calls) <= 1
+
+
+def test_mode_logged_in_events(project_root: Path) -> None:
+    """Each event in events.jsonl should contain a 'mode' key."""
+    synthetic_prices = _make_synthetic_prices()
+    fake_instance = _make_fake_provider(synthetic_prices)
+
+    scripted_edit = AgentEdit(
+        strategy_code=IMPROVED_STRATEGY,
+        config_yaml=IMPROVED_CONFIG,
+        reasoning="Switch to HIGH",
+        raw_response="{}",
+    )
+    mock_provider = MockProvider(response=scripted_edit)
+
+    with patch("autobacktest.evaluator.evaluate.CachedDataProvider", return_value=fake_instance):
+        result = run_optimization(
+            program_path=project_root / "program.md",
+            strategy_name="toy",
+            iterations=2,
+            provider=mock_provider,
+            run_dir=project_root / "runs",
+            strategies_dir=project_root / "strategies",
+            configs_dir=project_root / "configs",
+            target_metric=TargetMetric.SHARPE,
+            repo_path=project_root,
+            start_date="2013-01-01",
+            end_date="2025-01-01",
+        )
+
+    events_path = project_root / "runs" / result.run_id / "events.jsonl"
+    raw = events_path.read_text(encoding="utf-8").strip()
+    for line in raw.split("\n"):
+        if not line:
+            continue
+        event = json.loads(line)
+        assert "mode" in event, f"Missing 'mode' key in event: {event}"
+        assert event["mode"] in ("explore", "exploit"), f"Invalid mode value: {event['mode']}"
