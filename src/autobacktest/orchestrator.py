@@ -758,7 +758,7 @@ def run_optimization(
                         last_attempt = {"stage": "all_candidates_failed", "detail": "No candidate passed all gates"}
 
                     # --- Per-iteration summary line ---
-                    _iter_cost = total_cost - _iter_prev_cost
+                    _iter_cost = max(0.0, total_cost - _iter_prev_cost)
                     if winner is not None:
                         w_report = winner["_report"]
                         delta = w_report.observed_sharpe - _iter_incumbent_sharpe
@@ -794,7 +794,8 @@ def run_optimization(
                                 reasons.append("llm_error")
                             elif stage:
                                 reasons.append(stage)
-                        reasons_str = ",".join(dict.fromkeys(reasons))[:80] if reasons else "all_failed"
+                        reasons_raw = ",".join(dict.fromkeys(reasons)) if reasons else "all_failed"
+                        reasons_str = (reasons_raw[:77] + "...") if len(reasons_raw) > 80 else reasons_raw
                         summary = (
                             f"[red]✗[/] Iter {k:>3}/{iterations}  "
                             f"[cyan]mode={mode:<7}[/]"
