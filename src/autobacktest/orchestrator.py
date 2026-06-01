@@ -247,9 +247,12 @@ def run_optimization(
                 incumbent = EvaluationReport.from_json(latest_accepted[3])
 
                 ret_row = ledger._conn.execute(
-                    "SELECT returns_blob FROM attempts WHERE run_id = ? AND iteration = ?", (run_id, latest_accepted[0])
+                    "SELECT returns_blob, holdout_returns_blob FROM attempts WHERE run_id = ? AND iteration = ?",
+                    (run_id, latest_accepted[0]),
                 ).fetchone()
                 incumbent_returns = _deserialize_returns(bytes(ret_row[0])) if ret_row else pd.Series(dtype=float)
+                if ret_row and ret_row[1] is not None:
+                    incumbent.holdout_net_returns = _deserialize_returns(bytes(ret_row[1]))
             else:
                 from autobacktest.evaluator.report import WindowReport
 
