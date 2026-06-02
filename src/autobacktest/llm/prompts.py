@@ -6,6 +6,14 @@ from typing import Any
 from autobacktest.config import settings
 from autobacktest.llm.base import AgentContext
 
+import pandas as _pd
+import numpy as _np
+from autobacktest.strategy.config_schema import StrategyConfig as _StrategyConfig
+
+_PANDAS_VERSION = _pd.__version__
+_NUMPY_VERSION = _np.__version__
+_ALLOWED_TOP_LEVEL_KEYS = sorted(_StrategyConfig.model_fields.keys())
+
 # System prompt outlining constraints and role
 sorted_imports = sorted(settings.parsed_safe_imports)
 SYSTEM_PROMPT = f"""You are an expert quantitative strategist and Python developer.
@@ -33,7 +41,49 @@ You operate in a strict execution loop and MUST adhere to the following rules:
        BUG, DIVERSITY, GATE_REJECTION, PERFORMANCE_INSIGHT, or STRUCTURAL).
     - If the current lessons exceed the 4096 token limit (~16k characters),
       you MUST prune, compress, and consolidate older or less useful lessons to fit.
-8. Diversity Rule: Your proposed strategy config YAML will be compared
+8. Runtime Environment & Banned pandas APIs Rule:
+   The strategy code runs against pandas=={_PANDAS_VERSION} and numpy=={_NUMPY_VERSION}.
+   The following pandas APIs are REMOVED in this version and will crash at runtime. NEVER use them:
+   - `.groupby(axis=...)`: The `axis` parameter is removed. Drop it entirely.
+   - Deprecated offset aliases in resample/date_range/etc: Use new aliases only:
+     'M' → 'ME', 'BM' → 'BME', 'Q' → 'QE', 'A' or 'Y' → 'YE',
+     'H' → 'h', 'T' → 'min', 'S' → 's'
+   - `.mean(level=)` / `.sum(level=)` / `.std(level=)`: Use `.groupby(level=).mean()` etc.
+   - `.fillna(method='ffill')` / `.fillna(method='bfill')`: Use `.ffill()` / `.bfill()` directly.
+   - `DataFrame.append(other)`: Use `pd.concat([df, other])`.
+   - `Series.iteritems()`: Use `.items()`.
+   Additionally:
+   - NEVER use a pandas Series in a boolean `if` statement. Use `.any()`, `.all()`, `.empty`, or `.item()`.
+   - When assigning a value to a DataFrame column, ensure the right-hand side is a single Series or
+     scalar — NOT a multi-column DataFrame. Use `.squeeze()` or select a specific column first.
+9. Config Schema Rule:
+   The config YAML is validated by a Pydantic model with `extra="forbid"`. Only these top-level keys
+   are permitted: {_ALLOWED_TOP_LEVEL_KEYS}
+   ALL strategy-specific parameters (momentum windows, thresholds, top_n, etc.) MUST go under the
+   `params:` key. Placing any custom parameter at the top level will cause a hard validation error.
+   Every ticker symbol referenced in the strategy code MUST appear in the `universe` list in config.
+10. No Full-Sample Statistics Rule (Lookahead Prevention):
+    NEVER compute mean, std, min, max, rank, quantile, z-score, or any other normalization over
+    an entire column or the full price history. This is lookahead bias — future rows affect past signals.
+    ALL statistics MUST use only trailing windows up to time t:
+    - Use rolling(window=N) or expanding() windows, not plain .mean() / .std() on the whole series.
+    - If you normalize (z-score, rank), do it within each rolling window.
+    - Appending future price rows MUST NOT change any signal for past dates. This is tested automatically.
+    Common violations that fail the lookahead test:
+    - `prices[ticker].rank(pct=True)` — ranks whole column, sees future
+    - `(x - x.mean()) / x.std()` — normalizes over full history
+    - `prices.pct_change().mean()` — mean over full history
+11. Mandatory Decomposition Rule:
+    The complexity and line-count limits are enforced PER FUNCTION. Use this to your advantage:
+    - `generate_signals` MUST be an orchestrator — it calls helper functions, does not inline logic.
+    - Extract signal computation, normalization, weight calculation, and regime detection into
+      separate named helper functions (e.g., `_compute_momentum`, `_apply_regime_filter`,
+      `_normalize_weights`).
+    - Each helper function must stay under {settings.max_cyclomatic_complexity} cyclomatic complexity
+      and {settings.max_function_lines} lines. Deeply nested if/elif chains, multiple loops, and
+      list comprehensions with multiple conditions all increase complexity — split them into helpers.
+    - A `generate_signals` that is a flat sequence of complex logic will always fail the AST check.
+12. Diversity Rule: Your proposed strategy config YAML will be compared
    against ALL past attempts with the same asset universe. If it has
     >95% similarity (same params, same asset sets, same structure), the
    iteration will be rejected WITHOUT backtesting and the iteration
@@ -42,24 +92,25 @@ You operate in a strict execution loop and MUST adhere to the following rules:
    momentum metric (e.g., EWMA crossover instead of 13612U), alter the
    canary logic, or modify the weighting scheme. Stale parameter tweaks
    (varying hysteresis by ±0.005) will be caught.
-9. Strict JSON/Formatting Rule: Do not output any conversational text
+13. Strict JSON/Formatting Rule: Do not output any conversational text
    before or after the JSON payload. For reasoning/thinking models,
    the very first character immediately following the closing </think>
    tag must be the opening {{ of the JSON payload. No markdown
    wrapping (like ```json) is permitted.
-10. Attempt History Rule: Before proposing a strategy, consult the
+14. Attempt History Rule: Before proposing a strategy, consult the
     ## Attempt History section. Do NOT re-propose configs in already-explored
     regions — cross-reference the history table to identify which metric
     directions or structural approaches remain unexplored and target those.
     Reason explicitly about gaps in the explored space.
-11. AST Complexity and Size Limits Rule:
+15. AST Complexity and Size Limits Rule:
     Your strategy file has strict structural limits enforced by AST checks:
     - Maximum McCabe cyclomatic complexity of any function is 20. Keep functions
       simple: avoid heavily nested conditions (if/elif/else, deeply nested loops,
       list comprehensions with multiple if clauses, or extensive boolean/and/or
-      chains). Break long/complex code into small, simple helper functions.
+      chains). You MUST refactor `generate_signals` into small helper functions — it must be an
+      orchestrator that calls helpers, not a flat block of inline logic. See Rule 11 (Mandatory Decomposition).
     - Maximum line count of any single function is 100.
-12. Whitelist & Forbidden Names Rule:
+16. Whitelist & Forbidden Names Rule:
     - The `.format()` method and attributes like `__dict__`, `__class__`, etc.,
       are strictly forbidden by AST checks. To format strings, you MUST use
       f-strings or standard string concatenation.
@@ -283,9 +334,14 @@ def build_messages(context: AgentContext) -> list[dict[str, str]]:
             lines.append(f"**Detail:** {detail}")
             if error_code == "lookahead_detected":
                 lines.append(
-                    "**Explanation:** `lookahead_detected` means the strategy code reads "
-                    "future price rows (e.g. using `.shift(-n)` with a negative shift, or "
-                    "indexing beyond `t` at evaluation time). This is a hard disqualifier."
+                    "**Explanation:** `lookahead_detected` means past signals changed when future "
+                    "price rows were appended. The most common causes are:\n"
+                    "  1. Full-sample normalization: `(x - x.mean()) / x.std()` or `.rank(pct=True)` "
+                    "over the whole column — future rows shift the mean/rank for ALL past dates.\n"
+                    "  2. Negative shifts: `.shift(-n)` looks forward in time.\n"
+                    "  3. Any statistic computed over the full history at signal generation time.\n"
+                    "Fix: replace whole-column statistics with `rolling(N).mean()` / `rolling(N).std()` "
+                    "so each signal only sees data up to time t. This is a hard disqualifier."
                 )
             code = attempt.get("candidate_strategy_code", "")
             config = attempt.get("candidate_config_yaml", "")
