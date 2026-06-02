@@ -429,6 +429,7 @@ def evaluate_strategy_detailed(
     # Holdout evaluation
     holdout_start = holdout_idx.min()
     holdout_end = holdout_idx.max()
+    bench_holdout = bench_returns.loc[holdout_start:holdout_end]
     holdout_report = generate_window_report(
         prices,
         weights,
@@ -520,6 +521,8 @@ def evaluate_strategy_detailed(
         deflated_sharpe=selection_dsr,
         holdout_deflated_sharpe=holdout_dsr,
         holdout_net_returns=holdout_net_returns,
+        benchmark_returns=bench_holdout,
+        benchmark_ticker=benchmark_ticker,
     )
 
     # Delegate standalone gate checks to backward-compat accept (hard constraints only)

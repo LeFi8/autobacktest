@@ -16,18 +16,83 @@ def plot_equity_curves(
     final_returns: pd.Series,
     run_id: str,
     output_dir: Path,
+    benchmark_returns: pd.Series | None = None,
+    benchmark_ticker: str = "SPY",
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     baseline_cum = (1 + baseline_returns).cumprod()
     final_cum = (1 + final_returns).cumprod()
-    fig, ax = plt.subplots(figsize=(12, 6))
-    ax.plot(baseline_cum.index, baseline_cum.values, label="Baseline", linewidth=1.5)
-    ax.plot(final_cum.index, final_cum.values, label="Optimized", linewidth=1.5)
-    ax.set_title(f"Equity Curves — {run_id}")
-    ax.set_xlabel("Date")
-    ax.set_ylabel("Cumulative Return")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+
+    has_benchmark = benchmark_returns is not None and not benchmark_returns.empty
+    if has_benchmark:
+        assert benchmark_returns is not None
+        bench_cum = (1 + benchmark_returns).cumprod()
+        fig, (ax_top, ax_bot) = plt.subplots(
+            2,
+            1,
+            figsize=(12, 8),
+            gridspec_kw={"height_ratios": [2, 1]},
+            sharex=True,
+        )
+    else:
+        fig, ax_top = plt.subplots(figsize=(12, 6))
+        ax_bot = None
+
+    ax_top.plot(
+        baseline_cum.index,
+        baseline_cum.values,
+        label="Pre-Optimization",
+        linewidth=1.5,
+        linestyle="--",
+        color="#1f77b4",
+    )
+    ax_top.plot(
+        final_cum.index,
+        final_cum.values,
+        label="Optimized",
+        linewidth=1.5,
+    )
+    if has_benchmark:
+        ax_top.plot(
+            bench_cum.index,
+            bench_cum.values,
+            label=benchmark_ticker,
+            linewidth=1.5,
+            linestyle="--",
+            color="#ff7f0e",
+        )
+    ax_top.set_title(f"Holdout Period Equity Curves — {run_id}")
+    ax_top.set_ylabel("Cumulative Return")
+    ax_top.legend(loc="upper left")
+    ax_top.grid(True, alpha=0.3)
+
+    if has_benchmark and ax_bot is not None:
+        aligned = pd.concat([baseline_cum, final_cum, bench_cum], axis=1, join="inner")
+        baseline_active = aligned.iloc[:, 0] - aligned.iloc[:, 2]
+        final_active = aligned.iloc[:, 1] - aligned.iloc[:, 2]
+        ax_bot.plot(
+            baseline_active.index,
+            baseline_active.values,
+            label="Pre-Optimization",
+            linewidth=1.5,
+            linestyle="--",
+            color="#1f77b4",
+        )
+        ax_bot.plot(
+            final_active.index,
+            final_active.values,
+            label="Optimized",
+            linewidth=1.5,
+        )
+        ax_bot.axhline(y=0, color="gray", linestyle=":", linewidth=1)
+        ax_bot.set_title("Active Return vs Benchmark")
+        ax_bot.set_xlabel("Date")
+        ax_bot.set_ylabel("Cumulative Active Return")
+        ax_bot.legend(loc="upper left")
+        ax_bot.grid(True, alpha=0.3)
+    else:
+        ax_top.set_xlabel("Date")
+
     fig.tight_layout()
     out_path = output_dir / "equity_curves.png"
     fig.savefig(out_path, dpi=150)

@@ -169,7 +169,16 @@ def run(
         and baseline_returns is not None
         and not baseline_returns.empty
     ):
-        plot_equity_curves(baseline_returns, final_returns, result.run_id, output_dir)
+        benchmark_returns = getattr(result.final_report, "benchmark_returns", None)
+        benchmark_ticker = getattr(result.final_report, "benchmark_ticker", "SPY")
+        plot_equity_curves(
+            baseline_returns,
+            final_returns,
+            result.run_id,
+            output_dir,
+            benchmark_returns=benchmark_returns,
+            benchmark_ticker=benchmark_ticker,
+        )
 
     # Failure summary from events.jsonl
     failure_summary = compile_failure_summary(output_dir)
