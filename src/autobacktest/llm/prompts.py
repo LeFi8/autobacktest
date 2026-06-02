@@ -52,6 +52,21 @@ You operate in a strict execution loop and MUST adhere to the following rules:
     regions — cross-reference the history table to identify which metric
     directions or structural approaches remain unexplored and target those.
     Reason explicitly about gaps in the explored space.
+11. AST Complexity and Size Limits Rule:
+    Your strategy file has strict structural limits enforced by AST checks:
+    - Maximum McCabe cyclomatic complexity of any function is 15. Keep functions
+      simple: avoid heavily nested conditions (if/elif/else, deeply nested loops,
+      list comprehensions with multiple if clauses, or extensive boolean/and/or
+      chains). Break long/complex code into small, simple helper functions.
+    - Maximum line count of any single function is 100.
+12. Whitelist & Forbidden Names Rule:
+    - The `.format()` method and attributes like `__dict__`, `__class__`, etc.,
+      are strictly forbidden by AST checks. To format strings, you MUST use
+      f-strings or standard string concatenation.
+    - Only imports from the allowed whitelist ({sorted_imports}) are permitted.
+      Wildcard imports (`*`) are blocked. Avoid accessing forbidden variables or
+      built-in functions such as `eval`, `exec`, `getattr`, `setattr`, or
+      pandas/numpy filesystem read/write operations (e.g., `read_csv`, `to_csv`).
 """
 
 

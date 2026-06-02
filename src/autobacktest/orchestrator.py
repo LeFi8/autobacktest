@@ -856,7 +856,7 @@ def run_optimization(
                                 logger.info(f"Exploit stall reached ({EXPLOIT_PATIENCE}), switching to EXPLORE mode.")
                                 mode = "explore"
                                 exploit_stall = 0
-                        last_attempt = {"stage": "all_candidates_failed", "detail": "No candidate passed all gates"}
+                        last_attempt = _extract_best_failure(candidate_results)
 
                     # --- Per-iteration summary line ---
                     _iter_cost = max(0.0, total_cost - _iter_prev_cost)
@@ -1148,3 +1148,62 @@ def _get_metric_value(report: EvaluationReport, metric: TargetMetric) -> float:
         return report.in_sample_metrics.sortino_ratio
     else:  # INFORMATION_RATIO
         return report.in_sample_metrics.information_ratio
+
+
+def _extract_best_failure(candidate_results: list[dict[str, Any]]) -> dict[str, Any]:
+    """Select the most descriptive failure from parallel candidate results to present as feedback."""
+    stages_priority = [
+        "validation",
+        "eval_error",
+        "gate",
+        "diversity_returns",
+        "diversity_config",
+        "holdout_peek_limit",
+    ]
+
+    for stage in stages_priority:
+        for ev in candidate_results:
+            if ev.get("validation_stage") == stage:
+                failure = {
+                    "stage": stage,
+                    "candidate_strategy_code": (
+                        ev.get("strategy_code") or (ev["edit"].strategy_code if ev.get("edit") else "")
+                    ),
+                    "candidate_config_yaml": (
+                        ev.get("config_yaml") or (ev["edit"].config_yaml if ev.get("edit") else "")
+                    ),
+                }
+
+                if stage == "validation":
+                    failure["error_code"] = ev.get("error_code")
+                    failure["detail"] = ev.get("detail")
+                elif stage == "eval_error":
+                    failure["detail"] = ev.get("detail")
+                elif stage == "gate":
+                    failure["rejection_reason"] = ev.get("detail")
+                    failure["failed_gate"] = ev.get("_failed_gate")
+                    rp = ev.get("_report")
+                    if rp:
+                        failure["candidate_metrics"] = {
+                            "Sharpe": rp.in_sample_metrics.sharpe_ratio,
+                            "Sortino": rp.in_sample_metrics.sortino_ratio,
+                            "Information Ratio": rp.in_sample_metrics.information_ratio,
+                            "Max Drawdown": rp.in_sample_metrics.max_drawdown,
+                            "Turnover": rp.in_sample_metrics.turnover,
+                        }
+                elif stage in ("diversity_returns", "diversity_config", "holdout_peek_limit"):
+                    failure["detail"] = ev.get("detail")
+
+                return failure
+
+    for ev in candidate_results:
+        if ev.get("llm_error"):
+            return {
+                "stage": "llm_error",
+                "detail": "LLM failed to return a valid candidate or parsing failed.",
+            }
+
+    return {
+        "stage": "all_candidates_failed",
+        "detail": "No candidate passed all gates.",
+    }
