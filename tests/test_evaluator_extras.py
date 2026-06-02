@@ -3,6 +3,7 @@
 import numpy as np
 import pandas as pd
 
+from autobacktest.config import settings
 from autobacktest.evaluator.evaluate import (
     calculate_information_ratio,
     calculate_sortino_ratio,
@@ -100,6 +101,8 @@ def test_wf_selection_returns_no_holdout_leakage() -> None:
         w["SPY"] = 1.0
         return w
 
+    bench_returns = fake_prices["SPY"].pct_change().fillna(0.0)
+
     _, selection_returns = evaluate_strategy_detailed(
         "test_no_leak",
         _constant_long,
@@ -107,13 +110,14 @@ def test_wf_selection_returns_no_holdout_leakage() -> None:
         start_date="2008-01-01",
         end_date="2025-06-01",
         _prices=fake_prices,
+        _bench_returns=bench_returns,
     )
 
     # Compute expected holdout start from the same logic used inside
     # evaluate_strategy_detailed.
     in_sample_idx, holdout_idx = partition_holdout_data(
         fake_prices.index,
-        holdout_years=3,
+        holdout_years=settings.default_holdout_years,
     )
     holdout_start = holdout_idx.min()
 

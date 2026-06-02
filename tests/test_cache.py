@@ -79,3 +79,52 @@ def test_corrupt_parquet_cache_handling() -> None:
         assert raw_provider.fetch_count == 1
         assert len(df) == 5
         assert cache_file.exists()
+
+
+def test_confirmed_empty_ttl_expiry() -> None:
+    """Verifies TTL expiry forces re-fetch on confirmed_empty entries."""
+    import json
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        raw_provider = DummyDataProvider()
+        cached_provider = CachedDataProvider(raw_provider, cache_dir=tmp_dir)
+        meta_file = Path(tmp_dir) / "SPY_1d.json"
+
+        # Write confirmed_empty metadata with future TTL (no parquet file)
+        future = (pd.Timestamp.now() + pd.Timedelta(days=30)).isoformat()
+        with meta_file.open("w") as f:
+            json.dump({"start": "2023-01-01", "end": "2023-01-10", "confirmed_empty": True, "expires_at": future}, f)
+
+        # No re-fetch (TTL still valid) — returns empty since cache has no data
+        df = cached_provider.get_prices(["SPY"], "2023-01-01", "2023-01-05")
+        assert raw_provider.fetch_count == 0
+        assert df.empty
+
+        # Now write confirmed_empty metadata with expired TTL
+        expired = (pd.Timestamp.now() - pd.Timedelta(days=1)).isoformat()
+        with meta_file.open("w") as f:
+            json.dump({"start": "2023-01-01", "end": "2023-01-10", "confirmed_empty": True, "expires_at": expired}, f)
+
+        # Request should re-fetch (TTL expired)
+        df2 = cached_provider.get_prices(["SPY"], "2023-01-01", "2023-01-05")
+        assert raw_provider.fetch_count == 1
+        assert len(df2) == 5
+
+
+def test_confirmed_empty_no_expires_at_treated_expired() -> None:
+    """Verifies that old confirmed_empty entries (no expires_at) are treated as expired."""
+    import json
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        raw_provider = DummyDataProvider()
+        cached_provider = CachedDataProvider(raw_provider, cache_dir=tmp_dir)
+        meta_file = Path(tmp_dir) / "SPY_1d.json"
+
+        # Write confirmed_empty metadata WITHOUT expires_at (legacy format)
+        with meta_file.open("w") as f:
+            json.dump({"start": "2023-01-01", "end": "2023-01-10", "confirmed_empty": True}, f)
+
+        # Request should re-fetch (no expires_at means treated as expired)
+        df = cached_provider.get_prices(["SPY"], "2023-01-01", "2023-01-05")
+        assert raw_provider.fetch_count == 1
+        assert len(df) == 5

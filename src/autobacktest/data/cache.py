@@ -64,9 +64,15 @@ class CachedDataProvider(DataProvider):
             try:
                 with meta_file.open() as f:
                     data = json.load(f)
+                # TTL check: if confirmed_empty has expired, pretend no metadata exists
+                # so the caller re-fetches. Old entries (no expires_at) are treated as expired.
+                if data.get("confirmed_empty"):
+                    expires_str = data.get("expires_at")
+                    if expires_str is None or pd.Timestamp.now() > pd.to_datetime(expires_str):
+                        return None, None
                 return pd.to_datetime(data["start"]), pd.to_datetime(data["end"])
             except Exception:
-                pass
+                logger.warning("Failed to read cache metadata for %s: corrupt or unreadable", ticker)
         return None, None
 
     def _save_metadata(
@@ -76,6 +82,7 @@ class CachedDataProvider(DataProvider):
         start: pd.Timestamp,
         end: pd.Timestamp,
         confirmed_empty: bool = False,
+        ttl_days: int = 7,
     ) -> None:
         """Persist coverage boundaries to JSON metadata.
 
@@ -84,19 +91,22 @@ class CachedDataProvider(DataProvider):
                 returned no data (e.g. missing ticker, market holiday).  The cache
                 may skip future fetches for this range.  When False (default) the
                 caller asserts that real rows were stored.
+            ttl_days: Time-to-live in days for ``confirmed_empty`` entries.
+                After this many days the entry is treated as expired and
+                the range will be re-fetched.
         """
+        meta: dict[str, object] = {
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "confirmed_empty": confirmed_empty,
+        }
+        if confirmed_empty:
+            meta["expires_at"] = (pd.Timestamp.now() + pd.Timedelta(days=ttl_days)).isoformat()
         meta_file = self.cache_dir / f"{ticker}_{interval}.json"
         try:
             lock = _get_cache_lock(meta_file)
             with lock:
-                _atomic_write_json(
-                    {
-                        "start": start.isoformat(),
-                        "end": end.isoformat(),
-                        "confirmed_empty": confirmed_empty,
-                    },
-                    meta_file,
-                )
+                _atomic_write_json(meta, meta_file)
         except Exception as e:
             logger.warning("Failed to save cache metadata for %s: %s", ticker, e)
 

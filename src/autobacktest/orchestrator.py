@@ -17,6 +17,7 @@ import math
 import sys
 import threading
 import uuid
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -68,25 +69,30 @@ MAX_DIVERSITY_RETRIES = 2
 EXPLOIT_PATIENCE = 3  # consecutive non-improvements in EXPLOIT before returning to EXPLORE
 
 
-class _ThreadSafeDict:
-    """Thread-safe dict wrapper using composition (not inheritance).
+class _LRUCache:
+    """Thread-safe LRU cache with bounded maxsize for eval results.
 
-    Wraps a plain ``dict`` with a ``threading.Lock`` so that concurrent
-    ``.get()`` / ``__setitem__`` / ``__contains__`` calls from the
-    ``ThreadPoolExecutor`` workers do not race on dict resize.
+    Evicts the least-recently-used entry when the cache exceeds ``maxsize``.
+    Maintains the same interface as the previous ``_ThreadSafeDict`` so that
+    all callers (``orchestrator.py``, ``evaluate.py``) work without changes.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, maxsize: int = 36) -> None:
         self._lock = threading.Lock()
-        self._data: dict[int, tuple[EvaluationReport, pd.Series]] = {}
+        self._data: OrderedDict[int, tuple[EvaluationReport, pd.Series]] = OrderedDict()
+        self._maxsize = maxsize
 
     def __getitem__(self, key: int) -> tuple[EvaluationReport, pd.Series]:
         with self._lock:
+            self._data.move_to_end(key)
             return self._data[key]
 
     def __setitem__(self, key: int, value: tuple[EvaluationReport, pd.Series]) -> None:
         with self._lock:
             self._data[key] = value
+            self._data.move_to_end(key)
+            if len(self._data) > self._maxsize:
+                self._data.popitem(last=False)
 
     def __contains__(self, key: int) -> bool:
         with self._lock:
@@ -96,7 +102,10 @@ class _ThreadSafeDict:
         self, key: int, default: tuple[EvaluationReport, pd.Series] | None = None
     ) -> tuple[EvaluationReport, pd.Series] | None:
         with self._lock:
-            return self._data.get(key, default)
+            if key in self._data:
+                self._data.move_to_end(key)
+                return self._data[key]
+            return default
 
 
 @dataclass
@@ -228,7 +237,7 @@ def run_optimization(
         min_temp = 0.1
         config_obj = StrategyConfig.from_yaml(cfg_path)
         config = config_obj.model_dump()
-        _eval_cache = _ThreadSafeDict()
+        _eval_cache = _LRUCache(maxsize=36)
 
         # 6. Record run metadata
         dataset_hash = compute_dataset_hash(
@@ -483,6 +492,7 @@ def run_optimization(
                         mode=mode,
                         dd_limit=config_obj.max_drawdown_limit,
                         turnover_limit=config_obj.turnover_limit,
+                        min_return_ratio=config_obj.select_min_return_ratio,
                     )
 
                     # 8b. Generate N candidates in parallel

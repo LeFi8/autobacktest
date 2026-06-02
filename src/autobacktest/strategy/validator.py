@@ -482,6 +482,7 @@ print("__RESULT__" + json.dumps(result))
             text=True,
             timeout=25,  # Bounded wait with safety buffer
             env=safe_env,
+            check=False,
         )
         if proc.returncode != 0:
             err_msg = _sanitize_detail(proc.stderr.strip() or f"Subprocess exited with non-zero code {proc.returncode}")

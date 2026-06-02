@@ -46,6 +46,7 @@ class AgentContext:
     mode: str = "explore"
     dd_limit: float = 0.20
     turnover_limit: float = 2.0
+    min_return_ratio: float = 0.5
 
 
 @dataclass(frozen=True)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from typing import Any
@@ -23,6 +24,8 @@ from autobacktest.evaluator.regime import evaluate_stress_regimes
 from autobacktest.evaluator.report import EvaluationReport, WindowReport
 from autobacktest.evaluator.walk_forward import generate_walk_forward_windows
 from autobacktest.strategy.config_schema import StrategyConfig
+
+logger = logging.getLogger(__name__)
 
 
 def compute_dataset_hash(
@@ -288,8 +291,8 @@ def evaluate_strategy_detailed(
             if cached is not None:
                 cached_report, cached_returns = cached
                 return deepcopy(cached_report), cached_returns.copy()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Eval cache read failed: %s", e)
 
     tickers = flat_config.get("universe", [])
     benchmark_ticker = flat_config.get("benchmark", "SPY")
@@ -519,8 +522,8 @@ def evaluate_strategy_detailed(
             _config_hash = hash(json.dumps(flat_config, sort_keys=True, default=str))
             _ckey = hash((_code_hash, _config_hash))
             _eval_cache[_ckey] = (deepcopy(report), in_sample_net_returns.copy())
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Eval cache write failed: %s", e)
 
     return report, in_sample_net_returns
 

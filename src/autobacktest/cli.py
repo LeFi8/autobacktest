@@ -1,4 +1,5 @@
 import importlib.util
+import logging
 import re
 import shutil
 import uuid
@@ -26,6 +27,8 @@ from autobacktest.reports.generator import (
 )
 from autobacktest.strategy.config_schema import StrategyConfig
 from autobacktest.strategy.validator import preflight
+
+logger = logging.getLogger(__name__)
 
 app = typer.Typer(
     name="autobacktest",
@@ -384,7 +387,7 @@ def reset(
                 typer.echo("lessons.md cleared back to default template.")
                 restored_lessons_via_git = True
             except Exception:
-                pass
+                logger.warning("Failed to restore lessons.md from git, falling back to default template")
 
         if not restored_lessons_via_git:
             # Fallback to writing default template if git checkout fails
@@ -938,7 +941,7 @@ def _render_rich_summary(
             display_dd_limit = _cfg.max_drawdown_limit
             display_to_limit = _cfg.turnover_limit
         except Exception:
-            pass  # fall back to defaults
+            logger.warning("Failed to parse config %s for display, using defaults", config_path)
 
     gates.add_row(
         f"Max Drawdown ≤ {display_dd_limit * 100:.0f}%",
