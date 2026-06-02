@@ -80,6 +80,15 @@ class Settings(BaseModel):
     enable_codemod_repair: bool = Field(
         default_factory=lambda: os.getenv("AUTOBACKTEST_ENABLE_CODEMOD_REPAIR", "true").lower() == "true"
     )
+    enable_config_diversity_gate: bool = Field(
+        default_factory=lambda: os.getenv("AUTOBACKTEST_ENABLE_CONFIG_DIVERSITY_GATE", "false").lower() == "true"
+    )
+    diversity_config_threshold: float = Field(
+        default_factory=lambda: float(os.getenv("AUTOBACKTEST_DIVERSITY_CONFIG_THRESHOLD", "0.95"))
+    )
+    diversity_returns_threshold: float = Field(
+        default_factory=lambda: float(os.getenv("AUTOBACKTEST_DIVERSITY_RETURNS_THRESHOLD", "0.95"))
+    )
 
     # --- SQLITE STORAGE CONFIGURATION ---
     db_timeout: float = Field(default_factory=lambda: float(os.getenv("AUTOBACKTEST_DB_TIMEOUT", "15.0")))
