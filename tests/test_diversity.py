@@ -362,7 +362,9 @@ class TestDiversityGateIntegration:
         # No accepted edit (diversity gate rejected it)
         assert result.n_committed == 0
 
-        # Event must contain the diversity rejection in candidates array
+        # Event must contain a diversity rejection in candidates array.
+        # With the config gate disabled by default, identical candidates proceed to backtest
+        # and are caught by the behavioral returns-correlation gate instead.
         events_path = project_root / "runs" / result.run_id / "events.jsonl"
         assert events_path.exists()
         events = [json.loads(ln) for ln in events_path.read_text().strip().split("\n") if ln]
@@ -371,7 +373,7 @@ class TestDiversityGateIntegration:
         assert "candidates" in ev
         cand = ev["candidates"][0]
         assert cand["passed"] is False
-        assert cand["stage"] == "diversity_config"
+        assert cand["stage"] in ("diversity_config", "diversity_returns")
 
         # No winner (all rejected)
         assert "winner" not in ev
@@ -482,8 +484,13 @@ class TestDiversityGateIntegration:
         # Event must record the diversity rejection in candidates array
         events_path = project_root / "runs" / result.run_id / "events.jsonl"
         events = [json.loads(ln) for ln in events_path.read_text().strip().split("\n") if ln]
-        # Find the diversity-rejected event
-        rejected = [e for e in events if any(c.get("stage") == "diversity_config" for c in e.get("candidates", []))]
+        # Find the diversity-rejected event (either config or returns gate).
+        # With the config gate disabled by default, identical candidates proceed to
+        # backtest and are caught by the behavioral returns-correlation gate.
+        rejected = [
+            e for e in events
+            if any(c.get("stage") in ("diversity_config", "diversity_returns") for c in e.get("candidates", []))
+        ]
         assert len(rejected) >= 1
 
         # Provider was called exactly 1 time (3 candidates generated in parallel)
