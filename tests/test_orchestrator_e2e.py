@@ -490,14 +490,18 @@ def test_exploit_mode_skips_diversity_gates(project_root: Path) -> None:
             end_date="2025-01-01",
         )
 
-    # Iter 1 is in EXPLORE mode → diversity gates called
-    # Iters 2-3 are in EXPLOIT mode → diversity gates NOT called
+    # Iter 1 is in EXPLORE mode → diversity config gate called for diversity check
+    # Iters 2-3 are in EXPLOIT mode → max_config_similarity called for exploit_no_change check
+    # (but check_returns_correlation / returns gate is skipped in exploit mode)
     assert result.n_committed >= 1
 
-    # Diversity config gate called only for iter 1 (EXPLORE), once per candidate
-    assert len(diversity_config_calls) <= 3  # 3 candidates x 1 iteration
-    # Diversity returns gate called only for iter 1 (EXPLORE), once per candidate
-    assert len(diversity_returns_calls) <= 3  # 3 candidates x 1 iteration
+    # Diversity config gate (max_config_similarity) is called in both explore AND exploit modes:
+    # - explore: for the config diversity gate (up to 3 candidates in iter 1)
+    # - exploit: for the exploit_no_change identical-config check (up to 3 candidates per iter)
+    # With 3 iters x 3 candidates = up to 9 calls total
+    assert len(diversity_config_calls) <= 9  # 3 iterations x 3 candidates
+    # Returns correlation gate is only called in EXPLORE mode, not EXPLOIT
+    assert len(diversity_returns_calls) <= 3  # 3 candidates x 1 explore iteration
 
 
 def test_mode_logged_in_events(project_root: Path) -> None:
