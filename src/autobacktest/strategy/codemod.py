@@ -57,6 +57,34 @@ class _PandasDeprecationTransformer(ast.NodeTransformer):
         if name is None:
             return node
 
+        # Guard: transforms that access node.func.value/.attr require a method call.
+        # Standalone function calls (ast.Name) are passed through unchanged.
+        if not isinstance(node.func, ast.Attribute):
+            # Still handle freq= keyword and first-arg freq remapping below,
+            # which work on any Call node regardless of call style.
+            for kw in node.keywords:
+                if kw.arg == "freq" and isinstance(kw.value, ast.Constant):
+                    old_val = kw.value.value
+                    new_val = _remap_freq_string(old_val)
+                    if new_val is not None:
+                        kw.value = ast.Constant(value=new_val)
+                        ast.fix_missing_locations(kw.value)
+                        self.fixes_applied.append(
+                            f"Remapped deprecated freq alias '{old_val}' to '{new_val}' in freq context"
+                        )
+            if name in _FREQ_FIRST_ARG_FUNCS and node.args:
+                first_arg = node.args[0]
+                if isinstance(first_arg, ast.Constant):
+                    old_val = first_arg.value
+                    new_val = _remap_freq_string(old_val)
+                    if new_val is not None:
+                        node.args[0] = ast.Constant(value=new_val)
+                        ast.fix_missing_locations(node.args[0])
+                        self.fixes_applied.append(
+                            f"Remapped deprecated freq alias '{old_val}' to '{new_val}' in freq context"
+                        )
+            return node
+
         # ------------------------------------------------------------------ #
         # 1. groupby(axis=...) — drop the axis= keyword                       #
         # ------------------------------------------------------------------ #
@@ -149,28 +177,7 @@ class _PandasDeprecationTransformer(ast.NodeTransformer):
                 return new_call
 
         # ------------------------------------------------------------------ #
-        # 4. .append(other) → pd.concat([expr, other])                        #
-        # ------------------------------------------------------------------ #
-        elif name == "append":
-            if len(node.args) == 1 and not node.keywords:
-                other = node.args[0]
-                expr = node.func.value  # type: ignore[attr-defined]
-                concat_call = ast.Call(
-                    func=ast.Attribute(
-                        value=ast.Name(id="pd", ctx=ast.Load()),
-                        attr="concat",
-                        ctx=ast.Load(),
-                    ),
-                    args=[ast.List(elts=[expr, other], ctx=ast.Load())],
-                    keywords=[],
-                )
-                ast.copy_location(concat_call, node)
-                ast.fix_missing_locations(concat_call)
-                self.fixes_applied.append("Replaced .append() with pd.concat()")
-                return concat_call
-
-        # ------------------------------------------------------------------ #
-        # 5. Deprecated freq aliases — ONLY inside freq contexts               #
+        # 4. Deprecated freq aliases — ONLY inside freq contexts               #
         # ------------------------------------------------------------------ #
         # Check freq= keyword argument
         for kw in node.keywords:

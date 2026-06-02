@@ -59,14 +59,13 @@ def test_mean_level():
 
 
 # ---------------------------------------------------------------------------
-# 6. .append(other) → pd.concat([df, other])
+# 6. .append() is NOT transformed (risk of false-positive on list/str .append)
 # ---------------------------------------------------------------------------
-def test_append_to_concat():
-    code = "df.append(other)"
+def test_append_not_transformed():
+    code = "my_list.append(item)"
     result, fixes = repair_pandas_code(code)
-    assert "pd.concat" in result
-    assert "append" not in result
-    assert fixes
+    assert result == code, ".append() on non-DataFrame objects must not be rewritten"
+    assert fixes == []
 
 
 # ---------------------------------------------------------------------------
