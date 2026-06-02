@@ -338,6 +338,7 @@ class LedgerStore:
     def fetch_holdout_history(
         self,
         dataset_hash: str,
+        exclude_id: int | None = None,
     ) -> tuple[pd.DataFrame, list[float]]:
         """Return holdout return series and observed Sharpes for peeked attempts.
 
@@ -346,22 +347,24 @@ class LedgerStore:
         The returned matrix drives the holdout DSR multiple-testing deflation
         in ``_deflate_holdout``.
 
+        Args:
+            exclude_id: Optional attempt id to exclude (used to prevent the
+                incumbent's own holdout from contaminating its null distribution).
+
         Returns:
             Tuple of (DataFrame of holdout returns, list of holdout Sharpe ratios).
             Empty DataFrame and empty list when no holdout-peeked rows exist.
         """
-        rows = (
-            self._conn()
-            .execute(
-                """
-            SELECT id, holdout_returns_blob, holdout_observed_sharpe
-            FROM attempts
-            WHERE dataset_hash = ? AND holdout_evaluated = 1
-            """,
-                (dataset_hash,),
-            )
-            .fetchall()
+        query = (
+            "SELECT id, holdout_returns_blob, holdout_observed_sharpe "
+            "FROM attempts WHERE dataset_hash = ? AND holdout_evaluated = 1"
         )
+        params: tuple[object, ...] = (dataset_hash,)
+        if exclude_id is not None:
+            query += " AND id != ?"
+            params = (dataset_hash, exclude_id)
+
+        rows = self._conn().execute(query, params).fetchall()
 
         if not rows:
             return pd.DataFrame(), []

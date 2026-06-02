@@ -474,8 +474,11 @@ def evaluate_strategy_detailed(
 
     # --- DSR accounting ---
     # Selection DSR uses POOLED walk-forward returns (same basis as observed_sharpe)
-    effective_trials = int(flat_config.get("effective_trials", 1))
-    historical_sharpes = flat_config.get("historical_sharpes")
+    # NOTE: effective_trials and historical_sharpes are intentionally NOT read
+    # from config — the only legitimate source is ledger transaction history
+    # via the orchestrator's _deflate() call. Standalone evaluate uses PSR.
+    effective_trials = 1
+    historical_sharpes = None
 
     in_sample_net_returns = wf_net_returns
     selection_dsr = calculate_psr_dsr(

@@ -663,7 +663,7 @@ def run_optimization(
                             peeks_this_iteration += 1
                             _deflate_holdout(report_k, ledger)
                             if incumbent is not None:
-                                _deflate_holdout(incumbent, ledger)
+                                _deflate_holdout(incumbent, ledger, exclude_id=incumbent_attempt_id)
 
                             cnf = confirm(report_k, baseline=incumbent, config=new_config)
                             ev["_cnf"] = cnf
@@ -991,11 +991,11 @@ def run_optimization(
                 n = max(1, calculate_effective_trials(hist_matrix))
                 incumbent.effective_trials = n
                 incumbent.deflated_sharpe = calculate_psr_dsr(incumbent_returns, hist_sharpes, n)
-        except Exception:
-            pass  # best-effort; do not mask the loop exception
+        except Exception as exc:
+            logger.warning("Failed to refresh final report DSR: %s", exc)
         # Also re-deflate the holdout DSR.
         with contextlib.suppress(Exception):
-            _deflate_holdout(incumbent, ledger)
+            _deflate_holdout(incumbent, ledger, exclude_id=incumbent_attempt_id)
         # 9. Cleanup
         event_log.close()
         lesson_store.close()
@@ -1178,13 +1178,14 @@ def _deflate(
 def _deflate_holdout(
     report: EvaluationReport,
     ledger: LedgerStore,
+    exclude_id: int | None = None,
 ) -> None:
     """Deflate ``report.holdout_deflated_sharpe`` by the holdout-peek count.
 
     The null distribution uses only prior holdout peeks — the current
     candidate's returns and Sharpe are excluded to avoid self-contamination.
     """
-    hist_matrix, hist_sharpes = ledger.fetch_holdout_history(report.dataset_hash)
+    hist_matrix, hist_sharpes = ledger.fetch_holdout_history(report.dataset_hash, exclude_id=exclude_id)
 
     if report.holdout_net_returns is None or report.holdout_net_returns.empty:
         return
