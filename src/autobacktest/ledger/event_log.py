@@ -1,3 +1,10 @@
+"""Structured JSON events log for iteration-level audit trails.
+
+Each optimisation iteration emits one JSON line to an ``events.jsonl`` file
+inside the run directory.  The log is consumed by ``compile_failure_summary``
+in the reporting module.
+"""
+
 from __future__ import annotations
 
 import json
@@ -7,6 +14,19 @@ from typing import Any
 
 
 class EventLog:
+    """Append-only structured JSON events log.
+
+    Writes one JSON record per iteration to ``events.jsonl``.
+    Each record captures the iteration number, mode, temperature,
+    candidate outcomes (pass/fail reasons), gate verdicts, and
+    commit SHAs.  Failure summaries are later derived from this log.
+
+    Usage as context manager::
+
+        with EventLog(path) as log:
+            log.write({"iteration": 1, "mode": "explore", ...})
+    """
+
     def __init__(self, path: Path) -> None:
         """Create parent dirs and open file for append."""
         path.parent.mkdir(parents=True, exist_ok=True)

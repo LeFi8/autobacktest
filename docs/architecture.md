@@ -23,6 +23,7 @@ graph TD
         DIV[strategy/diversity.py]
         NORM[strategy/normalization.py]
         PI[strategy/parameter_importance.py]
+        CODEMOD[strategy/codemod.py]
     end
 
     subgraph Evaluation Pipeline
@@ -41,6 +42,7 @@ graph TD
     end
 
     subgraph Data Layer
+        DBASE[data/base.py]
         CACHE[data/cache.py]
         YF[data/yfinance_provider.py]
     end
@@ -78,6 +80,8 @@ graph TD
     ORCH --> LLM_B
     ORCH --> PI
     VAL --> CONT
+    VAL --> CODEMOD
+    ORCH --> CODEMOD
     EVAL --> BACK
     EVAL --> COST
     EVAL --> DSR
@@ -88,6 +92,8 @@ graph TD
     EVAL --> CACHE
     EVAL --> NORM
     CACHE --> YF
+    DBASE --> CACHE
+    DBASE --> YF
     STRAT --> EVAL
     LLM_L --> LLM_B
     LLM_M --> LLM_B
@@ -115,22 +121,32 @@ Structured, deduplicated memory store replacing the flat `lessons.md` file.
 - `store.py`: `LessonStore` — SQLite-backed persistence with per-strategy filtering, deduplication by `(strategy, type, body_hash)`, and markdown import/export. Migrates legacy `lessons.md` on first use.
 
 ### 4. Data Provider (`data/`)
-Provides historical close price histories with Parquet caching.
+Provides market data abstraction with Parquet caching.
+- `base.py`: Defines `DataProvider` (abstract base class) defining the contract for price data retrievers.
+- `cache.py`: `CachedDataProvider` — decorator that caches close prices as Apache Parquet files under `data/cache/` to minimize remote downloads.
+- `yfinance_provider.py`: `YFinanceProvider` — concrete implementation accessing Yahoo Finance via `yfinance`.
 
 ### 5. Backtest Evaluator (`evaluator/`)
 Consumes prices and strategy signals to compute detailed performance metrics.
-- `report.py`: Defines `EvaluationReport` and `WindowReport` dataclasses for structured performance output.
+- `backtest.py`: Vectorized daily return computation (`run_vectorized_backtest`) with 1-day weight lag for lookahead-bias protection.
+- `costs.py`: Turnover and transaction cost calculation (`calculate_turnover_and_costs`), including commissions, bid-ask spreads, and market impact.
+- `deflated_sharpe.py`: `calculate_psr_dsr` — Probabilistic and Deflated Sharpe Ratio computation to account for multiple testing.
 - `evaluate.py`: Coordinates the full walk-forward / holdout evaluation lifecycle (`evaluate_strategy`, `evaluate_strategy_detailed`).
+- `holdout.py`: `partition_holdout_data` — splits the price date index into in-sample and out-of-sample holdout segments.
+- `monte_carlo.py`: `run_block_bootstrap` — stationary block bootstrap for Sharpe ratio significance thresholds.
+- `regime.py`: `evaluate_stress_regimes` — stress testing across historical crash regimes (2008 GFC, 2020 COVID, 2022 bear).
+- `report.py`: Defines `EvaluationReport` and `WindowReport` dataclasses for structured performance output.
+- `walk_forward.py`: `generate_walk_forward_windows` — rolling train/test window generator (default 5y train / 1y test).
 
-### 7. Git & SQLite Ledger (`ledger/`)
+### 6. Git & SQLite Ledger (`ledger/`)
 - `store.py`: Relational database storing every iteration's parameters, Sharpe, Sortino, max drawdown, gating outcomes, and serialized return streams.
 - `git_ops.py`: Commits valid strategy code changes. Reverts failures back to last known passing revision automatically.
-- `event_log.py`: Manages the structured JSON events logging history.
+- `event_log.py`: `EventLog` — structured JSON events logging history for iteration-level audit trails.
 
-### 8. Reporting Module (`reports/`)
+### 7. Reporting Module (`reports/`)
 - `generator.py`: Produces equity curve plots (`plot_equity_curves`), failure summaries (`compile_failure_summary`), and institutional-grade strategy reports (`compile_strategy_report`).
 
-### 6. Strategy Validation & Registry (`strategy/`)
+### 9. Strategy Validation & Registry (`strategy/`)
 Enforces code correctness, type-safety, and logic uniqueness constraints on candidate mutations.
 - `config_schema.py`: Pydantic v2 strategy configuration validation model (`StrategyConfig`). Enforces parameter boundaries, types, and flattens custom parameters in `params` avoiding root schema collisions.
 - `contract.py`: Dynamic weight and signature correctness validators. Verifies shape conformity, asset indexes, and time series offsets.
@@ -138,6 +154,10 @@ Enforces code correctness, type-safety, and logic uniqueness constraints on cand
 - `diversity.py`: Quantitative diversity analyzer. Extracts configuration fingerprints and computes cosine similarity of parameters or Pearson correlation of backtest returns.
 - `normalization.py`: Code normalization utility (`normalize_python_code`) that strips comments/docstrings and standardizes whitespace for stable eval cache key computation.
 - `parameter_importance.py`: Computes Spearman rank correlation between numeric config parameters and the target metric across optimization attempts to identify which parameters most strongly influence performance.
+- `codemod.py`: AST-based repair module (`repair_pandas_code`) for deprecated pandas API calls (frequency aliases, fillna, groupby, level-based aggregation).
+
+### 10. Program Parser (`program.py`)
+Parses and validates the markdown program file (`program.md`), extracting `# Objective` and `# Constraints` sections. Returns a `ProgramSpec` dataclass with structured objectives, constraints, and raw text (passed to the LLM as-is).
 
 ---
 
@@ -184,7 +204,7 @@ To prevent the LLM from executing identical parameter configurations repeatedly,
 ### 3. Tier 2 - Returns Correlation Gate (Post-Backtest)
 Even if configuration parameters look structurally different, a modified strategy might generate identical signal returns. Post-backtest:
 - The system calculates the Pearson correlation coefficient between the daily net returns of the candidate and all past attempts tracked in this dataset universe.
-- If the correlation coefficient with any past attempt exceeds `DIVERSITY_RETURNS_THRESHOLD = 0.90`, the candidate is rejected (`rejection_reason="diversity_tier2_returns"`), rolled back, and recorded in the database.
+- If the correlation coefficient with any past attempt exceeds `DIVERSITY_RETURNS_THRESHOLD = 0.95`, the candidate is rejected (`rejection_reason="diversity_tier2_returns"`), rolled back, and recorded in the database.
 
 ### 4. Two-Phase Gate System (In-Sample Selection + Holdout Confirmation)
 The gate system is split into two distinct phases to prevent holdout overfitting:

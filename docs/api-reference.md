@@ -6,7 +6,9 @@ This document provides a comprehensive overview of the public interfaces and cor
 
 ## 1. Data Provider Module (`autobacktest.data`)
 
-### `DataProvider` (Abstract Base Class)
+The data layer is defined across three files: `base.py` (abstract contract), `cache.py` (caching decorator), and `yfinance_provider.py` (concrete Yahoo Finance implementation).
+
+### `DataProvider` (Abstract Base Class, defined in `base.py`)
 Abstract interface defining price data retrievers.
 ```python
 class DataProvider(ABC):
@@ -144,6 +146,39 @@ def run_block_bootstrap(
     """
 ```
 
+### `partition_holdout_data`
+Splits a DatetimeIndex into in-sample and out-of-sample holdout segments.
+```python
+def partition_holdout_data(
+    index: pd.DatetimeIndex,
+    holdout_years: int = 3,
+) -> tuple[pd.DatetimeIndex, pd.DatetimeIndex]:
+```
+
+### `generate_walk_forward_windows`
+Generates rolling walk-forward train/test date window tuples.
+```python
+def generate_walk_forward_windows(
+    index: pd.DatetimeIndex,
+    train_years: int = 5,
+    test_years: int = 1,
+    step_years: int = 1,
+) -> list[tuple[pd.Timestamp, pd.Timestamp, pd.Timestamp, pd.Timestamp]]:
+```
+
+### `evaluate_stress_regimes`
+Calculates drawdowns during historical crash regimes and returns a passed indicator.
+```python
+def evaluate_stress_regimes(
+    net_returns: pd.Series,
+    daily_weights: pd.DataFrame | None = None,
+    n_tickers: int = 0,
+) -> tuple[dict[str, float], bool]:
+```
+Tests drawdown thresholds against three regimes: 2008 GFC (max 25% drawdown),
+2020 COVID (max 15%), and 2022 bear market (max 20%). Also performs a
+minimum-exposure check (flags >80% cash held for >10 consecutive trading days).
+
 ### `evaluate_strategy`
 Primary coordinator running full training walk-forward windows and Out-of-Sample holdout checks. Thin wrapper around `evaluate_strategy_detailed` that returns only the report.
 ```python
@@ -261,15 +296,14 @@ Analyzes whether a strategy candidate produces returns that are functionally ide
 def check_returns_correlation(
     candidate_returns: pd.Series,
     historical_returns_matrix: pd.DataFrame,
-    threshold: float = 0.90,
-    min_overlap_days: int = 60,
-) -> tuple[bool, float]:
+    threshold: float = 0.95,
+} -> tuple[bool, float]:
     """Check returns correlation against historical backtests.
 
     Args:
         candidate_returns: Daily net returns of the active strategy candidate.
         historical_returns_matrix: DataFrame containing daily return columns of past attempts.
-        threshold: Maximum permitted Pearson correlation coefficient (default: 0.90).
+        threshold: Maximum permitted Pearson correlation coefficient (default: 0.95).
         min_overlap_days: Minimum overlapping trading days required to compute correlation.
 
     Returns:
@@ -297,6 +331,7 @@ def select(
     turnover_limit: float | None = None,
     min_improvement: float | None = None,
     require_dsr_non_degradation: bool | None = None,
+    min_return_ratio: float | None = None,
     config: Any = None,
 ) -> GateResult:
     """In-sample selection gate.
@@ -308,7 +343,8 @@ def select(
 
     If all pass, tie-breaker (when baseline is present):
     4. Target metric improvement: candidate > baseline + min_improvement
-    5. DSR non-degradation: candidate's in-sample DSR does not degrade below baseline's
+    5. Annualized return >= baselines annualized return * min_return_ratio (default 0.5)
+    6. DSR non-degradation: candidate's in-sample DSR does not degrade below baseline's
        (configurable via require_dsr_non_degradation, always-on by default)
     """
 ```
@@ -346,10 +382,11 @@ def accept(
     turnover_limit: float | None = None,
     min_improvement: float | None = None,
     require_dsr_non_degradation: bool | None = None,
+    min_return_ratio: float | None = None,
     config: Any = None,
 ) -> GateResult:
     """Backward-compatible wrapper: composes select + confirm.
-    The require_dsr_non_degradation parameter is propagated to select.
+    The require_dsr_non_degradation and min_return_ratio parameters are propagated to select.
     """
 ```
 
@@ -366,6 +403,16 @@ SQLite relational database interface manager.
 - `fetch_attempt_summaries(dataset_hash) -> list[dict]`: Builds summarized attempt history for LLM context.
 - `fetch_holdout_history(dataset_hash) -> tuple[pd.DataFrame, list[float]]`: Retrieves holdout return streams for DSR deflation (peek count tracking).
 - `fetch_param_importance_data(dataset_hash)`: Returns configs and metrics for Spearman rank correlation analysis.
+
+### `EventLog`
+Structured JSON events logging history.
+```python
+class EventLog:
+    def __init__(self, path: Path) -> None: ...
+    def write(self, record: dict[str, Any]) -> None:
+        """Append one JSON line with timestamp."""
+    def close(self) -> None: ...
+```
 
 ---
 
@@ -407,6 +454,9 @@ class AgentContext:
     last_attempt: dict[str, Any] | None = None
     attempt_history: list[dict[str, Any]] | None = None
     mode: str = "explore"  # "explore" | "exploit"
+    dd_limit: float = 0.20  # max drawdown limit for selection gate
+    turnover_limit: float = 2.0  # max turnover limit for selection gate
+    min_return_ratio: float = 0.5  # min fraction of baseline return for selection gate
 ```
 
 ### `AgentEdit`
@@ -423,6 +473,29 @@ class AgentEdit:
     completion_tokens: int = 0
     total_tokens: int = 0
     cost: float = 0.0
+    cached_tokens: int = 0  # tokens served from prompt cache
+```
+
+### `build_messages`
+Builds the system and user message payload for the LLM completion API. Injects system prompt, program objective, lessons, strategy code, config YAML, evaluation report, attempt history, and mode-specific instructions. Supports Anthropic-style `cache_control` breakpoints when `cache_supported=True`.
+
+```python
+def build_messages(
+    context: AgentContext,
+    cache_supported: bool = False,
+) -> list[dict[str, Any]]:
+    """Build message payload. The stable prefix (SYSTEM_PROMPT + program_text) is
+    byte-identical across iterations, enabling server-side prompt caching."""
+```
+
+### `parse_lessons` / `filter_lessons`
+Parse and filter the lessons markdown content for context-specific injection.
+```python
+def parse_lessons(lessons_text: str) -> list[dict[str, str]]:
+    """Parse lessons.md content into dicts with keys: title, type, body."""
+
+def filter_lessons(lessons_text: str, context_stage: str | None) -> str:
+    """Filter lessons by type matching active stage (BUG, DIVERSITY, GATE_REJECTION)."""
 ```
 
 ### `LLMError`
@@ -530,6 +603,7 @@ Manages system configuration settings loaded from environment variables with saf
 - `llm_max_tokens`: Token boundary limit integer (default: `4096`).
 - `litellm_debug`: Boolean flag to toggle deep LiteLLM logs.
 - `llm_request_timeout`: Maximum duration in seconds for LLM call requests (default: `600.0`).
+- `llm_prompt_cache`: Boolean flag to enable Anthropic-style prompt caching (default: `True`).
 - `default_start_date`: Standard backtesting starting date string (default: `"2015-01-01"`).
 - `default_end_date`: Standard backtesting ending date string (default: `"2026-01-01"`).
 - `default_holdout_years`: Holdout dataset division length integer (default: `3`).
@@ -543,10 +617,14 @@ Manages system configuration settings loaded from environment variables with saf
 - `importance_p_threshold`: P-value threshold for significance in parameter importance (default: `0.20`).
 - `early_stop_patience`: Consecutive iteration rejections allowed before early-stop terminates the run (default: `10`). Set `AUTOBACKTEST_EARLY_STOP_PATIENCE=0` to disable.
 - `max_file_size_kb`: Maximum allowed candidate code file length (default: `100`).
-- `max_cyclomatic_complexity`: Maximum cyclomatic complexity allowed for functions (default: `15`).
+- `max_cyclomatic_complexity`: Maximum cyclomatic complexity allowed for functions (default: `20`).
 - `max_function_lines`: Maximum physical lines allowed for functions (default: `100`).
 - `safe_imports_whitelist`: Comma-separated allowed module imports.
 - `sandbox_timeout`: Strategy signal execution limit integer (default: `15`).
+- `enable_codemod_repair`: Boolean flag to enable automatic pandas deprecated API repair (default: `True`).
+- `enable_config_diversity_gate`: Boolean flag to enable the config similarity gate in explore mode (default: `True`).
+- `diversity_config_threshold`: Config similarity threshold for Tier 1 diversity gate (default: `0.95`).
+- `diversity_returns_threshold`: Returns correlation threshold for Tier 2 diversity gate (default: `0.95`).
 - `db_timeout`: Database block lock timeout limit (default: `15.0`).
 - `parsed_safe_imports` (property): Resolved set of whitelisted import names.
 - `ledger_db_path` (property): Resolved full Path to `ledger.db`.
@@ -554,7 +632,54 @@ Manages system configuration settings loaded from environment variables with saf
 
 ---
 
-## 9. Strategy Normalization (`autobacktest.strategy.normalization`)
+## 9. Program Parser Module (`autobacktest.program`)
+
+### `ProgramSpec`
+Dataclass holding structured objectives and constraints from a program file.
+```python
+@dataclass(frozen=True)
+class ProgramSpec:
+    objective: str      # text under # Objective
+    constraints: str    # text under # Constraints
+    raw_text: str       # full file content (passed to LLM as-is)
+```
+
+### `parse_program`
+Parses a `program.md` file with required `# Objective` and `# Constraints` headers.
+```python
+def parse_program(path: Path) -> ProgramSpec:
+    """Parse program.md, skipping fenced code blocks to prevent false header matching.
+    Raises ValueError if required headers are missing."""
+```
+
+The parsed `raw_text` is passed verbatim to the LLM so formatting is preserved.
+
+---
+
+## 10. Strategy Codemod Repair (`autobacktest.strategy.codemod`)
+
+### `repair_pandas_code`
+AST-based repair module for deprecated pandas API calls. Transforms pandas 1.x/2.x patterns to pandas 3.x-compatible equivalents.
+
+Context-sensitive frequency alias rules:
+- DatetimeIndex operations (`resample`, `date_range`, `bdate_range`, `Grouper`) require new aliases: `'ME'`, `'BME'`, `'QE'`, `'YE'`, `'h'`, `'min'`, `'s'`.
+- Period operations (`to_period`, `period_range`) require original codes: `'M'`, `'Q'`, `'Y'`.
+
+Also repairs:
+- `.groupby(axis=...)` → drops `axis` keyword
+- `.fillna(method='ffill'/'pad')` → `.ffill()`
+- `.fillna(method='bfill'/'backfill')` → `.bfill()`
+- `.mean/sum/std/min/max(level=L)` → `.groupby(level=L).func()`
+
+```python
+def repair_pandas_code(code: str) -> tuple[str, list[str]]:
+    """Parse code, apply pandas deprecation fixes. Returns (repaired_code, fix_descriptions).
+    If no fixes apply, returns the exact original string."""
+```
+
+---
+
+## 11. Strategy Normalization (`autobacktest.strategy.normalization`)
 
 ### `normalize_python_code`
 Normalizes Python source code by stripping comments and docstrings, producing a stable hash key for the eval cache.
@@ -565,7 +690,7 @@ def normalize_python_code(code: str) -> str:
 
 ---
 
-## 10. Parameter Importance Tracking (`autobacktest.strategy.parameter_importance`)
+## 12. Parameter Importance Tracking (`autobacktest.strategy.parameter_importance`)
 
 ### `compute_parameter_importance`
 Computes Spearman rank correlation between numeric config parameters and the target metric across all attempts.
@@ -587,7 +712,7 @@ def format_importance_lessons(importance: dict[str, dict[str, float]]) -> str:
 
 ---
 
-## 11. Lessons Memory Store (`autobacktest.lessons`)
+## 13. Lessons Memory Store (`autobacktest.lessons`)
 
 ### `LessonStore`
 SQLite-backed deduplicated lesson store with per-strategy filtering. Replaces the flat `lessons.md` file.
@@ -598,7 +723,7 @@ SQLite-backed deduplicated lesson store with per-strategy filtering. Replaces th
 
 ---
 
-## 12. Reporting Module (`autobacktest.reports`)
+## 14. Reporting Module (`autobacktest.reports`)
 
 ### `plot_equity_curves`
 Generates a Matplotlib cumulative returns comparison chart.

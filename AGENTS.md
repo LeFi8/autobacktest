@@ -23,8 +23,8 @@ No `.pre-commit-config.yaml` exists — skip `pre-commit install`.
 - **Entrypoint**: `src/autobacktest/cli.py` → `autobacktest.cli:app` (typer). 6 subcommands: `run`, `report`, `reset`, `evaluate`, `llm-test`, `init-strategy`.
 - **Strategy files**: `strategies/<name>.py` + `configs/<name>.yaml` — matched by stem. Strategy exports `generate_signals(prices: pd.DataFrame, config: dict) -> pd.DataFrame`.
 - **Allowed imports** in strategy code: pandas, numpy, math, typing, scipy, dataclasses, collections, itertools, functools, decimal, statistics, numbers, json only. Blocked by AST whitelist.
-- **Optimization loop** (`orchestrator.py`): LLM edits code → preflight validation (6 checks in sandboxed subprocess) → config diversity gate → evaluation (walk-forward + holdout) → returns diversity gate → lexicographic gate → git commit or rollback.
-- **Gate** (`gate.py`): hard gates in order — max_drawdown ≤ 20%, regime stress tests pass, turnover ≤ 2.0, then target metric improvement over baseline. DSR is computed for insight but is NOT a hard gate.
+- **Optimization loop** (`orchestrator.py`): LLM edits code → preflight validation (6 checks in sandboxed subprocess) → config diversity gate → evaluation (walk-forward + holdout) → returns diversity gate → two-phase select/confirm gate → git commit or rollback.
+- **Gate** (`gate.py`): Two-phase system: `select` (in-sample — max_drawdown ≤ 20%, regime stress tests pass, turnover ≤ 2.0, target metric improvement, min_return_ratio, DSR non-degradation) then `confirm` (holdout — drawdown, turnover, DSR non-degradation). DSR is a hard gate for both phases.
 - **Holdout**: 3 years default (`AUTOBACKTEST_DEFAULT_HOLDOUT_YEARS`). Walk-forward: 5y train / 1y test. All statistical simulations use seed=42.
 - **Config**: `.env` via `python-dotenv`. Copy `.env.dist` → `.env`. `src/autobacktest/config.py` → global `settings` singleton.
 

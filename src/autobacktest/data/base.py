@@ -1,4 +1,9 @@
-"""Abstract base classes for market data providers."""
+"""Abstract base classes for market data providers.
+
+Defines the ``DataProvider`` contract that all price-source backends must
+implement.  Concrete providers (YFinance, Bloomberg, etc.) are expected to
+subclass this and implement ``get_prices``.
+"""
 
 from abc import ABC, abstractmethod
 
@@ -6,7 +11,13 @@ import pandas as pd
 
 
 class DataProvider(ABC):
-    """Abstract base class for all data providers."""
+    """Abstract base class for all data providers.
+
+    Subclasses must implement ``get_prices``.  The returned DataFrame must
+    have a ``DatetimeIndex`` and one column per ticker.  This contract is
+    consumed by ``CachedDataProvider`` (caching decorator) and ultimately
+    by the evaluation engine.
+    """
 
     @abstractmethod
     def get_prices(

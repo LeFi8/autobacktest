@@ -1,4 +1,11 @@
-"""Walk-forward rolling calendar generator."""
+"""Walk-forward rolling calendar generator.
+
+Generates date windows for walk-forward validation.  Each window has a
+training segment (default 5 years) followed immediately by a testing segment
+(default 1 year).  Windows roll forward by ``step_years`` (default 1) to
+produce multiple folds.  This avoids lookahead bias by ensuring the test
+segment always follows its training segment in calendar time.
+"""
 
 import pandas as pd
 
@@ -9,16 +16,23 @@ def generate_walk_forward_windows(
     test_years: int = 1,
     step_years: int = 1,
 ) -> list[tuple[pd.Timestamp, pd.Timestamp, pd.Timestamp, pd.Timestamp]]:
-    """Generate rolling walk-forward train and test date window tuples.
+    """Generate rolling walk-forward train/test date window tuples.
+
+    Produces a list of ``(train_start, train_end, test_start, test_end)``
+    windows.  The union of all test segments covers the entire in-sample
+    period.  Windows that extend beyond the available data are truncated;
+    windows with empty train or test sets are omitted.
 
     Args:
-        index: Full DatetimeIndex representing trading days.
-        train_years: Number of years in training window.
-        test_years: Number of years in testing window.
-        step_years: Number of years to step forward per window.
+        index: Full DatetimeIndex of available trading days.
+        train_years: Number of years in each training window.
+        test_years: Number of years in each testing window.
+        step_years: Calendar years to advance per window.
 
     Returns:
-        list of tuples: (train_start, train_end, test_start, test_end)
+        list of ``(train_start, train_end, test_start, test_end)`` tuples.
+        Returns an empty list when the index is empty or too short for at
+        least one complete window.
     """
     if index.empty:
         return []

@@ -29,6 +29,8 @@ This document describes how to set up the development environment, execute the t
    ```
 
 
+> **Note:** This project does not include a `.pre-commit-config.yaml`. Pre-commit hooks are not configured — all linting/type-checking is run manually via the commands below.
+
 ## Development Commands
 
 ### 1. Static Typing Verification

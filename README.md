@@ -70,7 +70,7 @@ uv run autobacktest run \
 2. It evaluates the baseline HAA strategy on walk-forward and holdout datasets.
 3. The orchestrator generates **3 candidate mutations in parallel** via the LLM, each with structured code edits, YAML config changes, and refined lessons.
 4. Each candidate passes through **preflight validation** (AST whitelist, Pydantic config, smoke test, lookahead sniffing).
-5. In **explore mode**, candidates pass a **config similarity gate** (Tier 1) preventing duplicate parameter proposals, then a **returns correlation gate** (Tier 2) after backtesting to ensure functional diversity.
+5. In **explore mode**, candidates pass a **config similarity gate** (Tier 1) preventing duplicate parameter proposals (threshold 0.95), then a **returns correlation gate** (Tier 2, threshold 0.95) after backtesting to ensure functional diversity.
 6. A **two-phase gate system** evaluates survivors: `select` (in-sample walk-forward metrics, DSR non-degradation) then `confirm` (holdout confirmation, budgeted peeks).
 7. If a candidate passes all gates, it is committed to git with the incumbent updated. Otherwise, it is rolled back and the LLM receives structured failure feedback.
 
@@ -137,13 +137,6 @@ Generates LLM-driven strategy edits and tests them against preflight validation 
 - `--strategy` / `-s`: Strategy name in the registry (default: `haa`).
 - `--model` / `-m`: LLM model name.
 - `--provider` / `-p`: LLM provider (`litellm` or `mock`).
-
-### `init-strategy`
-Interactively scaffolds a new backtesting strategy with validated configuration and boilerplate signal code.
-- `--name` / `-n`: Strategy name in `snake_case`. Omit for interactive prompt.
-- `--overwrite`: Overwrite existing strategy/config files without prompting.
-- Guides the user through prompts for universe tickers, benchmark, drawdown/turnover limits, lookback window, and optional custom parameters with dynamic type inference.
-- Runs full Pydantic validation via `StrategyConfig` before writing files.
 
 ---
 

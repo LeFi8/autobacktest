@@ -13,7 +13,7 @@ known weaknesses while preserving its strengths. Specific targets:
 
 - Maximum drawdown in the holdout period must not exceed 20%.
 - Annualized portfolio turnover must remain below 2.0.
-- The strategy must pass all regime stress tests (2000 dotcom crash, 2008 financial crisis, 2020 COVID crash).
+- The strategy must pass all regime stress tests (2008 GFC, 2020 COVID crash, 2022 bear market).
 - Monthly rebalancing on the last trading day must be preserved.
 - Only `pandas` and `numpy` imports are permitted in the strategy code.
 - The `generate_signals(prices: pd.DataFrame, config: dict) -> pd.DataFrame` signature must be preserved.

@@ -35,14 +35,16 @@ graph TD
 1. **Initiate Loop**: User defines constraints (e.g. max drawdown limit, maximum turnover, benchmark) in a configuration file and target strategy (`strategies/haa.py`).
 2. **Multi-Candidate Generation**: The orchestrator requests **3 candidate edits in parallel** from the LLM, each containing proposed code changes, a YAML config, and updated lessons text. Candidates are deduplicated by the LessonStore (SQLite-backed, keyed by `(strategy, type, body_hash)`).
 3. **Pre-Flight Verification** (per candidate):
-   - AST whitelist scan blocking unsafe imports and I/O operations.
-   - Pydantic config validation via `StrategyConfig`.
-   - Dynamic compilation and isolated import.
-   - Smoke testing with synthetic prices.
-   - Sub-window rebalance stability (lookahead-bias sniffing).
+    - Path traversal security check.
+    - AST whitelist scan blocking unsafe imports and I/O operations.
+    - Pydantic config validation via `StrategyConfig`.
+    - Dynamic compilation and isolated import.
+    - Smoke testing with synthetic prices.
+    - Sub-window rebalance stability (lookahead-bias sniffing).
+    - Cyclomatic complexity and function size limits enforced.
 4. **Tier 1 Diversity Gate (Config Similarity)** — active only in **explore mode**:
    - Compares the candidate's proposed configuration fingerprint with all historical configs using min-max normalized parameters.
-   - If similarity exceeds `DIVERSITY_CONFIG_THRESHOLD = 0.95`, the candidate is rejected with a bounded retry (up to 2).
+    - If similarity exceeds `DIVERSITY_CONFIG_THRESHOLD = 0.95` (configurable via `AUTOBACKTEST_DIVERSITY_CONFIG_THRESHOLD`), the candidate is rejected with a bounded retry (up to 2).
 5. **Deterministic Evaluation**:
    - Fetches historical prices from cache or online (Yahoo Finance).
    - Generates daily signal weights from the active strategy file.
@@ -50,7 +52,7 @@ graph TD
    - Penalizes returns using dynamic rebalancing turnover costs, commission rates, bid-ask spreads, and market impact models.
 6. **Tier 2 Diversity Gate (Returns Correlation)** — active only in **explore mode**:
    - Measures the Pearson correlation coefficient between the candidate's daily net returns and those of all previously recorded attempts in the SQLite ledger.
-   - Rejects the candidate if return correlation `> DIVERSITY_RETURNS_THRESHOLD = 0.90` with any past attempt.
+   - Rejects the candidate if return correlation `> DIVERSITY_RETURNS_THRESHOLD = 0.95` (configurable via `AUTOBACKTEST_DIVERSITY_RETURNS_THRESHOLD`) with any past attempt.
 7. **Two-Phase Gate System**:
    - **Phase 1 — `select` (in-sample)**: Checks hard gates on the walk-forward aggregate: max drawdown, regime stress tests, turnover. If all pass, applies a target metric improvement tie-breaker and a DSR non-degradation check against the incumbent.
    - **Phase 2 — `confirm` (holdout)**: Only reached when `select` passes. Checks holdout max drawdown, turnover, and holdout DSR non-degradation. Each call counts as one **holdout peek** (budgeted — default limit of 20 peeks).
