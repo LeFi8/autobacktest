@@ -48,7 +48,7 @@ class YFinanceProvider(DataProvider):
         # Handle MultiIndex vs single ticker Flat Index
         if isinstance(df.columns, pd.MultiIndex):
             # Extract Adjusted Close if present, otherwise standard Close
-            metric = "Adj Close" if "Adj Close" in df.columns.levels[0] else "Close"
+            metric = "Adj Close" if "Adj Close" in df.columns.get_level_values(0) else "Close"
             prices = df[metric]
         else:
             # Single ticker case

@@ -230,6 +230,7 @@ def run_optimization(
     lesson_store = LessonStore(run_dir / "lessons.db")
     event_log = EventLog(run_dir / run_id / "events.jsonl")
     incumbent_returns = pd.Series(dtype=float)  # set before try so finally can read it
+    incumbent_attempt_id: int | None = None
     incumbent: EvaluationReport  # assigned during baseline below
     try:
         # 5. Load baseline config
@@ -295,7 +296,7 @@ def run_optimization(
             incumbent = baseline_report
             incumbent_returns = baseline_returns
             baseline_sha: str | None = git_ledger._repo.head.commit.hexsha
-            ledger.record_attempt(
+            incumbent_attempt_id = ledger.record_attempt(
                 run_id=run_id,
                 iteration=0,
                 strategy_name=strategy_name,
@@ -636,7 +637,7 @@ def run_optimization(
                         # DSR deflation (in-sample)
                         _deflate(report_k, returns_k, ledger)
                         if incumbent is not None and not incumbent_returns.empty:
-                            _deflate(incumbent, incumbent_returns, ledger)
+                            _deflate(incumbent, incumbent_returns, ledger, exclude_id=incumbent_attempt_id)
 
                         # Selection gate
                         sel = select(report_k, baseline=incumbent, target_metric=target_metric, config=new_config)
@@ -736,6 +737,7 @@ def run_optimization(
 
                             incumbent = w_report
                             incumbent_returns = w_returns
+                            incumbent_attempt_id = attempt_id
                             n_committed += 1
                             last_attempt = None
                             consecutive_no_accept = 0
@@ -1152,6 +1154,7 @@ def _deflate(
     report: EvaluationReport,
     selection_returns: pd.Series[Any],
     ledger: LedgerStore,
+    exclude_id: int | None = None,
 ) -> None:
     """Deflate the in-sample selection DSR using the ledger's multi-trial history.
 
@@ -1159,7 +1162,7 @@ def _deflate(
     trials — the candidate's own returns and Sharpe are excluded from the
     correlation matrix and Sharpe list to prevent self-contamination.
     """
-    hist_matrix, hist_sharpes = ledger.fetch_historical_returns(report.dataset_hash)
+    hist_matrix, hist_sharpes = ledger.fetch_historical_returns(report.dataset_hash, exclude_id=exclude_id)
 
     if hist_matrix.empty:
         return
