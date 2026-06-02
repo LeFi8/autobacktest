@@ -68,8 +68,12 @@ def plot_equity_curves(
 
     if has_benchmark and ax_bot is not None:
         aligned = pd.concat([baseline_cum, final_cum, bench_cum], axis=1, join="inner")
-        baseline_active = aligned.iloc[:, 0] - aligned.iloc[:, 2]
-        final_active = aligned.iloc[:, 1] - aligned.iloc[:, 2]
+        if aligned.empty:
+            baseline_active = pd.Series(dtype=float)
+            final_active = pd.Series(dtype=float)
+        else:
+            baseline_active = aligned.iloc[:, 0] - aligned.iloc[:, 2]
+            final_active = aligned.iloc[:, 1] - aligned.iloc[:, 2]
         ax_bot.plot(
             baseline_active.index,
             baseline_active.values,

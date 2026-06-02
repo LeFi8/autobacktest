@@ -329,9 +329,9 @@ def run_optimization(
             for w in baseline_warnings:
                 logger.warning("Baseline gate check: %s", w)
             if baseline_warnings:
-                from rich.console import Console as _RichConsole
+                from rich.console import Console
 
-                _RichConsole().print(
+                Console().print(
                     "[yellow]⚠ Baseline fails gate constraints. "
                     "Candidates must pass these constraints AND improve over baseline "
                     f"(Sharpe {incumbent.observed_sharpe:.3f}).[/]"
@@ -341,7 +341,7 @@ def run_optimization(
             rows = (
                 ledger._conn()
                 .execute(
-                    "SELECT iteration, accepted, committed, report_json "
+                    "SELECT id, iteration, accepted, committed, report_json "
                     "FROM attempts WHERE run_id = ? ORDER BY iteration ASC",
                     (run_id,),
                 )
@@ -360,13 +360,14 @@ def run_optimization(
                 from autobacktest.evaluator.report import EvaluationReport
                 from autobacktest.ledger.store import _deserialize_returns
 
-                incumbent = EvaluationReport.from_json(latest_accepted[3])
+                incumbent = EvaluationReport.from_json(latest_accepted[4])
+                incumbent_attempt_id = int(latest_accepted[0])
 
                 ret_row = (
                     ledger._conn()
                     .execute(
                         "SELECT returns_blob, holdout_returns_blob FROM attempts WHERE run_id = ? AND iteration = ?",
-                        (run_id, latest_accepted[0]),
+                        (run_id, latest_accepted[1]),
                     )
                     .fetchone()
                 )
@@ -679,6 +680,9 @@ def run_optimization(
                                 ev["valid"] = False
                                 ev["validation_stage"] = "holdout_peek_limit"
                                 ev["_peek_fail"] = True
+                                ev["detail"] = (
+                                    f"Holdout peek budget exhausted ({total_peeks} >= {holdout_peek_limit} peeks)."
+                                )
                                 continue
 
                             peeks_this_iteration += 1

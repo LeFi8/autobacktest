@@ -139,10 +139,11 @@ class _PandasDeprecationTransformer(ast.NodeTransformer):
                         break
 
                 if method_value in ("ffill", "pad"):
+                    new_keywords = [kw for kw in node.keywords if kw.arg != "method"]
                     new_call = ast.Call(
                         func=ast.Attribute(value=node.func.value, attr="ffill", ctx=ast.Load()),
-                        args=[],
-                        keywords=[],
+                        args=node.args,
+                        keywords=new_keywords,
                     )
                     ast.copy_location(new_call, node)
                     ast.fix_missing_locations(new_call)
@@ -150,10 +151,11 @@ class _PandasDeprecationTransformer(ast.NodeTransformer):
                     return new_call
 
                 if method_value in ("bfill", "backfill"):
+                    new_keywords = [kw for kw in node.keywords if kw.arg != "method"]
                     new_call = ast.Call(
                         func=ast.Attribute(value=node.func.value, attr="bfill", ctx=ast.Load()),
-                        args=[],
-                        keywords=[],
+                        args=node.args,
+                        keywords=new_keywords,
                     )
                     ast.copy_location(new_call, node)
                     ast.fix_missing_locations(new_call)

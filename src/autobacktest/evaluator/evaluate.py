@@ -7,7 +7,7 @@ import json
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol
 
 import numpy as np
 import pandas as pd
@@ -28,7 +28,6 @@ from autobacktest.strategy.config_schema import StrategyConfig
 logger = logging.getLogger(__name__)
 
 
-@runtime_checkable
 class _CacheProtocol(Protocol):
     """Minimal eval-result cache interface — satisfies both ``dict`` and ``_LRUCache``."""
 
@@ -471,7 +470,7 @@ def evaluate_strategy_detailed(
         daily_weights=daily_weights,
         n_tickers=len(tickers),
     )
-    mc_5th, mc_50th, mc_95th = run_block_bootstrap(net_returns, n_paths=10000, seed=42)
+    mc_5th, mc_50th, mc_95th = run_block_bootstrap(net_returns, n_paths=1000, seed=42)
 
     # --- DSR accounting ---
     # Selection DSR uses POOLED walk-forward returns (same basis as observed_sharpe)

@@ -84,7 +84,7 @@ class Settings(BaseModel):
         default_factory=lambda: os.getenv("AUTOBACKTEST_ENABLE_CODEMOD_REPAIR", "true").lower() == "true"
     )
     enable_config_diversity_gate: bool = Field(
-        default_factory=lambda: os.getenv("AUTOBACKTEST_ENABLE_CONFIG_DIVERSITY_GATE", "false").lower() == "true"
+        default_factory=lambda: os.getenv("AUTOBACKTEST_ENABLE_CONFIG_DIVERSITY_GATE", "true").lower() == "true"
     )
     diversity_config_threshold: float = Field(
         default_factory=lambda: float(os.getenv("AUTOBACKTEST_DIVERSITY_CONFIG_THRESHOLD", "0.95"))

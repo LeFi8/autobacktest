@@ -72,7 +72,8 @@ class EvaluationReport:
     holdout_deflated_sharpe: float = 0.0
     # Raw holdout returns — excluded from serialization; used by _deflate_holdout
     holdout_net_returns: pd.Series | None = field(default=None, repr=False, compare=False)
-    # Benchmark returns for charting — excluded from serialization
+    # Benchmark returns for charting — excluded from serialization (pop'd in
+    # to_dict()).  Will be None after from_json() round-trip.
     benchmark_returns: pd.Series | None = field(default=None, repr=False, compare=False)
     benchmark_ticker: str = "SPY"
 
