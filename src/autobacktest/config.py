@@ -39,6 +39,9 @@ class Settings(BaseModel):
     llm_request_timeout: float = Field(
         default_factory=lambda: float(os.getenv("AUTOBACKTEST_LLM_REQUEST_TIMEOUT", "600.0"))
     )
+    llm_prompt_cache: bool = Field(
+        default_factory=lambda: os.getenv("AUTOBACKTEST_LLM_PROMPT_CACHE", "true").lower() in ("true", "1", "yes")
+    )
 
     # --- BACKTEST WINDOWS ---
     default_start_date: str = Field(default_factory=lambda: os.getenv("AUTOBACKTEST_DEFAULT_START_DATE", "2015-01-01"))

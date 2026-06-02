@@ -21,16 +21,64 @@ def test_build_messages_structure_no_report() -> None:
     messages = build_messages(context)
     assert len(messages) == 2
     assert messages[0]["role"] == "system"
-    assert messages[0]["content"] == SYSTEM_PROMPT
+    # program_text is now in the system message (stable cacheable prefix)
+    sys_content = messages[0]["content"]
+    assert isinstance(sys_content, str)
+    assert SYSTEM_PROMPT in sys_content
+    assert "make it conservative" in sys_content
+    assert "## Objective" in sys_content
 
     user_msg = messages[1]["content"]
     assert "## Iteration" in user_msg
-    assert "## Objective" in user_msg
+    # ## Objective moved to system; should not be duplicated in user message
+    assert "## Objective" not in user_msg
     assert "## Current Strategy Code" in user_msg
     assert "## Current Config" in user_msg
     assert "## Latest Evaluation" in user_msg
     assert "First iteration" in user_msg
     assert "## Instructions" in user_msg
+
+
+def test_build_messages_cache_blocks_structure() -> None:
+    context = AgentContext(
+        strategy_name="haa",
+        strategy_code="def generate_signals(): pass",
+        config_yaml="universe: [SPY]",
+        program_text="be aggressive",
+        evaluation_report=None,
+        iteration=1,
+    )
+    messages = build_messages(context, cache_supported=True)
+    assert len(messages) == 2
+    sys_content = messages[0]["content"]
+    assert isinstance(sys_content, list)
+    assert len(sys_content) == 2
+    # First block: SYSTEM_PROMPT, no cache_control
+    assert sys_content[0]["type"] == "text"
+    assert SYSTEM_PROMPT in sys_content[0]["text"]
+    assert "cache_control" not in sys_content[0]
+    # Second block: program_text, with cache_control
+    assert sys_content[1]["type"] == "text"
+    assert "be aggressive" in sys_content[1]["text"]
+    assert sys_content[1]["cache_control"] == {"type": "ephemeral"}
+    # ## Objective should NOT be in user message
+    assert "## Objective" not in messages[1]["content"]
+
+
+def test_build_messages_no_cache_control_without_flag() -> None:
+    context = AgentContext(
+        strategy_name="haa",
+        strategy_code="def generate_signals(): pass",
+        config_yaml="universe: [SPY]",
+        program_text="be aggressive",
+        evaluation_report=None,
+        iteration=1,
+    )
+    messages = build_messages(context, cache_supported=False)
+    sys_content = messages[0]["content"]
+    # Non-Anthropic path: plain string, no block list, no cache_control keys
+    assert isinstance(sys_content, str)
+    assert "cache_control" not in str(sys_content)
 
 
 def test_build_messages_with_report() -> None:

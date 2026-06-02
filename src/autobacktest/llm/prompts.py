@@ -201,18 +201,42 @@ def filter_lessons(lessons_text: str, context_stage: str | None) -> str:
     return "\n\n".join(filtered)
 
 
-def build_messages(context: AgentContext) -> list[dict[str, str]]:
+def _text_block(text: str, cache: bool = False) -> dict[str, Any]:
+    block: dict[str, Any] = {"type": "text", "text": text}
+    if cache:
+        block["cache_control"] = {"type": "ephemeral"}
+    return block
+
+
+def build_messages(
+    context: AgentContext,
+    cache_supported: bool = False,
+) -> list[dict[str, Any]]:
     """Build the system and user message payload for the LLM completion API.
 
     Args:
         context: Immutable context defining the current optimization state.
+        cache_supported: When True, emit Anthropic-style cache_control breakpoints
+            on the stable prefix so the provider caches SYSTEM_PROMPT + program_text.
 
     Returns:
         List containing the system message and user message dicts.
     """
-    system_message = {
+    # The stable prefix (SYSTEM_PROMPT + program_text) is byte-identical across all
+    # iterations within a run. For Anthropic we mark the boundary with cache_control;
+    # for OpenAI the identical system string triggers automatic server-side caching.
+    system_content: str | list[dict[str, Any]]
+    if cache_supported:
+        system_content = [
+            _text_block(SYSTEM_PROMPT),
+            _text_block(f"## Objective\n{context.program_text}", cache=True),
+        ]
+    else:
+        system_content = f"{SYSTEM_PROMPT}\n\n## Objective\n{context.program_text}"
+
+    system_message: dict[str, Any] = {
         "role": "system",
-        "content": SYSTEM_PROMPT,
+        "content": system_content,
     }
 
     context_stage = context.last_attempt.get("stage") if context.last_attempt else None
@@ -489,9 +513,6 @@ def build_messages(context: AgentContext) -> list[dict[str, str]]:
 Current Loop Iteration: {context.iteration}
 
 {mode_section}
-
-## Objective
-{context.program_text}
 
 ## Lessons
 {injected_lessons}

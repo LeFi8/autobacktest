@@ -70,6 +70,7 @@ class AgentEdit:
     completion_tokens: int = 0
     total_tokens: int = 0
     cost: float = 0.0
+    cached_tokens: int = 0
 
 
 class LLMError(Exception):
