@@ -11,15 +11,17 @@ universe:
 benchmark: SPY
 max_drawdown_limit: 0.20
 turnover_limit: 2.0
+require_dsr_non_degradation: true
+enable_holdout_confirmation: true
+holdout_min_improvement: 0.0
+min_improvement: 0.0
+select_min_return_ratio: 0.5
 params:
-  mom_lookback: 252
-  canary_assets:
-    - TIP
-    - BND
-  vol_period: 21
-  vol_threshold: 0.25
-  trend_asset: SPY
-  trend_period: 200
+  mom_lags: [21, 63, 126, 252]
+  vol_window: 63
+  canary_z_window: 252
+  top_n: 6
+  smooth: 0.3
   defensive_assets:
     - BIL
     - BND
@@ -30,5 +32,8 @@ params:
     - VWO
     - GLD
     - TLT
-  top_n: 4
-  rebalance_cadence: M
+  canary_assets:
+    - TIP
+    - BND
+    - GLD
+    - TLT
