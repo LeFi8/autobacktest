@@ -572,7 +572,8 @@ def run_optimization(
                                 ev["valid"] = False
                                 ev["validation_stage"] = "diversity_config"
                                 ev["detail"] = (
-                                    f"Config similarity {max_sim:.3f} exceeded threshold {settings.diversity_config_threshold}."
+                                    f"Config similarity {max_sim:.3f} exceeded"
+                                    f" threshold {settings.diversity_config_threshold}."
                                 )
                         elif mode == "exploit":
                             max_sim = max_config_similarity(e_config_yaml, [current_yaml])

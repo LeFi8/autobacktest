@@ -488,7 +488,8 @@ class TestDiversityGateIntegration:
         # With the config gate disabled by default, identical candidates proceed to
         # backtest and are caught by the behavioral returns-correlation gate.
         rejected = [
-            e for e in events
+            e
+            for e in events
             if any(c.get("stage") in ("diversity_config", "diversity_returns") for c in e.get("candidates", []))
         ]
         assert len(rejected) >= 1
