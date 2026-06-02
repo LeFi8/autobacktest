@@ -528,13 +528,13 @@ def run_optimization(
                             # Apply deterministic pandas codemod (repairs deprecated API calls)
                             if settings.enable_codemod_repair:
                                 from autobacktest.strategy.codemod import repair_pandas_code
+
                                 repaired_code, applied_fixes = repair_pandas_code(edit.strategy_code)
                                 if applied_fixes:
                                     import dataclasses as _dc
+
                                     edit = _dc.replace(edit, strategy_code=repaired_code)
-                                    logger.info(
-                                        "codemod repaired candidate in iter %s: %s", k, applied_fixes
-                                    )
+                                    logger.info("codemod repaired candidate in iter %s: %s", k, applied_fixes)
 
                             # Validate
                             ok, err_code, err_detail = _validate_candidate(
@@ -567,11 +567,12 @@ def run_optimization(
                         e_config_yaml = ev["config_yaml"]
                         if mode == "explore" and historical_configs:
                             max_sim = max_config_similarity(e_config_yaml, historical_configs)
-                            if max_sim > DIVERSITY_CONFIG_THRESHOLD:
+                            ev["config_similarity"] = max_sim
+                            if settings.enable_config_diversity_gate and max_sim > settings.diversity_config_threshold:
                                 ev["valid"] = False
                                 ev["validation_stage"] = "diversity_config"
                                 ev["detail"] = (
-                                    f"Config similarity {max_sim:.3f} exceeded threshold {DIVERSITY_CONFIG_THRESHOLD}."
+                                    f"Config similarity {max_sim:.3f} exceeded threshold {settings.diversity_config_threshold}."
                                 )
                         elif mode == "exploit":
                             max_sim = max_config_similarity(e_config_yaml, [current_yaml])
@@ -640,14 +641,14 @@ def run_optimization(
                             hist_matrix, _ = ledger.fetch_historical_returns(dataset_hash)
                             if not hist_matrix.empty:
                                 corr_passed, max_corr = check_returns_correlation(
-                                    returns_k, hist_matrix, DIVERSITY_RETURNS_THRESHOLD
+                                    returns_k, hist_matrix, settings.diversity_returns_threshold
                                 )
                                 if not corr_passed:
                                     ev["valid"] = False
                                     ev["validation_stage"] = "diversity_returns"
                                     ev["detail"] = (
                                         f"Return correlation {max_corr:.3f} exceeded threshold "
-                                        f"{DIVERSITY_RETURNS_THRESHOLD}."
+                                        f"{settings.diversity_returns_threshold}."
                                     )
                                     ev["_report_json"] = report_k.to_json()
                                     ev["_observed_sharpe"] = report_k.observed_sharpe
