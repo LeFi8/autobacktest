@@ -222,7 +222,7 @@ The orchestrator uses a dual-mode system to balance broad search with focused re
 **Stuck Escalation**: If `STUCK_THRESHOLD = 5` consecutive iterations pass without **any** acceptance (regardless of mode), the mode is forced to `"explore"` and temperature is escalated toward `start_temp` via the rolling failure rate mechanism.
 
 ### 7. Early Stopping Patience
-If no strategy iteration passes all gates for `EARLY_STOP_PATIENCE = 10` consecutive attempts, the orchestrator halts optimization early, preserving API credits.
+If no strategy iteration passes all gates for `EARLY_STOP_PATIENCE` consecutive attempts (default `10`, configurable via `AUTOBACKTEST_EARLY_STOP_PATIENCE` env var or `--early-stop-patience` CLI flag), the orchestrator halts optimization early, preserving API credits. Set to `0` to disable early stopping entirely.
 
 ### 8. Parameter Importance Tracking
 After each iteration, the orchestrator computes Spearman rank correlations between numeric config parameters and the target metric across all historical attempts in the current dataset universe. Parameters with statistically significant rank correlations are recorded as lessons, helping the LLM focus on high-impact parameters in future iterations.

@@ -10,7 +10,7 @@ Key responsibilities:
 - LLM provider/model/temperature configuration
 - Backtesting date windows and holdout length
 - System directory paths (run dir, cache, strategies, configs)
-- Optimisation loop parameters (n_candidates, importance thresholds)
+- Optimisation loop parameters (n_candidates, importance thresholds, early_stop_patience)
 - Safety gate limits (file size, cyclomatic complexity, import whitelist)
 - SQLite database timeout configuration
 """
@@ -62,6 +62,7 @@ class Settings(BaseModel):
     importance_p_threshold: float = Field(
         default_factory=lambda: float(os.getenv("AUTOBACKTEST_IMPORTANCE_P_THRESHOLD", "0.20"))
     )
+    early_stop_patience: int = Field(default_factory=lambda: int(os.getenv("AUTOBACKTEST_EARLY_STOP_PATIENCE", "10")))
 
     # --- SAFETY GATES ---
     max_file_size_kb: int = Field(default_factory=lambda: int(os.getenv("AUTOBACKTEST_MAX_FILE_SIZE_KB", "100")))
