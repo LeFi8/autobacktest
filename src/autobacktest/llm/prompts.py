@@ -54,7 +54,7 @@ You operate in a strict execution loop and MUST adhere to the following rules:
     Reason explicitly about gaps in the explored space.
 11. AST Complexity and Size Limits Rule:
     Your strategy file has strict structural limits enforced by AST checks:
-    - Maximum McCabe cyclomatic complexity of any function is 15. Keep functions
+    - Maximum McCabe cyclomatic complexity of any function is 20. Keep functions
       simple: avoid heavily nested conditions (if/elif/else, deeply nested loops,
       list comprehensions with multiple if clauses, or extensive boolean/and/or
       chains). Break long/complex code into small, simple helper functions.
@@ -370,6 +370,9 @@ def build_messages(context: AgentContext) -> list[dict[str, str]]:
             f"  - Target metric must strictly exceed the incumbent in-sample value above.\n"
             f"  - Deflated Sharpe (DSR) non-degradation is **always enforced** on the "
             f"in-sample selection basis.\n\n"
+            f"> [!WARNING]\n"
+            f"> While the hard drawdown limit is {context.dd_limit:.2f}, strategies pushing close to\n"
+            f"> the boundary are risky — prefer candidates that operate well within constraints.\n\n"
             f"Strategies that pass the in-sample select gate face a hidden OOS holdout\n"
             f"confirmation gate before commit. That holdout is **not visible** here.\n\n"
         )
@@ -381,6 +384,9 @@ def build_messages(context: AgentContext) -> list[dict[str, str]]:
             f"turnover <= {context.turnover_limit:.2f}, "
             "all regime stress tests must pass. "
             "DSR non-degradation is always enforced on the in-sample selection basis.\n"
+            f"> [!WARNING]\n"
+            f"> While the hard drawdown limit is {context.dd_limit:.2f}, strategies pushing close to\n"
+            f"> the boundary are risky — prefer candidates that operate well within constraints.\n\n"
             "Strategies that pass select are confirmed against a hidden OOS holdout.\n\n"
         )
 

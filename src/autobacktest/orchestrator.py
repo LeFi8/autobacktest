@@ -61,7 +61,7 @@ from autobacktest.strategy.validator import preflight
 logger = logging.getLogger(__name__)
 
 DIVERSITY_CONFIG_THRESHOLD = 0.95
-DIVERSITY_RETURNS_THRESHOLD = 0.90
+DIVERSITY_RETURNS_THRESHOLD = 0.95
 STUCK_THRESHOLD = 5
 STUCK_ESCALATION_FACTOR = 0.8
 MAX_DIVERSITY_RETRIES = 2
@@ -877,9 +877,7 @@ def run_optimization(
 
                     # --- Preflight stagnation counter ---
                     n_reached_backtest = sum(
-                        1
-                        for ev in candidate_results
-                        if ev.get("valid") and not ev.get("llm_error") and ev.get("_report") is not None
+                        1 for ev in candidate_results if not ev.get("llm_error") and ev.get("_report") is not None
                     )
                     if n_reached_backtest == 0:
                         consecutive_no_backtest += 1
