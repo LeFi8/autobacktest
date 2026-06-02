@@ -1,7 +1,8 @@
-"""Hybrid Asset Allocation (HAA) Balanced (G8/T4) per Keller 2023.
+"""Hybrid Asset Allocation (HAA) Optimized (G12/T6) per Keller 2023.
 
-Implements the 13612U momentum scoring, TIP canary check, top-4 offensive
-selection with defensive substitution, and dual-defense (BIL/IEF) allocation.
+Implements the 13612U momentum scoring, dual-canary (TIP/BND) check,
+top-N offensive selection (half of offensive universe) with defensive
+substitution, and config-driven defensive allocation (BIL/BND).
 """
 
 from typing import Any
@@ -36,22 +37,40 @@ def _momentum_13612u(prices: pd.Series, current_date: pd.Timestamp) -> float:
 
 
 def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFrame:
-    """Generate HAA Balanced portfolio weights.
+    """Generate HAA Optimized portfolio weights.
 
     Args:
         prices: Daily prices DataFrame (DatetimeIndex, columns=tickers).
         config: Configuration dict with keys:
-            - params.offensive_assets: list of 8 offensive tickers
-            - params.defensive_assets: list of 2 defensive tickers (BIL, IEF)
-            - params.canary_asset: ticker for the TIP canary
+            - params.offensive_assets: list of offensive tickers
+            - params.defensive_assets: list of defensive tickers (BIL, BND)
+            - params.canary_asset: legacy single canary ticker (string)
+            - params.canary_assets: multi-canary tickers (list)
 
     Returns:
         pd.DataFrame: Weights indexed by rebalance dates.
     """
     params = config.get("params", {})
-    offensive_assets = params.get("offensive_assets", ["SPY", "IWM", "VEA", "VWO", "VNQ", "DBC", "IEF", "TLT"])
-    defensive_assets = params.get("defensive_assets", ["BIL", "IEF"])
-    canary_asset = params.get("canary_asset", "TIP")
+    offensive_assets = params.get(
+        "offensive_assets",
+        [
+            "SPY",
+            "IWM",
+            "QQQ",
+            "VGK",
+            "EWJ",
+            "VWO",
+            "VNQ",
+            "GLD",
+            "DBC",
+            "HYG",
+            "LQD",
+            "TLT",
+        ],
+    )
+    defensive_assets = params.get("defensive_assets", ["BIL", "BND"])
+    canary_raw = params.get("canary_assets") or params.get("canary_asset", "TIP")
+    canary_assets = [canary_raw] if isinstance(canary_raw, str) else list(canary_raw)
 
     all_assets = list(prices.columns)
 
@@ -63,6 +82,9 @@ def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFra
 
     weights = pd.DataFrame(0.0, index=monthly_dates, columns=all_assets)
 
+    top_n = max(1, len(offensive_assets) // 2)
+    slot_weight = 1.0 / top_n
+
     for date in monthly_dates:
         # Compute momentum for all assets
         mom_scores = {}
@@ -70,32 +92,25 @@ def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFra
             if asset in prices.columns:
                 mom_scores[asset] = _momentum_13612u(prices[asset], date)
 
-        # Canary check
-        canary_mom = mom_scores.get(canary_asset, -1.0)
+        # Best defensive asset (shared across defensive and substitution paths)
+        def_mom_vals = [(d, mom_scores.get(d, -1.0)) for d in defensive_assets if d in all_assets]
+        best_def = max(def_mom_vals, key=lambda x: x[1])[0] if def_mom_vals else None
 
-        if canary_mom <= 0:
-            # Defensive: 100% to the better defensive asset
-            def_mom_vals = [(d, mom_scores.get(d, -1.0)) for d in defensive_assets if d in all_assets]
-            if not def_mom_vals:
-                weights.loc[date, :] = 0.0
-                continue
-            best_def = max(def_mom_vals, key=lambda x: x[1])[0]
-            weights.loc[date, best_def] = 1.0
-        else:
-            # Clear skies: rank offensive assets, pick top 4
-            off_mom_vals = [(o, mom_scores.get(o, -1.0)) for o in offensive_assets if o in all_assets]
-            off_mom_vals.sort(key=lambda x: x[1], reverse=True)
-            top_4 = off_mom_vals[:4]
+        # Dual-canary check: OR gate — any canary negative triggers full defensive
+        if any(mom_scores.get(c, -1.0) <= 0 for c in canary_assets):
+            if best_def is not None:
+                weights.loc[date, best_def] = 1.0
+            continue
 
-            # Best defensive asset (for substitution)
-            def_mom_vals = [(d, mom_scores.get(d, -1.0)) for d in defensive_assets if d in all_assets]
-            best_def = max(def_mom_vals, key=lambda x: x[1])[0] if def_mom_vals else None
+        # Clear skies: rank offensive assets, pick top N
+        off_mom_vals = [(o, mom_scores.get(o, -1.0)) for o in offensive_assets if o in all_assets]
+        off_mom_vals.sort(key=lambda x: x[1], reverse=True)
+        top_selected = off_mom_vals[:top_n]
 
-            slot_weight = 1.0 / 4.0
-            for asset, mom in top_4:
-                if mom > 0:
-                    weights.loc[date, asset] = slot_weight
-                elif best_def is not None:
-                    weights.loc[date, best_def] = weights.loc[date, best_def] + slot_weight
+        for asset, mom in top_selected:
+            if mom > 0:
+                weights.loc[date, asset] = slot_weight
+            elif best_def is not None:
+                weights.loc[date, best_def] = weights.loc[date, best_def] + slot_weight
 
     return weights
