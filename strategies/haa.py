@@ -11,17 +11,17 @@ def _rebalance_dates(prices: pd.DataFrame) -> pd.DatetimeIndex:
     within a month shifts the last-observed-day for that month."""
     start = prices.index.min()
     end = prices.index.max()
-    possible = pd.date_range(start=start, end=end, freq='BME')
+    possible = pd.date_range(start=start, end=end, freq="BME")
     return possible.intersection(prices.index)
 
 
 def _composite_momentum(prices: pd.DataFrame, lags: list[int]) -> pd.DataFrame:
-    """Equal‑weight average of simple returns over the given lag periods."""
+    """Equal-weight average of simple returns over the given lag periods."""
     moments = [prices.pct_change(lag) for lag in lags]
     stacked = np.stack([m.values for m in moments], axis=2)
-    avg = np.nanmean(stacked, axis=2)
-    col_all_nan = np.all(np.isnan(stacked), axis=(0, 2))
-    avg = np.where(col_all_nan[np.newaxis, :], 0.0, avg)
+    valid = ~np.isnan(stacked)
+    count = valid.sum(axis=2)
+    avg = np.where(count > 0, np.where(valid, stacked, 0.0).sum(axis=2) / np.maximum(count, 1.0), 0.0)
     return pd.DataFrame(avg, index=moments[0].index, columns=moments[0].columns)
 
 
@@ -38,7 +38,7 @@ def _risk_adjusted_momentum(mom: pd.DataFrame, vol: pd.DataFrame) -> pd.DataFram
 
 
 def _canary_scale(rmom: pd.DataFrame, canary_assets: list[str], z_window: int) -> pd.Series:
-    """Continuous exposure scale in [0,1] using rolling z‑score of canary assets' mean rmom."""
+    """Continuous exposure scale in [0,1] using rolling z-score of canary assets' mean rmom."""
     if not canary_assets or not all(a in rmom.columns for a in canary_assets):
         return pd.Series(1.0, index=rmom.index)
     mean_rmom = rmom[canary_assets].mean(axis=1)
@@ -51,7 +51,7 @@ def _canary_scale(rmom: pd.DataFrame, canary_assets: list[str], z_window: int) -
 
 
 def _select_offensive(rmom: pd.DataFrame, offensive_assets: list[str], top_n: int, date: pd.Timestamp) -> list[str]:
-    """Return top_n offensive assets with positive risk‑adjusted momentum on `date`."""
+    """Return top_n offensive assets with positive risk-adjusted momentum on `date`."""
     available = [a for a in offensive_assets if a in rmom.columns and not pd.isna(rmom.at[date, a])]
     scores = [(a, rmom.at[date, a]) for a in available if rmom.at[date, a] > 0]
     scores.sort(key=lambda x: x[1], reverse=True)
@@ -59,7 +59,7 @@ def _select_offensive(rmom: pd.DataFrame, offensive_assets: list[str], top_n: in
 
 
 def _best_defensive(rmom: pd.DataFrame, defensive_assets: list[str], date: pd.Timestamp) -> str | None:
-    """Return defensive asset with highest risk‑adjusted momentum; None if none available."""
+    """Return defensive asset with highest risk-adjusted momentum; None if none available."""
     best, best_mom = None, -np.inf
     for d in defensive_assets:
         if d in rmom.columns and not pd.isna(rmom.at[date, d]):
@@ -118,14 +118,14 @@ def _target_weights(
 
 
 def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFrame:
-    """Generate HAA variant with risk‑adjusted momentum, continuous canary, and smoothing.
+    """Generate HAA variant with risk-adjusted momentum, continuous canary, and smoothing.
 
     Parameters (all under `params`):
         mom_lags: list[int]          momentum lookback periods (default [21,63,126,252])
         vol_window: int              volatility rolling window (default 63)
-        canary_z_window: int         rolling z‑score window for canary scale (default 252)
+        canary_z_window: int         rolling z-score window for canary scale (default 252)
         top_n: int                   number of offensive slots (default 6)
-        smooth: float                blending factor for new weights (0‑1, default 0.3)
+        smooth: float                blending factor for new weights (0-1, default 0.3)
         defensive_assets: list[str]
         offensive_assets: list[str]
         canary_assets: list[str]
@@ -144,7 +144,7 @@ def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFra
     if prices.empty:
         return pd.DataFrame(0.0, index=pd.DatetimeIndex([]), columns=all_assets)
 
-    # Pre‑compute all signals (strictly backward‑looking)
+    # Pre-compute all signals (strictly backward-looking)
     comp_mom = _composite_momentum(prices, mom_lags)
     vol = _trailing_volatility(prices, vol_window)
     rmom = _risk_adjusted_momentum(comp_mom, vol)
@@ -168,6 +168,6 @@ def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFra
         weights.loc[date] = new_w
         prev_weights = new_w.copy()
 
-    # Forward‑fill to the full price index
+    # Forward-fill to the full price index
     weights = weights.reindex(prices.index).ffill().fillna(0.0)
     return weights

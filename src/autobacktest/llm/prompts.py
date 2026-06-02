@@ -63,12 +63,13 @@ You operate in a strict execution loop and MUST adhere to the following rules:
      scalar — NOT a multi-column DataFrame. Use `.squeeze()` or select a specific column first.
    - `pd.unique(x)` / `x.unique()` require a Series, Index, or ndarray — NEVER a Python list.
      Wrap with `pd.Series(x)`, or use `set(x)` / `np.unique(x)` for plain lists.
-   - Before calling `np.nanmean`, `np.nanstd`, or similar reductions on a list or 1-D array that may be
-     empty or all-NaN, guard it: `val = np.nanmean(arr) if len(arr) > 0 and not np.all(np.isnan(arr)) else 0.0`.
-      For 2-D reductions (`axis=0`), mask all-NaN columns first to preserve output shape:
-      `col_all_nan = np.all(np.isnan(stacked), axis=0); result = np.where(
-      col_all_nan, 0.0, np.nanmean(np.where(col_all_nan, 0.0, stacked), axis=0))`.
-      Unguarded calls produce "Mean of empty slice" RuntimeWarnings.
+   - NEVER call `np.nanmean` / `np.nanstd` on arrays that may have all-NaN slices — the warning
+     is emitted INSIDE nanmean before any post-hoc fix can suppress it. Instead, compute mean
+     manually using pre-filled arrays so the warning never fires:
+     1-D: `val = arr[~np.isnan(arr)].mean() if (~np.isnan(arr)).any() else 0.0`
+     N-D (any axis, e.g. axis=2 on a 3-D stack):
+       `valid = ~np.isnan(stacked); count = valid.sum(axis=2)`
+       `avg = np.where(count > 0, np.where(valid, stacked, 0.0).sum(axis=2) / np.maximum(count, 1.0), 0.0)`
 9. Config Schema Rule:
    The config YAML is validated by a Pydantic model with `extra="forbid"`. Only these top-level keys
    are permitted: {_ALLOWED_TOP_LEVEL_KEYS}
@@ -86,6 +87,11 @@ You operate in a strict execution loop and MUST adhere to the following rules:
     - `prices[ticker].rank(pct=True)` — ranks whole column, sees future
     - `(x - x.mean()) / x.std()` — normalizes over full history
     - `prices.pct_change().mean()` — mean over full history
+    - `prices.groupby(prices.index.to_period("M")).tail(1).index` — rebalance dates derived
+      from the last OBSERVED day of each month. When future data is appended to the same month,
+      the "last day" changes and past signals flip. THIS ALWAYS FAILS THE SNIFF TEST.
+      Safe pattern: use purely calendar-based month-ends that never depend on what data exists:
+      `pd.date_range(start=prices.index.min(), end=prices.index.max(), freq='BME').intersection(prices.index)`
 11. Mandatory Decomposition Rule:
     The complexity and line-count limits are enforced PER FUNCTION. Use this to your advantage:
     - `generate_signals` MUST be an orchestrator — it calls helper functions, does not inline logic.
