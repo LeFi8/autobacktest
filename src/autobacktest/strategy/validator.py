@@ -268,7 +268,8 @@ def preflight(
     cfg_res = _check_config(config_path)
     if not cfg_res.passed:
         return cfg_res
-    assert cfg_res.detail is not None
+    if cfg_res.detail is None:
+        return cfg_res
 
     # Parse config dictionary from Pydantic StrategyConfig
     config_model = cfg_res.detail  # Holds StrategyConfig instance

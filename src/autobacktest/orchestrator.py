@@ -39,7 +39,7 @@ from autobacktest.evaluator.deflated_sharpe import (
     calculate_effective_trials,
     calculate_psr_dsr,
 )
-from autobacktest.evaluator.evaluate import compute_dataset_hash, evaluate_strategy_detailed
+from autobacktest.evaluator.evaluate import _CacheProtocol, compute_dataset_hash, evaluate_strategy_detailed
 from autobacktest.evaluator.report import EvaluationReport
 from autobacktest.gate import TargetMetric, confirm, select
 from autobacktest.ledger.event_log import EventLog
@@ -287,7 +287,7 @@ def run_optimization(
                 config,
                 start_date=start_date,
                 end_date=end_date,
-                _eval_cache=_eval_cache,  # type: ignore[arg-type]
+                _eval_cache=_eval_cache,
                 _strategy_code=_baseline_code,
             )
             _deflate(baseline_report, baseline_returns, ledger)
@@ -582,7 +582,7 @@ def run_optimization(
                                 configs_dir,
                                 start_date,
                                 end_date,
-                                _eval_cache,  # type: ignore[arg-type]
+                                _eval_cache,
                             )
                             if err:
                                 ev["valid"] = False
@@ -1114,7 +1114,7 @@ def _eval_single_candidate(
     configs_dir: Path,
     start_date: str,
     end_date: str,
-    _eval_cache: dict[int, tuple[EvaluationReport, pd.Series]],
+    _eval_cache: _CacheProtocol,
 ) -> tuple[EvaluationReport | None, pd.Series[Any] | None, dict[str, Any] | None, str | None]:
     """Evaluate one candidate via temp files.
 

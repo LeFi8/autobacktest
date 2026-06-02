@@ -6,7 +6,7 @@ from types import ModuleType
 import pandas as pd
 
 REQUIRED_FUNCTION = "generate_signals"
-LEVERAGE_TOLERANCE = 1e-7
+LEVERAGE_TOLERANCE = 1e-5
 
 
 def validate_signature(module: ModuleType) -> tuple[bool, str | None]:

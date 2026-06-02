@@ -7,7 +7,7 @@ import json
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 import pandas as pd
@@ -26,6 +26,17 @@ from autobacktest.evaluator.walk_forward import generate_walk_forward_windows
 from autobacktest.strategy.config_schema import StrategyConfig
 
 logger = logging.getLogger(__name__)
+
+
+@runtime_checkable
+class _CacheProtocol(Protocol):
+    """Minimal eval-result cache interface — satisfies both ``dict`` and ``_LRUCache``."""
+
+    def get(self, key: int, default: Any = None) -> Any: ...
+
+    def __getitem__(self, key: int) -> Any: ...
+
+    def __setitem__(self, key: int, value: Any) -> None: ...
 
 
 def compute_dataset_hash(
@@ -248,7 +259,7 @@ def evaluate_strategy_detailed(
     *,
     _prices: pd.DataFrame | None = None,
     _bench_returns: pd.Series | None = None,
-    _eval_cache: dict[int, tuple[EvaluationReport, pd.Series]] | None = None,
+    _eval_cache: _CacheProtocol | None = None,
     _strategy_code: str | None = None,
 ) -> tuple[EvaluationReport, pd.Series[Any]]:
     """Run full deterministic walk-forward & holdout evaluation lifecycle.
@@ -459,7 +470,7 @@ def evaluate_strategy_detailed(
         daily_weights=daily_weights,
         n_tickers=len(tickers),
     )
-    mc_5th, mc_50th, mc_95th = run_block_bootstrap(net_returns, n_paths=1000, seed=42)
+    mc_5th, mc_50th, mc_95th = run_block_bootstrap(net_returns, n_paths=10000, seed=42)
 
     # --- DSR accounting ---
     # Selection DSR uses POOLED walk-forward returns (same basis as observed_sharpe)
