@@ -13,6 +13,7 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import logging
+import math
 import sys
 import threading
 import uuid
@@ -312,6 +313,19 @@ def run_optimization(
                 holdout_observed_sharpe=baseline_report.holdout_metrics.sharpe_ratio,
                 holdout_returns=baseline_report.holdout_net_returns,
             )
+
+            # Baseline gate audit — warn if the baseline itself fails hard constraints
+            baseline_warnings = _audit_baseline(incumbent, config_obj)
+            for w in baseline_warnings:
+                logger.warning("Baseline gate check: %s", w)
+            if baseline_warnings:
+                from rich.console import Console as _RichConsole
+
+                _RichConsole().print(
+                    "[yellow]⚠ Baseline fails gate constraints. "
+                    "Candidates must pass these constraints AND improve over baseline "
+                    f"(Sharpe {incumbent.observed_sharpe:.3f}).[/]"
+                )
         else:
             # Reconstruct incumbent from the latest accepted/committed attempt
             rows = (
@@ -397,6 +411,7 @@ def run_optimization(
         n_llm_ok = 0
         last_attempt: dict[str, Any] | None = None
         consecutive_no_accept: int = 0
+        consecutive_no_backtest: int = 0
         rolling_history: list[bool] = []
         _early_stop = False
         _early_stop_iteration: int = 0
@@ -466,6 +481,8 @@ def run_optimization(
                         last_attempt=last_attempt,
                         attempt_history=attempt_summaries,
                         mode=mode,
+                        dd_limit=config_obj.max_drawdown_limit,
+                        turnover_limit=config_obj.turnover_limit,
                     )
 
                     # 8b. Generate N candidates in parallel
@@ -858,6 +875,17 @@ def run_optimization(
                                 exploit_stall = 0
                         last_attempt = _extract_best_failure(candidate_results)
 
+                    # --- Preflight stagnation counter ---
+                    n_reached_backtest = sum(
+                        1
+                        for ev in candidate_results
+                        if ev.get("valid") and not ev.get("llm_error") and ev.get("_report") is not None
+                    )
+                    if n_reached_backtest == 0:
+                        consecutive_no_backtest += 1
+                    else:
+                        consecutive_no_backtest = 0
+
                     # --- Per-iteration summary line ---
                     _iter_cost = max(0.0, total_cost - _iter_prev_cost)
                     if winner is not None:
@@ -906,6 +934,14 @@ def run_optimization(
                             f"${_iter_cost:.4f}"
                         )
                     progress.console.print(summary)
+
+                    if consecutive_no_backtest >= 5:
+                        progress.console.print(
+                            f"[yellow]⚠ Iter {k}/{iterations}: {consecutive_no_backtest} consecutive "
+                            f"iterations with zero candidates reaching backtest. "
+                            f"The LLM may be struggling with code generation — "
+                            f"check preflight errors above.[/]"
+                        )
 
                     event_log.write(event)
                 finally:
@@ -972,6 +1008,26 @@ def run_optimization(
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
+
+def _audit_baseline(report: EvaluationReport, config: StrategyConfig) -> list[str]:
+    """Check whether the baseline strategy passes hard gate constraints.
+
+    Returns a list of human-readable warning messages for every constraint
+    the baseline violates.  An empty list means the baseline is clean.
+    """
+    warnings: list[str] = []
+    dd = report.in_sample_metrics.max_drawdown
+    if not math.isnan(dd) and dd > config.max_drawdown_limit:
+        warnings.append(
+            f"Baseline max drawdown ({dd * 100:.1f}%) exceeds config limit ({config.max_drawdown_limit * 100:.0f}%)."
+        )
+    to = report.in_sample_metrics.turnover
+    if not math.isnan(to) and to > config.turnover_limit:
+        warnings.append(f"Baseline turnover ({to:.2f}x) exceeds config limit ({config.turnover_limit:.1f}x).")
+    if not report.regime_passed:
+        warnings.append("Baseline fails regime stress tests.")
+    return warnings
 
 
 def _load_signals(path: Path) -> Any:

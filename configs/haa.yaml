@@ -15,7 +15,7 @@ universe:
   - BND
   - TIP
 benchmark: SPY
-max_drawdown_limit: 0.10
+max_drawdown_limit: 0.20
 turnover_limit: 2.0
 params:
   offensive_assets:
