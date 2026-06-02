@@ -4,9 +4,11 @@ import numpy as np
 import pandas as pd
 
 
-def _monthly_rebalance_dates(prices: pd.DataFrame) -> pd.DatetimeIndex:
-    """Get last trading day of each month."""
-    return prices.groupby(prices.index.to_period("M")).tail(1).index
+def _rebalance_dates(prices: pd.DataFrame, cadence: str) -> pd.DatetimeIndex:
+    """Get last trading day of each period. cadence: 'M' (monthly) or 'Q' (quarterly)."""
+    if cadence not in {"M", "Q"}:
+        cadence = "M"
+    return prices.groupby(prices.index.to_period(cadence)).tail(1).index
 
 
 def _momentum(prices: pd.DataFrame, period: int) -> pd.DataFrame:
@@ -92,6 +94,7 @@ def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFra
     defensive_assets = params.get("defensive_assets", ["BIL", "BND"])
     offensive_assets = params.get("offensive_assets", ["SPY", "QQQ", "VGK", "VWO", "GLD", "TLT"])
     top_n = params.get("top_n", 4)
+    rebalance_cadence = params.get("rebalance_cadence", "M")
 
     all_assets = list(prices.columns)
     if prices.empty:
@@ -110,7 +113,7 @@ def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFra
     vol = _volatility(prices[trend_asset], vol_period) if trend_asset in all_assets else pd.Series()
     trend = _trend_filter(prices[trend_asset], trend_period) if trend_asset in all_assets else pd.Series()
 
-    rebalance_dates = _monthly_rebalance_dates(prices)
+    rebalance_dates = _rebalance_dates(prices, rebalance_cadence)
     weights = pd.DataFrame(0.0, index=rebalance_dates, columns=all_assets)
     slot_weight = 1.0 / top_n
 

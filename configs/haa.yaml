@@ -31,3 +31,4 @@ params:
     - GLD
     - TLT
   top_n: 4
+  rebalance_cadence: M

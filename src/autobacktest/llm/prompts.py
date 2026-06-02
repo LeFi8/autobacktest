@@ -61,9 +61,14 @@ You operate in a strict execution loop and MUST adhere to the following rules:
    - NEVER use a pandas Series in a boolean `if` statement. Use `.any()`, `.all()`, `.empty`, or `.item()`.
    - When assigning a value to a DataFrame column, ensure the right-hand side is a single Series or
      scalar — NOT a multi-column DataFrame. Use `.squeeze()` or select a specific column first.
-   - Before calling `np.nanmean`, `np.nanstd`, or similar reductions on a list or array that may be
+   - `pd.unique(x)` / `x.unique()` require a Series, Index, or ndarray — NEVER a Python list.
+     Wrap with `pd.Series(x)`, or use `set(x)` / `np.unique(x)` for plain lists.
+   - Before calling `np.nanmean`, `np.nanstd`, or similar reductions on a list or 1-D array that may be
      empty or all-NaN, guard it: `val = np.nanmean(arr) if len(arr) > 0 and not np.all(np.isnan(arr)) else 0.0`.
-     Unguarded calls produce "Mean of empty slice" RuntimeWarnings.
+      For 2-D reductions (`axis=0`), mask all-NaN columns first to preserve output shape:
+      `col_all_nan = np.all(np.isnan(stacked), axis=0); result = np.where(
+      col_all_nan, 0.0, np.nanmean(np.where(col_all_nan, 0.0, stacked), axis=0))`.
+      Unguarded calls produce "Mean of empty slice" RuntimeWarnings.
 9. Config Schema Rule:
    The config YAML is validated by a Pydantic model with `extra="forbid"`. Only these top-level keys
    are permitted: {_ALLOWED_TOP_LEVEL_KEYS}
