@@ -3,11 +3,11 @@
 import re
 from typing import Any
 
+import numpy as _np
+import pandas as _pd
+
 from autobacktest.config import settings
 from autobacktest.llm.base import AgentContext
-
-import pandas as _pd
-import numpy as _np
 from autobacktest.strategy.config_schema import StrategyConfig as _StrategyConfig
 
 _PANDAS_VERSION = _pd.__version__
@@ -45,9 +45,14 @@ You operate in a strict execution loop and MUST adhere to the following rules:
    The strategy code runs against pandas=={_PANDAS_VERSION} and numpy=={_NUMPY_VERSION}.
    The following pandas APIs are REMOVED in this version and will crash at runtime. NEVER use them:
    - `.groupby(axis=...)`: The `axis` parameter is removed. Drop it entirely.
-   - Deprecated offset aliases in resample/date_range/etc: Use new aliases only:
-     'M' → 'ME', 'BM' → 'BME', 'Q' → 'QE', 'A' or 'Y' → 'YE',
-     'H' → 'h', 'T' → 'min', 'S' → 's'
+   - Frequency aliases are CONTEXT-SENSITIVE — using the wrong one crashes at runtime:
+     * DatetimeIndex operations (resample, date_range, bdate_range, pd.Grouper, asfreq on a
+       DatetimeIndex, date offsets): use the NEW aliases
+       'ME' (not 'M'), 'BME' (not 'BM'), 'QE' (not 'Q'), 'YE' (not 'A'/'Y'),
+       'h' (not 'H'), 'min' (not 'T'), 's' (not 'S').
+     * Period operations (to_period, period_range, pd.Period, asfreq on a PeriodIndex): use the
+       ORIGINAL codes 'M', 'Q', 'Y' — passing 'ME'/'QE'/'YE' to a Period raises
+       ValueError("for Period, please use 'M' instead of 'ME'").
    - `.mean(level=)` / `.sum(level=)` / `.std(level=)`: Use `.groupby(level=).mean()` etc.
    - `.fillna(method='ffill')` / `.fillna(method='bfill')`: Use `.ffill()` / `.bfill()` directly.
    - `DataFrame.append(other)`: Use `pd.concat([df, other])`.

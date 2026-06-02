@@ -1,6 +1,5 @@
 """Tests for the pandas codemod repair module."""
 
-import pytest
 from autobacktest.strategy.codemod import repair_pandas_code
 
 
@@ -91,10 +90,10 @@ def test_freq_alias_date_range():
 
 
 # ---------------------------------------------------------------------------
-# 9. some_func(freq='H') → freq='h'
+# 9. pd.Grouper(freq='H') → freq='h' (Grouper is a DatetimeIndex context)
 # ---------------------------------------------------------------------------
 def test_freq_alias_kwarg():
-    code = "some_func(freq='H')"
+    code = "pd.Grouper(freq='H')"
     result, fixes = repair_pandas_code(code)
     assert "freq='h'" in result
     assert "freq='H'" not in result
@@ -102,14 +101,21 @@ def test_freq_alias_kwarg():
 
 
 # ---------------------------------------------------------------------------
+# 9b. Generic freq= kwarg on an UNKNOWN function must NOT be remapped
+#     (only known datetime/period freq functions are touched)
+# ---------------------------------------------------------------------------
+def test_freq_alias_unknown_func_not_remapped():
+    code = "some_func(freq='M')"
+    result, fixes = repair_pandas_code(code)
+    assert result == code
+    assert fixes == []
+
+
+# ---------------------------------------------------------------------------
 # 10. No-op: clean code must return exact same string (critical)
 # ---------------------------------------------------------------------------
 def test_no_op_clean_code():
-    code = (
-        "import pandas as pd\n"
-        "df = pd.DataFrame({'a': [1, 2, 3]})\n"
-        "result = df.ffill()\n"
-    )
+    code = "import pandas as pd\ndf = pd.DataFrame({'a': [1, 2, 3]})\nresult = df.ffill()\n"
     result, fixes = repair_pandas_code(code)
     assert result == code, "Clean code must be returned unchanged (no reformatting)"
     assert fixes == []
@@ -131,6 +137,53 @@ def test_freq_alias_not_remapped_outside_context():
 # ---------------------------------------------------------------------------
 def test_syntax_error_passthrough():
     code = "def broken(:\n    pass"
+    result, fixes = repair_pandas_code(code)
+    assert result == code
+    assert fixes == []
+
+
+# ---------------------------------------------------------------------------
+# Period contexts: 'M'/'Q'/'Y' are CORRECT and must NOT be remapped to 'ME'.
+# This is the regression that broke real runs (to_period('ME') is invalid).
+# ---------------------------------------------------------------------------
+def test_to_period_month_not_remapped():
+    code = "idx.to_period('M')"
+    result, fixes = repair_pandas_code(code)
+    assert result == code, "to_period('M') is valid for Period and must be left alone"
+    assert fixes == []
+
+
+def test_period_range_month_not_remapped():
+    code = "pd.period_range('2020-01', periods=3, freq='M')"
+    result, fixes = repair_pandas_code(code)
+    assert result == code, "period_range freq='M' is valid for Period and must be left alone"
+    assert fixes == []
+
+
+# ---------------------------------------------------------------------------
+# Period contexts: a model over-applying 'ME' gets reverse-repaired to 'M'.
+# ---------------------------------------------------------------------------
+def test_to_period_me_reverse_remapped():
+    code = "idx.to_period('ME')"
+    result, fixes = repair_pandas_code(code)
+    assert "to_period('M')" in result
+    assert "'ME'" not in result
+    assert fixes
+
+
+def test_period_range_me_reverse_remapped():
+    code = "pd.period_range('2020-01', periods=3, freq='ME')"
+    result, fixes = repair_pandas_code(code)
+    assert "freq='M'" in result
+    assert "freq='ME'" not in result
+    assert fixes
+
+
+# ---------------------------------------------------------------------------
+# asfreq is ambiguous (datetime wants 'ME', period wants 'M') — never touched.
+# ---------------------------------------------------------------------------
+def test_asfreq_not_touched():
+    code = "s.asfreq('M')"
     result, fixes = repair_pandas_code(code)
     assert result == code
     assert fixes == []
