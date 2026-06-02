@@ -29,6 +29,8 @@ class AgentContext:
         mode: Current optimization phase. Either ``"explore"`` (default) for broad
             search with the diversity gate active, or ``"exploit"`` for local
             refinement of the incumbent with the diversity gate suspended.
+        dd_limit: Max drawdown limit for the selection gate (from config or default 0.20).
+        turnover_limit: Turnover limit for the selection gate (from config or default 2.0).
     """
 
     strategy_name: str
@@ -42,6 +44,9 @@ class AgentContext:
     last_attempt: dict[str, Any] | None = None
     attempt_history: list[dict[str, Any]] | None = None
     mode: str = "explore"
+    dd_limit: float = 0.20
+    turnover_limit: float = 2.0
+    min_return_ratio: float = 0.5
 
 
 @dataclass(frozen=True)
@@ -65,6 +70,7 @@ class AgentEdit:
     completion_tokens: int = 0
     total_tokens: int = 0
     cost: float = 0.0
+    cached_tokens: int = 0
 
 
 class LLMError(Exception):

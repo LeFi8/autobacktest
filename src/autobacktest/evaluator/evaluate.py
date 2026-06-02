@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
-from typing import Any
+from typing import Any, Protocol
 
 import numpy as np
 import pandas as pd
@@ -23,6 +24,18 @@ from autobacktest.evaluator.regime import evaluate_stress_regimes
 from autobacktest.evaluator.report import EvaluationReport, WindowReport
 from autobacktest.evaluator.walk_forward import generate_walk_forward_windows
 from autobacktest.strategy.config_schema import StrategyConfig
+
+logger = logging.getLogger(__name__)
+
+
+class _CacheProtocol(Protocol):
+    """Minimal eval-result cache interface — satisfies both ``dict`` and ``_LRUCache``."""
+
+    def get(self, key: int, default: Any = None) -> Any: ...
+
+    def __getitem__(self, key: int) -> Any: ...
+
+    def __setitem__(self, key: int, value: Any) -> None: ...
 
 
 def compute_dataset_hash(
@@ -245,7 +258,7 @@ def evaluate_strategy_detailed(
     *,
     _prices: pd.DataFrame | None = None,
     _bench_returns: pd.Series | None = None,
-    _eval_cache: dict[int, tuple[EvaluationReport, pd.Series]] | None = None,
+    _eval_cache: _CacheProtocol | None = None,
     _strategy_code: str | None = None,
 ) -> tuple[EvaluationReport, pd.Series[Any]]:
     """Run full deterministic walk-forward & holdout evaluation lifecycle.
@@ -288,8 +301,8 @@ def evaluate_strategy_detailed(
             if cached is not None:
                 cached_report, cached_returns = cached
                 return deepcopy(cached_report), cached_returns.copy()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Eval cache read failed: %s", e)
 
     tickers = flat_config.get("universe", [])
     benchmark_ticker = flat_config.get("benchmark", "SPY")
@@ -415,6 +428,7 @@ def evaluate_strategy_detailed(
     # Holdout evaluation
     holdout_start = holdout_idx.min()
     holdout_end = holdout_idx.max()
+    bench_holdout = bench_returns.loc[holdout_start:holdout_end]
     holdout_report = generate_window_report(
         prices,
         weights,
@@ -460,8 +474,11 @@ def evaluate_strategy_detailed(
 
     # --- DSR accounting ---
     # Selection DSR uses POOLED walk-forward returns (same basis as observed_sharpe)
-    effective_trials = int(flat_config.get("effective_trials", 1))
-    historical_sharpes = flat_config.get("historical_sharpes")
+    # NOTE: effective_trials and historical_sharpes are intentionally NOT read
+    # from config — the only legitimate source is ledger transaction history
+    # via the orchestrator's _deflate() call. Standalone evaluate uses PSR.
+    effective_trials = 1
+    historical_sharpes = None
 
     in_sample_net_returns = wf_net_returns
     selection_dsr = calculate_psr_dsr(
@@ -503,6 +520,8 @@ def evaluate_strategy_detailed(
         deflated_sharpe=selection_dsr,
         holdout_deflated_sharpe=holdout_dsr,
         holdout_net_returns=holdout_net_returns,
+        benchmark_returns=bench_holdout,
+        benchmark_ticker=benchmark_ticker,
     )
 
     # Delegate standalone gate checks to backward-compat accept (hard constraints only)
@@ -519,8 +538,8 @@ def evaluate_strategy_detailed(
             _config_hash = hash(json.dumps(flat_config, sort_keys=True, default=str))
             _ckey = hash((_code_hash, _config_hash))
             _eval_cache[_ckey] = (deepcopy(report), in_sample_net_returns.copy())
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Eval cache write failed: %s", e)
 
     return report, in_sample_net_returns
 

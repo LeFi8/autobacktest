@@ -25,6 +25,9 @@ class StrategyConfig(BaseModel):
     turnover_limit: float = Field(2.0, gt=0.0, le=10.0, description="Max annualized turnover (capped at 10x)")
     params: dict[str, Any] = Field(default_factory=dict, description="Strategy-specific parameters")
     min_improvement: float = Field(0.0, ge=0.0, description="Minimum target-metric improvement epsilon for select gate")
+    select_min_return_ratio: float = Field(
+        0.5, ge=0.0, le=1.0, description="Min fraction of baseline annualized return for select gate"
+    )
     require_dsr_non_degradation: bool = Field(
         True, description="If True (default), selection gate enforces DSR non-degradation"
     )

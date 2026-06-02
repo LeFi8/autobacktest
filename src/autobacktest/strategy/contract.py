@@ -6,7 +6,11 @@ from types import ModuleType
 import pandas as pd
 
 REQUIRED_FUNCTION = "generate_signals"
-LEVERAGE_TOLERANCE = 1e-7
+# Relaxed from 1e-7 to 1e-5 after observed false positives with LLM-generated
+# strategies whose weights sum to ~1.000005 due to float rounding in sequence of
+# rescaling operations (normalize → cap → renormalize). The threshold remains
+# tight enough to catch genuine over-leverage (sum > 1.001).
+LEVERAGE_TOLERANCE = 1e-5
 
 
 def validate_signature(module: ModuleType) -> tuple[bool, str | None]:

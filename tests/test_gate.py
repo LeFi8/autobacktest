@@ -12,12 +12,13 @@ def _create_mock_report(
     sharpe: float = 1.5,
     sortino: float = 2.0,
     information_ratio: float = 1.0,
+    annualized_return: float = 0.15,
 ) -> EvaluationReport:
     """Helper to mock EvaluationReport dataclass with parameter overrides."""
     window = WindowReport(
         start_date="2023-01-01",
         end_date="2025-12-31",
-        annualized_return=0.15,
+        annualized_return=annualized_return,
         annualized_volatility=0.10,
         sharpe_ratio=sharpe,
         sortino_ratio=sortino,
@@ -363,3 +364,66 @@ def test_select_always_on_dsr() -> None:
     res = select(cand, baseline=base)
     assert not res.accepted
     assert res.failed_gate == "dsr_non_degradation"
+
+
+# ---------------------------------------------------------------------------
+# Return floor gate (min_return_ratio)
+# ---------------------------------------------------------------------------
+
+
+def test_select_rejects_low_return_despite_high_sharpe() -> None:
+    """Verifies candidate with high Sharpe but near-zero return is rejected by return floor."""
+    base = _create_mock_report(sharpe=1.0, annualized_return=0.15)
+    cand = _create_mock_report(sharpe=2.0, annualized_return=0.01)
+    res = select(cand, baseline=base, min_return_ratio=0.5)
+    assert not res.accepted
+    assert res.failed_gate == "min_return_ratio"
+
+
+def test_select_accepts_adequate_return() -> None:
+    """Verifies candidate with adequate return passes the return floor gate."""
+    base = _create_mock_report(sharpe=1.0, annualized_return=0.15)
+    cand = _create_mock_report(sharpe=1.1, annualized_return=0.10)
+    res = select(cand, baseline=base, min_return_ratio=0.5)
+    assert res.accepted
+
+
+def test_select_skips_return_check_no_baseline() -> None:
+    """Verifies return floor is skipped when no baseline exists."""
+    cand = _create_mock_report(sharpe=1.5, annualized_return=0.01)
+    res = select(cand, baseline=None, min_return_ratio=0.5)
+    assert res.accepted
+
+
+def test_select_skips_return_check_negative_baseline_return() -> None:
+    """Verifies return floor is skipped when baseline annualized return is negative."""
+    base = _create_mock_report(sharpe=1.0, annualized_return=-0.05)
+    cand = _create_mock_report(sharpe=1.1, annualized_return=0.01)
+    res = select(cand, baseline=base, min_return_ratio=0.5)
+    assert res.accepted
+
+
+def test_select_rejects_nan_return() -> None:
+    """Verifies NaN annualized return is rejected by return floor gate."""
+    base = _create_mock_report(sharpe=1.0, annualized_return=0.15)
+    cand = _create_mock_report(sharpe=1.5, annualized_return=float("nan"))
+    res = select(cand, baseline=base, min_return_ratio=0.5)
+    assert not res.accepted
+    assert res.failed_gate == "min_return_ratio"
+
+
+def test_select_resolves_min_return_ratio_from_config() -> None:
+    """Verifies min_return_ratio is resolved from config dict."""
+    base = _create_mock_report(sharpe=1.0, annualized_return=0.15)
+
+    # Config with strict 80% threshold — candidate at 10% return fails vs 15% baseline
+    cand = _create_mock_report(sharpe=1.1, annualized_return=0.10)
+    config = {"select_min_return_ratio": 0.8}
+    res = select(cand, baseline=base, config=config)
+    assert not res.accepted
+    assert res.failed_gate == "min_return_ratio"
+
+    # Config with loose 50% threshold — candidate at 10% return passes vs 15% baseline
+    config2 = {"select_min_return_ratio": 0.5}
+    res2 = select(cand, baseline=base, config=config2)
+    assert res2.accepted

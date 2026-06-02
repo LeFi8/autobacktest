@@ -75,10 +75,11 @@ class GitLedger:
         if "main" not in self._repo.heads:
             if "master" in self._repo.heads:
                 primary_branch = "master"
-            elif self._repo.heads:
-                primary_branch = self._repo.heads[0].name
             else:
-                raise ValueError("Could not find any branch in the repository.")
+                raise ValueError(
+                    "Could not determine primary branch: expected 'main' or 'master'. "
+                    "Rename your primary branch to 'main' or 'master'."
+                )
 
         if self._repo.active_branch.name != primary_branch:
             self._repo.heads[primary_branch].checkout()

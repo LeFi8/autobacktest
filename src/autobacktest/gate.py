@@ -79,6 +79,7 @@ def select(
     turnover_limit: float | None = None,
     min_improvement: float | None = None,
     require_dsr_non_degradation: bool | None = None,
+    min_return_ratio: float | None = None,
     config: Any = None,
 ) -> GateResult:
     """In-sample selection gate — evaluated on every candidate.
@@ -91,7 +92,8 @@ def select(
     If all pass, tie-breaker (only when baseline is present):
     4. Target metric improvement on the in-sample aggregate
        (``candidate > baseline + min_improvement``)
-    5. DSR non-degradation: always-on when baseline is present
+    5. Annualized return must be at least ``min_return_ratio`` of baseline return.
+    6. DSR non-degradation: always-on when baseline is present
        (config can disable via ``require_dsr_non_degradation: false``).
 
     Returns:
@@ -101,6 +103,9 @@ def select(
     turnover_limit = turnover_limit if turnover_limit is not None else _get_config_val(config, "turnover_limit", 2.0)
     min_improvement = (
         min_improvement if min_improvement is not None else _get_config_val(config, "min_improvement", 0.0)
+    )
+    min_return_ratio = (
+        min_return_ratio if min_return_ratio is not None else _get_config_val(config, "select_min_return_ratio", 0.5)
     )
     if require_dsr_non_degradation is not None:
         require_dsr = require_dsr_non_degradation
@@ -167,7 +172,25 @@ def select(
             report.rejection_reason = msg
             return GateResult(accepted=False, reason=msg, failed_gate="target_metric_improvement")
 
-    # 5. DSR Non-Degradation (always-on by default)
+    # 5. Annualized Return Floor (must maintain min_return_ratio of baseline return)
+    if baseline is not None:
+        cand_ret = report.in_sample_metrics.annualized_return
+        base_ret = baseline.in_sample_metrics.annualized_return
+        if math.isnan(cand_ret):
+            msg = "Candidate in-sample annualized return is NaN."
+            report.is_accepted = False
+            report.rejection_reason = msg
+            return GateResult(accepted=False, reason=msg, failed_gate="min_return_ratio")
+        if base_ret > 0 and cand_ret < base_ret * min_return_ratio:
+            msg = (
+                f"Candidate in-sample annualized return ({cand_ret:.4f}) is below "
+                f"{min_return_ratio:.0%} of baseline annualized return ({base_ret:.4f})."
+            )
+            report.is_accepted = False
+            report.rejection_reason = msg
+            return GateResult(accepted=False, reason=msg, failed_gate="min_return_ratio")
+
+    # 6. DSR Non-Degradation (always-on by default)
     if require_dsr and baseline is not None:
         eps = 1e-6
         if report.deflated_sharpe < baseline.deflated_sharpe - eps:
@@ -279,6 +302,7 @@ def accept(
     turnover_limit: float | None = None,
     min_improvement: float | None = None,
     require_dsr_non_degradation: bool | None = None,
+    min_return_ratio: float | None = None,
     config: Any = None,
 ) -> GateResult:
     """Backward-compatible wrapper: composes ``select`` + ``confirm``.
@@ -299,6 +323,7 @@ def accept(
         turnover_limit=turnover_limit,
         min_improvement=min_improvement,
         require_dsr_non_degradation=require_dsr_non_degradation,
+        min_return_ratio=min_return_ratio,
         config=config,
     )
     if not sel.accepted:

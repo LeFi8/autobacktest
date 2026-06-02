@@ -1,4 +1,5 @@
 import importlib.util
+import logging
 import re
 import shutil
 import uuid
@@ -26,6 +27,8 @@ from autobacktest.reports.generator import (
 )
 from autobacktest.strategy.config_schema import StrategyConfig
 from autobacktest.strategy.validator import preflight
+
+logger = logging.getLogger(__name__)
 
 app = typer.Typer(
     name="autobacktest",
@@ -166,7 +169,16 @@ def run(
         and baseline_returns is not None
         and not baseline_returns.empty
     ):
-        plot_equity_curves(baseline_returns, final_returns, result.run_id, output_dir)
+        benchmark_returns = getattr(result.final_report, "benchmark_returns", None)
+        benchmark_ticker = getattr(result.final_report, "benchmark_ticker", "SPY")
+        plot_equity_curves(
+            baseline_returns,
+            final_returns,
+            result.run_id,
+            output_dir,
+            benchmark_returns=benchmark_returns,
+            benchmark_ticker=benchmark_ticker,
+        )
 
     # Failure summary from events.jsonl
     failure_summary = compile_failure_summary(output_dir)
@@ -199,7 +211,13 @@ def run(
 
     # Render Rich summary dashboard
     report_path = output_dir / "strategy_report.md"
-    _render_rich_summary(result, iterations, report_path if report_path.exists() else None)
+    config_path = settings.configs_dir / f"{strategy}.yaml"
+    _render_rich_summary(
+        result,
+        iterations,
+        report_path if report_path.exists() else None,
+        config_path=config_path,
+    )
 
 
 @app.command()
@@ -378,7 +396,7 @@ def reset(
                 typer.echo("lessons.md cleared back to default template.")
                 restored_lessons_via_git = True
             except Exception:
-                pass
+                logger.warning("Failed to restore lessons.md from git, falling back to default template")
 
         if not restored_lessons_via_git:
             # Fallback to writing default template if git checkout fails
@@ -468,7 +486,7 @@ def evaluate(
         raise typer.Exit(code=1)
 
     strategy_name = strategy_path.stem
-    config_path = Path("configs") / f"{strategy_name}.yaml"
+    config_path = settings.configs_dir / f"{strategy_name}.yaml"
     if not config_path.exists():
         # Fallback to strategy_path's parent relative directory configs
         config_path = strategy_path.resolve().parent.parent / "configs" / f"{strategy_name}.yaml"
@@ -833,12 +851,16 @@ def _render_rich_summary(
     result: OrchestratorResult,
     iterations: int,
     report_path: Path | None,
+    config_path: Path | None = None,
 ) -> None:
     """Render a detailed Rich summary dashboard for the completed run.
 
     Displays header panel with run ID, strategy info (branch, commits),
     a performance comparison table (baseline vs. final metrics with
     improvement arrows), gate results table, and cost summary.
+
+    When ``config_path`` is provided the gate table thresholds are read
+    from the strategy config YAML; otherwise schema defaults are used.
     """
     console = Console()
     report = result.final_report
@@ -919,9 +941,26 @@ def _render_rich_summary(
     def _gate_pass(passed: bool) -> str:
         return "[green]✓ PASS[/]" if passed else "[red]✗ FAIL[/]"
 
-    gates.add_row("Max Drawdown ≤ 20%", _gate_pass(report.in_sample_metrics.max_drawdown <= 0.20))
+    # Resolve display thresholds from config (or fall back to schema defaults)
+    display_dd_limit = 0.20
+    display_to_limit = 2.0
+    if config_path is not None and config_path.exists():
+        try:
+            _cfg = StrategyConfig.from_yaml(config_path)
+            display_dd_limit = _cfg.max_drawdown_limit
+            display_to_limit = _cfg.turnover_limit
+        except Exception:
+            logger.warning("Failed to parse config %s for display, using defaults", config_path)
+
+    gates.add_row(
+        f"Max Drawdown ≤ {display_dd_limit * 100:.0f}%",
+        _gate_pass(report.in_sample_metrics.max_drawdown <= display_dd_limit),
+    )
     gates.add_row("Regime Stress", _gate_pass(report.regime_passed))
-    gates.add_row("Turnover ≤ 2.0x", _gate_pass(report.in_sample_metrics.turnover <= 2.0))
+    gates.add_row(
+        f"Turnover ≤ {display_to_limit:.1f}x",
+        _gate_pass(report.in_sample_metrics.turnover <= display_to_limit),
+    )
     console.print(gates)
     console.print("")
 

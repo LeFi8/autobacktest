@@ -72,11 +72,16 @@ class EvaluationReport:
     holdout_deflated_sharpe: float = 0.0
     # Raw holdout returns — excluded from serialization; used by _deflate_holdout
     holdout_net_returns: pd.Series | None = field(default=None, repr=False, compare=False)
+    # Benchmark returns for charting — excluded from serialization (pop'd in
+    # to_dict()).  Will be None after from_json() round-trip.
+    benchmark_returns: pd.Series | None = field(default=None, repr=False, compare=False)
+    benchmark_ticker: str = "SPY"
 
     def to_dict(self) -> dict[str, Any]:
         """Convert the report to a dictionary representation."""
         d = asdict(self)
         d.pop("holdout_net_returns", None)
+        d.pop("benchmark_returns", None)
         return d
 
     def to_json(self, indent: int = 4) -> str:
@@ -90,9 +95,13 @@ class EvaluationReport:
         d["holdout_metrics"] = WindowReport.from_dict(d["holdout_metrics"])
         d["in_sample_metrics"] = WindowReport.from_dict(d["in_sample_metrics"])
         d["walk_forward_metrics"] = [WindowReport.from_dict(w) for w in d["walk_forward_metrics"]]
-        # Ensure default None for holdout_net_returns if not present
+        # Ensure default None for Series fields if not present
         if "holdout_net_returns" not in d:
             d["holdout_net_returns"] = None
+        if "benchmark_returns" not in d:
+            d["benchmark_returns"] = None
+        if "benchmark_ticker" not in d:
+            d["benchmark_ticker"] = "SPY"
         return cls(**d)
 
     @classmethod

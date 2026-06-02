@@ -52,6 +52,11 @@ class LiteLLMProvider(LLMProvider):
         except Exception:
             self.supports_schema = False
 
+        try:
+            self.supports_cache = litellm.supports_prompt_caching(model=self.model)
+        except Exception:
+            self.supports_cache = False
+
     @property
     def provider_name(self) -> str:
         """Return the unique string identification of the provider."""
@@ -69,7 +74,8 @@ class LiteLLMProvider(LLMProvider):
         Raises:
             LLMError: If litellm API, structured output parsing, or request fails.
         """
-        messages = build_messages(context)
+        cache_enabled = self.supports_cache and settings.llm_prompt_cache
+        messages = build_messages(context, cache_supported=cache_enabled)
 
         # 1. Centralized Dynamic Token Allocation
         try:
@@ -148,10 +154,31 @@ class LiteLLMProvider(LLMProvider):
             completion_tokens = usage.completion_tokens if usage else 0
             total_tokens = usage.total_tokens if usage else 0
 
+            # Extract cached tokens from OpenAI (prompt_tokens_details.cached_tokens)
+            # or Anthropic (cache_read_input_tokens) usage fields.
+            cached_tokens = 0
+            if usage:
+                try:
+                    details = getattr(usage, "prompt_tokens_details", None)
+                    if details is not None:
+                        cached_tokens = int(getattr(details, "cached_tokens", 0) or 0)
+                    else:
+                        cached_tokens = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
+                except Exception:
+                    pass
+
             try:
                 cost = litellm.completion_cost(completion_response=response) or 0.0
             except Exception:
                 cost = 0.0
+
+            logger.debug(
+                "LLM call complete: prompt=%d completion=%d cached=%d cost=$%.4f",
+                prompt_tokens,
+                completion_tokens,
+                cached_tokens,
+                cost,
+            )
 
             return AgentEdit(
                 strategy_code=parsed_response.strategy_code,
@@ -163,6 +190,7 @@ class LiteLLMProvider(LLMProvider):
                 completion_tokens=completion_tokens,
                 total_tokens=total_tokens,
                 cost=cost,
+                cached_tokens=cached_tokens,
             )
 
         except Exception as e:

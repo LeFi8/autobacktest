@@ -13,9 +13,11 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import logging
+import math
 import sys
 import threading
 import uuid
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -37,7 +39,7 @@ from autobacktest.evaluator.deflated_sharpe import (
     calculate_effective_trials,
     calculate_psr_dsr,
 )
-from autobacktest.evaluator.evaluate import compute_dataset_hash, evaluate_strategy_detailed
+from autobacktest.evaluator.evaluate import _CacheProtocol, compute_dataset_hash, evaluate_strategy_detailed
 from autobacktest.evaluator.report import EvaluationReport
 from autobacktest.gate import TargetMetric, confirm, select
 from autobacktest.ledger.event_log import EventLog
@@ -60,32 +62,37 @@ from autobacktest.strategy.validator import preflight
 logger = logging.getLogger(__name__)
 
 DIVERSITY_CONFIG_THRESHOLD = 0.95
-DIVERSITY_RETURNS_THRESHOLD = 0.90
+DIVERSITY_RETURNS_THRESHOLD = 0.95
 STUCK_THRESHOLD = 5
 STUCK_ESCALATION_FACTOR = 0.8
 MAX_DIVERSITY_RETRIES = 2
 EXPLOIT_PATIENCE = 3  # consecutive non-improvements in EXPLOIT before returning to EXPLORE
 
 
-class _ThreadSafeDict:
-    """Thread-safe dict wrapper using composition (not inheritance).
+class _LRUCache:
+    """Thread-safe LRU cache with bounded maxsize for eval results.
 
-    Wraps a plain ``dict`` with a ``threading.Lock`` so that concurrent
-    ``.get()`` / ``__setitem__`` / ``__contains__`` calls from the
-    ``ThreadPoolExecutor`` workers do not race on dict resize.
+    Evicts the least-recently-used entry when the cache exceeds ``maxsize``.
+    Maintains the same interface as the previous ``_ThreadSafeDict`` so that
+    all callers (``orchestrator.py``, ``evaluate.py``) work without changes.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, maxsize: int = 36) -> None:
         self._lock = threading.Lock()
-        self._data: dict[int, tuple[EvaluationReport, pd.Series]] = {}
+        self._data: OrderedDict[int, tuple[EvaluationReport, pd.Series]] = OrderedDict()
+        self._maxsize = maxsize
 
     def __getitem__(self, key: int) -> tuple[EvaluationReport, pd.Series]:
         with self._lock:
+            self._data.move_to_end(key)
             return self._data[key]
 
     def __setitem__(self, key: int, value: tuple[EvaluationReport, pd.Series]) -> None:
         with self._lock:
             self._data[key] = value
+            self._data.move_to_end(key)
+            if len(self._data) > self._maxsize:
+                self._data.popitem(last=False)
 
     def __contains__(self, key: int) -> bool:
         with self._lock:
@@ -95,7 +102,10 @@ class _ThreadSafeDict:
         self, key: int, default: tuple[EvaluationReport, pd.Series] | None = None
     ) -> tuple[EvaluationReport, pd.Series] | None:
         with self._lock:
-            return self._data.get(key, default)
+            if key in self._data:
+                self._data.move_to_end(key)
+                return self._data[key]
+            return default
 
 
 @dataclass
@@ -220,6 +230,7 @@ def run_optimization(
     lesson_store = LessonStore(run_dir / "lessons.db")
     event_log = EventLog(run_dir / run_id / "events.jsonl")
     incumbent_returns = pd.Series(dtype=float)  # set before try so finally can read it
+    incumbent_attempt_id: int | None = None
     incumbent: EvaluationReport  # assigned during baseline below
     try:
         # 5. Load baseline config
@@ -227,7 +238,7 @@ def run_optimization(
         min_temp = 0.1
         config_obj = StrategyConfig.from_yaml(cfg_path)
         config = config_obj.model_dump()
-        _eval_cache = _ThreadSafeDict()
+        _eval_cache = _LRUCache(maxsize=36)
 
         # 6. Record run metadata
         dataset_hash = compute_dataset_hash(
@@ -277,7 +288,7 @@ def run_optimization(
                 config,
                 start_date=start_date,
                 end_date=end_date,
-                _eval_cache=_eval_cache,  # type: ignore[arg-type]
+                _eval_cache=_eval_cache,
                 _strategy_code=_baseline_code,
             )
             _deflate(baseline_report, baseline_returns, ledger)
@@ -285,7 +296,7 @@ def run_optimization(
             incumbent = baseline_report
             incumbent_returns = baseline_returns
             baseline_sha: str | None = git_ledger._repo.head.commit.hexsha
-            ledger.record_attempt(
+            incumbent_attempt_id = ledger.record_attempt(
                 run_id=run_id,
                 iteration=0,
                 strategy_name=strategy_name,
@@ -312,12 +323,25 @@ def run_optimization(
                 holdout_observed_sharpe=baseline_report.holdout_metrics.sharpe_ratio,
                 holdout_returns=baseline_report.holdout_net_returns,
             )
+
+            # Baseline gate audit — warn if the baseline itself fails hard constraints
+            baseline_warnings = _audit_baseline(incumbent, config_obj)
+            for w in baseline_warnings:
+                logger.warning("Baseline gate check: %s", w)
+            if baseline_warnings:
+                from rich.console import Console
+
+                Console().print(
+                    "[yellow]⚠ Baseline fails gate constraints. "
+                    "Candidates must pass these constraints AND improve over baseline "
+                    f"(Sharpe {incumbent.observed_sharpe:.3f}).[/]"
+                )
         else:
             # Reconstruct incumbent from the latest accepted/committed attempt
             rows = (
                 ledger._conn()
                 .execute(
-                    "SELECT iteration, accepted, committed, report_json "
+                    "SELECT id, iteration, accepted, committed, report_json "
                     "FROM attempts WHERE run_id = ? ORDER BY iteration ASC",
                     (run_id,),
                 )
@@ -336,13 +360,14 @@ def run_optimization(
                 from autobacktest.evaluator.report import EvaluationReport
                 from autobacktest.ledger.store import _deserialize_returns
 
-                incumbent = EvaluationReport.from_json(latest_accepted[3])
+                incumbent = EvaluationReport.from_json(latest_accepted[4])
+                incumbent_attempt_id = int(latest_accepted[0])
 
                 ret_row = (
                     ledger._conn()
                     .execute(
                         "SELECT returns_blob, holdout_returns_blob FROM attempts WHERE run_id = ? AND iteration = ?",
-                        (run_id, latest_accepted[0]),
+                        (run_id, latest_accepted[1]),
                     )
                     .fetchone()
                 )
@@ -397,6 +422,7 @@ def run_optimization(
         n_llm_ok = 0
         last_attempt: dict[str, Any] | None = None
         consecutive_no_accept: int = 0
+        consecutive_no_backtest: int = 0
         rolling_history: list[bool] = []
         _early_stop = False
         _early_stop_iteration: int = 0
@@ -466,6 +492,9 @@ def run_optimization(
                         last_attempt=last_attempt,
                         attempt_history=attempt_summaries,
                         mode=mode,
+                        dd_limit=config_obj.max_drawdown_limit,
+                        turnover_limit=config_obj.turnover_limit,
+                        min_return_ratio=config_obj.select_min_return_ratio,
                     )
 
                     # 8b. Generate N candidates in parallel
@@ -496,6 +525,17 @@ def run_optimization(
                             if edit.lessons_text is not None and edit.lessons_text.strip():
                                 lesson_store.ingest_markdown(edit.lessons_text, strategy_name)
                                 lessons_text = lesson_store.get_filtered_markdown(strategy_name)
+
+                            # Apply deterministic pandas codemod (repairs deprecated API calls)
+                            if settings.enable_codemod_repair:
+                                from autobacktest.strategy.codemod import repair_pandas_code
+
+                                repaired_code, applied_fixes = repair_pandas_code(edit.strategy_code)
+                                if applied_fixes:
+                                    import dataclasses as _dc
+
+                                    edit = _dc.replace(edit, strategy_code=repaired_code)
+                                    logger.info("codemod repaired candidate in iter %s: %s", k, applied_fixes)
 
                             # Validate
                             ok, err_code, err_detail = _validate_candidate(
@@ -528,11 +568,21 @@ def run_optimization(
                         e_config_yaml = ev["config_yaml"]
                         if mode == "explore" and historical_configs:
                             max_sim = max_config_similarity(e_config_yaml, historical_configs)
-                            if max_sim > DIVERSITY_CONFIG_THRESHOLD:
+                            ev["config_similarity"] = max_sim
+                            if settings.enable_config_diversity_gate and max_sim > settings.diversity_config_threshold:
                                 ev["valid"] = False
                                 ev["validation_stage"] = "diversity_config"
                                 ev["detail"] = (
-                                    f"Config similarity {max_sim:.3f} exceeded threshold {DIVERSITY_CONFIG_THRESHOLD}."
+                                    f"Config similarity {max_sim:.3f} exceeded"
+                                    f" threshold {settings.diversity_config_threshold}."
+                                )
+                        elif mode == "exploit":
+                            max_sim = max_config_similarity(e_config_yaml, [current_yaml])
+                            if max_sim >= 0.999:
+                                ev["valid"] = False
+                                ev["validation_stage"] = "exploit_no_change"
+                                ev["detail"] = (
+                                    "Exploit candidate is identical to the incumbent config; no change to evaluate."
                                 )
                         valid_candidates.append(ev)
 
@@ -555,7 +605,7 @@ def run_optimization(
                                 configs_dir,
                                 start_date,
                                 end_date,
-                                _eval_cache,  # type: ignore[arg-type]
+                                _eval_cache,
                             )
                             if err:
                                 ev["valid"] = False
@@ -593,14 +643,14 @@ def run_optimization(
                             hist_matrix, _ = ledger.fetch_historical_returns(dataset_hash)
                             if not hist_matrix.empty:
                                 corr_passed, max_corr = check_returns_correlation(
-                                    returns_k, hist_matrix, DIVERSITY_RETURNS_THRESHOLD
+                                    returns_k, hist_matrix, settings.diversity_returns_threshold
                                 )
                                 if not corr_passed:
                                     ev["valid"] = False
                                     ev["validation_stage"] = "diversity_returns"
                                     ev["detail"] = (
                                         f"Return correlation {max_corr:.3f} exceeded threshold "
-                                        f"{DIVERSITY_RETURNS_THRESHOLD}."
+                                        f"{settings.diversity_returns_threshold}."
                                     )
                                     ev["_report_json"] = report_k.to_json()
                                     ev["_observed_sharpe"] = report_k.observed_sharpe
@@ -609,7 +659,7 @@ def run_optimization(
                         # DSR deflation (in-sample)
                         _deflate(report_k, returns_k, ledger)
                         if incumbent is not None and not incumbent_returns.empty:
-                            _deflate(incumbent, incumbent_returns, ledger)
+                            _deflate(incumbent, incumbent_returns, ledger, exclude_id=incumbent_attempt_id)
 
                         # Selection gate
                         sel = select(report_k, baseline=incumbent, target_metric=target_metric, config=new_config)
@@ -630,12 +680,15 @@ def run_optimization(
                                 ev["valid"] = False
                                 ev["validation_stage"] = "holdout_peek_limit"
                                 ev["_peek_fail"] = True
+                                ev["detail"] = (
+                                    f"Holdout peek budget exhausted ({total_peeks} >= {holdout_peek_limit} peeks)."
+                                )
                                 continue
 
                             peeks_this_iteration += 1
                             _deflate_holdout(report_k, ledger)
                             if incumbent is not None:
-                                _deflate_holdout(incumbent, ledger)
+                                _deflate_holdout(incumbent, ledger, exclude_id=incumbent_attempt_id)
 
                             cnf = confirm(report_k, baseline=incumbent, config=new_config)
                             ev["_cnf"] = cnf
@@ -709,6 +762,7 @@ def run_optimization(
 
                             incumbent = w_report
                             incumbent_returns = w_returns
+                            incumbent_attempt_id = attempt_id
                             n_committed += 1
                             last_attempt = None
                             consecutive_no_accept = 0
@@ -856,7 +910,16 @@ def run_optimization(
                                 logger.info(f"Exploit stall reached ({EXPLOIT_PATIENCE}), switching to EXPLORE mode.")
                                 mode = "explore"
                                 exploit_stall = 0
-                        last_attempt = {"stage": "all_candidates_failed", "detail": "No candidate passed all gates"}
+                        last_attempt = _extract_best_failure(candidate_results)
+
+                    # --- Preflight stagnation counter ---
+                    n_reached_backtest = sum(
+                        1 for ev in candidate_results if not ev.get("llm_error") and ev.get("_report") is not None
+                    )
+                    if n_reached_backtest == 0:
+                        consecutive_no_backtest += 1
+                    else:
+                        consecutive_no_backtest = 0
 
                     # --- Per-iteration summary line ---
                     _iter_cost = max(0.0, total_cost - _iter_prev_cost)
@@ -907,6 +970,14 @@ def run_optimization(
                         )
                     progress.console.print(summary)
 
+                    if consecutive_no_backtest >= 5:
+                        progress.console.print(
+                            f"[yellow]⚠ Iter {k}/{iterations}: {consecutive_no_backtest} consecutive "
+                            f"iterations with zero candidates reaching backtest. "
+                            f"The LLM may be struggling with code generation — "
+                            f"check preflight errors above.[/]"
+                        )
+
                     event_log.write(event)
                 finally:
                     # Record iteration outcome in rolling history
@@ -945,11 +1016,11 @@ def run_optimization(
                 n = max(1, calculate_effective_trials(hist_matrix))
                 incumbent.effective_trials = n
                 incumbent.deflated_sharpe = calculate_psr_dsr(incumbent_returns, hist_sharpes, n)
-        except Exception:
-            pass  # best-effort; do not mask the loop exception
+        except Exception as exc:
+            logger.warning("Failed to refresh final report DSR: %s", exc)
         # Also re-deflate the holdout DSR.
         with contextlib.suppress(Exception):
-            _deflate_holdout(incumbent, ledger)
+            _deflate_holdout(incumbent, ledger, exclude_id=incumbent_attempt_id)
         # 9. Cleanup
         event_log.close()
         lesson_store.close()
@@ -972,6 +1043,26 @@ def run_optimization(
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
+
+def _audit_baseline(report: EvaluationReport, config: StrategyConfig) -> list[str]:
+    """Check whether the baseline strategy passes hard gate constraints.
+
+    Returns a list of human-readable warning messages for every constraint
+    the baseline violates.  An empty list means the baseline is clean.
+    """
+    warnings: list[str] = []
+    dd = report.in_sample_metrics.max_drawdown
+    if not math.isnan(dd) and dd > config.max_drawdown_limit:
+        warnings.append(
+            f"Baseline max drawdown ({dd * 100:.1f}%) exceeds config limit ({config.max_drawdown_limit * 100:.0f}%)."
+        )
+    to = report.in_sample_metrics.turnover
+    if not math.isnan(to) and to > config.turnover_limit:
+        warnings.append(f"Baseline turnover ({to:.2f}x) exceeds config limit ({config.turnover_limit:.1f}x).")
+    if not report.regime_passed:
+        warnings.append("Baseline fails regime stress tests.")
+    return warnings
 
 
 def _load_signals(path: Path) -> Any:
@@ -1050,7 +1141,7 @@ def _eval_single_candidate(
     configs_dir: Path,
     start_date: str,
     end_date: str,
-    _eval_cache: dict[int, tuple[EvaluationReport, pd.Series]],
+    _eval_cache: _CacheProtocol,
 ) -> tuple[EvaluationReport | None, pd.Series[Any] | None, dict[str, Any] | None, str | None]:
     """Evaluate one candidate via temp files.
 
@@ -1088,6 +1179,7 @@ def _deflate(
     report: EvaluationReport,
     selection_returns: pd.Series[Any],
     ledger: LedgerStore,
+    exclude_id: int | None = None,
 ) -> None:
     """Deflate the in-sample selection DSR using the ledger's multi-trial history.
 
@@ -1095,7 +1187,7 @@ def _deflate(
     trials — the candidate's own returns and Sharpe are excluded from the
     correlation matrix and Sharpe list to prevent self-contamination.
     """
-    hist_matrix, hist_sharpes = ledger.fetch_historical_returns(report.dataset_hash)
+    hist_matrix, hist_sharpes = ledger.fetch_historical_returns(report.dataset_hash, exclude_id=exclude_id)
 
     if hist_matrix.empty:
         return
@@ -1111,13 +1203,14 @@ def _deflate(
 def _deflate_holdout(
     report: EvaluationReport,
     ledger: LedgerStore,
+    exclude_id: int | None = None,
 ) -> None:
     """Deflate ``report.holdout_deflated_sharpe`` by the holdout-peek count.
 
     The null distribution uses only prior holdout peeks — the current
     candidate's returns and Sharpe are excluded to avoid self-contamination.
     """
-    hist_matrix, hist_sharpes = ledger.fetch_holdout_history(report.dataset_hash)
+    hist_matrix, hist_sharpes = ledger.fetch_holdout_history(report.dataset_hash, exclude_id=exclude_id)
 
     if report.holdout_net_returns is None or report.holdout_net_returns.empty:
         return
@@ -1148,3 +1241,62 @@ def _get_metric_value(report: EvaluationReport, metric: TargetMetric) -> float:
         return report.in_sample_metrics.sortino_ratio
     else:  # INFORMATION_RATIO
         return report.in_sample_metrics.information_ratio
+
+
+def _extract_best_failure(candidate_results: list[dict[str, Any]]) -> dict[str, Any]:
+    """Select the most descriptive failure from parallel candidate results to present as feedback."""
+    stages_priority = [
+        "validation",
+        "eval_error",
+        "gate",
+        "diversity_returns",
+        "diversity_config",
+        "holdout_peek_limit",
+    ]
+
+    for stage in stages_priority:
+        for ev in candidate_results:
+            if ev.get("validation_stage") == stage:
+                failure = {
+                    "stage": stage,
+                    "candidate_strategy_code": (
+                        ev.get("strategy_code") or (ev["edit"].strategy_code if ev.get("edit") else "")
+                    ),
+                    "candidate_config_yaml": (
+                        ev.get("config_yaml") or (ev["edit"].config_yaml if ev.get("edit") else "")
+                    ),
+                }
+
+                if stage == "validation":
+                    failure["error_code"] = ev.get("error_code")
+                    failure["detail"] = ev.get("detail")
+                elif stage == "eval_error":
+                    failure["detail"] = ev.get("detail")
+                elif stage == "gate":
+                    failure["rejection_reason"] = ev.get("detail")
+                    failure["failed_gate"] = ev.get("_failed_gate")
+                    rp = ev.get("_report")
+                    if rp:
+                        failure["candidate_metrics"] = {
+                            "Sharpe": rp.in_sample_metrics.sharpe_ratio,
+                            "Sortino": rp.in_sample_metrics.sortino_ratio,
+                            "Information Ratio": rp.in_sample_metrics.information_ratio,
+                            "Max Drawdown": rp.in_sample_metrics.max_drawdown,
+                            "Turnover": rp.in_sample_metrics.turnover,
+                        }
+                elif stage in ("diversity_returns", "diversity_config", "holdout_peek_limit"):
+                    failure["detail"] = ev.get("detail")
+
+                return failure
+
+    for ev in candidate_results:
+        if ev.get("llm_error"):
+            return {
+                "stage": "llm_error",
+                "detail": "LLM failed to return a valid candidate or parsing failed.",
+            }
+
+    return {
+        "stage": "all_candidates_failed",
+        "detail": "No candidate passed all gates.",
+    }

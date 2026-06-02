@@ -6,7 +6,7 @@ import pandas as pd
 
 def run_block_bootstrap(
     returns: pd.Series,
-    n_paths: int = 1000,
+    n_paths: int = 10000,
     block_size: int = 21,
     seed: int | None = None,
 ) -> tuple[float, float, float]:

@@ -3,8 +3,16 @@
 import re
 from typing import Any
 
+import numpy as _np
+import pandas as _pd
+
 from autobacktest.config import settings
 from autobacktest.llm.base import AgentContext
+from autobacktest.strategy.config_schema import StrategyConfig as _StrategyConfig
+
+_PANDAS_VERSION = _pd.__version__
+_NUMPY_VERSION = _np.__version__
+_ALLOWED_TOP_LEVEL_KEYS = sorted(_StrategyConfig.model_fields.keys())
 
 # System prompt outlining constraints and role
 sorted_imports = sorted(settings.parsed_safe_imports)
@@ -33,25 +41,100 @@ You operate in a strict execution loop and MUST adhere to the following rules:
        BUG, DIVERSITY, GATE_REJECTION, PERFORMANCE_INSIGHT, or STRUCTURAL).
     - If the current lessons exceed the 4096 token limit (~16k characters),
       you MUST prune, compress, and consolidate older or less useful lessons to fit.
-8. Diversity Rule: Your proposed strategy config YAML will be compared
-   against ALL past attempts with the same asset universe. If it has
-    >95% similarity (same params, same asset sets, same structure), the
-   iteration will be rejected WITHOUT backtesting and the iteration
-   budget is consumed. To avoid this, you MUST explore structurally
-   different approaches each time — change the asset universe, swap the
-   momentum metric (e.g., EWMA crossover instead of 13612U), alter the
-   canary logic, or modify the weighting scheme. Stale parameter tweaks
-   (varying hysteresis by ±0.005) will be caught.
-9. Strict JSON/Formatting Rule: Do not output any conversational text
+8. Runtime Environment & Banned pandas APIs Rule:
+   The strategy code runs against pandas=={_PANDAS_VERSION} and numpy=={_NUMPY_VERSION}.
+   The following pandas APIs are REMOVED in this version and will crash at runtime. NEVER use them:
+   - `.groupby(axis=...)`: The `axis` parameter is removed. Drop it entirely.
+   - Frequency aliases are CONTEXT-SENSITIVE — using the wrong one crashes at runtime:
+     * DatetimeIndex operations (resample, date_range, bdate_range, pd.Grouper, asfreq on a
+       DatetimeIndex, date offsets): use the NEW aliases
+       'ME' (not 'M'), 'BME' (not 'BM'), 'QE' (not 'Q'), 'YE' (not 'A'/'Y'),
+       'h' (not 'H'), 'min' (not 'T'), 's' (not 'S').
+     * Period operations (to_period, period_range, pd.Period, asfreq on a PeriodIndex): use the
+       ORIGINAL codes 'M', 'Q', 'Y' — passing 'ME'/'QE'/'YE' to a Period raises
+       ValueError("for Period, please use 'M' instead of 'ME'").
+   - `.mean(level=)` / `.sum(level=)` / `.std(level=)`: Use `.groupby(level=).mean()` etc.
+   - `.fillna(method='ffill')` / `.fillna(method='bfill')`: Use `.ffill()` / `.bfill()` directly.
+   - `DataFrame.append(other)`: Use `pd.concat([df, other])`.
+   - `Series.iteritems()`: Use `.items()`.
+   Additionally:
+   - NEVER use a pandas Series in a boolean `if` statement. Use `.any()`, `.all()`, `.empty`, or `.item()`.
+   - When assigning a value to a DataFrame column, ensure the right-hand side is a single Series or
+     scalar — NOT a multi-column DataFrame. Use `.squeeze()` or select a specific column first.
+   - `pd.unique(x)` / `x.unique()` require a Series, Index, or ndarray — NEVER a Python list.
+     Wrap with `pd.Series(x)`, or use `set(x)` / `np.unique(x)` for plain lists.
+   - NEVER call `np.nanmean` / `np.nanstd` on arrays that may have all-NaN slices — the warning
+     is emitted INSIDE nanmean before any post-hoc fix can suppress it. Instead, compute mean
+     manually using pre-filled arrays so the warning never fires:
+     1-D: `val = arr[~np.isnan(arr)].mean() if (~np.isnan(arr)).any() else 0.0`
+     N-D (any axis, e.g. axis=2 on a 3-D stack):
+       `valid = ~np.isnan(stacked); count = valid.sum(axis=2)`
+       `avg = np.where(count > 0, np.where(valid, stacked, 0.0).sum(axis=2) / np.maximum(count, 1.0), 0.0)`
+9. Config Schema Rule:
+   The config YAML is validated by a Pydantic model with `extra="forbid"`. Only these top-level keys
+   are permitted: {_ALLOWED_TOP_LEVEL_KEYS}
+   ALL strategy-specific parameters (momentum windows, thresholds, top_n, etc.) MUST go under the
+   `params:` key. Placing any custom parameter at the top level will cause a hard validation error.
+   Every ticker symbol referenced in the strategy code MUST appear in the `universe` list in config.
+10. No Full-Sample Statistics Rule (Lookahead Prevention):
+    NEVER compute mean, std, min, max, rank, quantile, z-score, or any other normalization over
+    an entire column or the full price history. This is lookahead bias — future rows affect past signals.
+    ALL statistics MUST use only trailing windows up to time t:
+    - Use rolling(window=N) or expanding() windows, not plain .mean() / .std() on the whole series.
+    - If you normalize (z-score, rank), do it within each rolling window.
+    - Appending future price rows MUST NOT change any signal for past dates. This is tested automatically.
+    Common violations that fail the lookahead test:
+    - `prices[ticker].rank(pct=True)` — ranks whole column, sees future
+    - `(x - x.mean()) / x.std()` — normalizes over full history
+    - `prices.pct_change().mean()` — mean over full history
+    - `prices.groupby(prices.index.to_period("M")).tail(1).index` — rebalance dates derived
+      from the last OBSERVED day of each month. When future data is appended to the same month,
+      the "last day" changes and past signals flip. THIS ALWAYS FAILS THE SNIFF TEST.
+      Safe pattern: use purely calendar-based month-ends that never depend on what data exists:
+      `pd.date_range(start=prices.index.min(), end=prices.index.max(), freq='BME').intersection(prices.index)`
+11. Mandatory Decomposition Rule:
+    The complexity and line-count limits are enforced PER FUNCTION. Use this to your advantage:
+    - `generate_signals` MUST be an orchestrator — it calls helper functions, does not inline logic.
+    - Extract signal computation, normalization, weight calculation, and regime detection into
+      separate named helper functions (e.g., `_compute_momentum`, `_apply_regime_filter`,
+      `_normalize_weights`).
+    - Each helper function must stay under {settings.max_cyclomatic_complexity} cyclomatic complexity
+      and {settings.max_function_lines} lines. Deeply nested if/elif chains, multiple loops, and
+      list comprehensions with multiple conditions all increase complexity — split them into helpers.
+    - A `generate_signals` that is a flat sequence of complex logic will always fail the AST check.
+12. Diversity Rule: Diversity is enforced on the strategy's **return profile** (behavioral),
+   not on config syntax alone. After backtesting, if your strategy's returns are too highly
+   correlated (>95%) with any prior attempt for the same universe, it will be rejected as
+   behaviorally redundant. To avoid this, you MUST generate strategies that behave differently
+   from prior attempts — change the momentum metric (e.g., EWMA crossover instead of 13612U),
+   alter the signal logic, modify the weighting or regime scheme, or change the asset universe.
+   Stale parameter tweaks that produce near-identical return streams will be caught.
+13. Strict JSON/Formatting Rule: Do not output any conversational text
    before or after the JSON payload. For reasoning/thinking models,
    the very first character immediately following the closing </think>
    tag must be the opening {{ of the JSON payload. No markdown
    wrapping (like ```json) is permitted.
-10. Attempt History Rule: Before proposing a strategy, consult the
+14. Attempt History Rule: Before proposing a strategy, consult the
     ## Attempt History section. Do NOT re-propose configs in already-explored
     regions — cross-reference the history table to identify which metric
     directions or structural approaches remain unexplored and target those.
     Reason explicitly about gaps in the explored space.
+15. AST Complexity and Size Limits Rule:
+    Your strategy file has strict structural limits enforced by AST checks:
+    - Maximum McCabe cyclomatic complexity of any function is 20. Keep functions
+      simple: avoid heavily nested conditions (if/elif/else, deeply nested loops,
+      list comprehensions with multiple if clauses, or extensive boolean/and/or
+      chains). You MUST refactor `generate_signals` into small helper functions — it must be an
+      orchestrator that calls helpers, not a flat block of inline logic. See Rule 11 (Mandatory Decomposition).
+    - Maximum line count of any single function is 100.
+16. Whitelist & Forbidden Names Rule:
+    - The `.format()` method and attributes like `__dict__`, `__class__`, etc.,
+      are strictly forbidden by AST checks. To format strings, you MUST use
+      f-strings or standard string concatenation.
+    - Only imports from the allowed whitelist ({sorted_imports}) are permitted.
+      Wildcard imports (`*`) are blocked. Avoid accessing forbidden variables or
+      built-in functions such as `eval`, `exec`, `getattr`, `setattr`, or
+      pandas/numpy filesystem read/write operations (e.g., `read_csv`, `to_csv`).
 """
 
 
@@ -118,18 +201,42 @@ def filter_lessons(lessons_text: str, context_stage: str | None) -> str:
     return "\n\n".join(filtered)
 
 
-def build_messages(context: AgentContext) -> list[dict[str, str]]:
+def _text_block(text: str, cache: bool = False) -> dict[str, Any]:
+    block: dict[str, Any] = {"type": "text", "text": text}
+    if cache:
+        block["cache_control"] = {"type": "ephemeral"}
+    return block
+
+
+def build_messages(
+    context: AgentContext,
+    cache_supported: bool = False,
+) -> list[dict[str, Any]]:
     """Build the system and user message payload for the LLM completion API.
 
     Args:
         context: Immutable context defining the current optimization state.
+        cache_supported: When True, emit Anthropic-style cache_control breakpoints
+            on the stable prefix so the provider caches SYSTEM_PROMPT + program_text.
 
     Returns:
         List containing the system message and user message dicts.
     """
-    system_message = {
+    # The stable prefix (SYSTEM_PROMPT + program_text) is byte-identical across all
+    # iterations within a run. For Anthropic we mark the boundary with cache_control;
+    # for OpenAI the identical system string triggers automatic server-side caching.
+    system_content: str | list[dict[str, Any]]
+    if cache_supported:
+        system_content = [
+            _text_block(SYSTEM_PROMPT),
+            _text_block(f"## Objective\n{context.program_text}", cache=True),
+        ]
+    else:
+        system_content = f"{SYSTEM_PROMPT}\n\n## Objective\n{context.program_text}"
+
+    system_message: dict[str, Any] = {
         "role": "system",
-        "content": SYSTEM_PROMPT,
+        "content": system_content,
     }
 
     context_stage = context.last_attempt.get("stage") if context.last_attempt else None
@@ -250,8 +357,9 @@ def build_messages(context: AgentContext) -> list[dict[str, str]]:
         diversity_warning = (
             f"\n## Diversity Warning\n"
             f"There are {context.n_historical_configs} attempted strategy variants "
-            f"tracked (including rejected ones) for this asset universe. The config "
-            f"similarity gate will reject proposals with >95% fingerprint overlap.\n"
+            f"tracked for this asset universe. Strategies whose return streams correlate "
+            f">95% with any prior attempt will be rejected after backtesting. "
+            f"Ensure your strategy behaves differently — not just has different parameters.\n"
         )
 
     # Build the "Previous Attempt Result" section if a failed attempt exists
@@ -268,9 +376,14 @@ def build_messages(context: AgentContext) -> list[dict[str, str]]:
             lines.append(f"**Detail:** {detail}")
             if error_code == "lookahead_detected":
                 lines.append(
-                    "**Explanation:** `lookahead_detected` means the strategy code reads "
-                    "future price rows (e.g. using `.shift(-n)` with a negative shift, or "
-                    "indexing beyond `t` at evaluation time). This is a hard disqualifier."
+                    "**Explanation:** `lookahead_detected` means past signals changed when future "
+                    "price rows were appended. The most common causes are:\n"
+                    "  1. Full-sample normalization: `(x - x.mean()) / x.std()` or `.rank(pct=True)` "
+                    "over the whole column — future rows shift the mean/rank for ALL past dates.\n"
+                    "  2. Negative shifts: `.shift(-n)` looks forward in time.\n"
+                    "  3. Any statistic computed over the full history at signal generation time.\n"
+                    "Fix: replace whole-column statistics with `rolling(N).mean()` / `rolling(N).std()` "
+                    "so each signal only sees data up to time t. This is a hard disqualifier."
                 )
             code = attempt.get("candidate_strategy_code", "")
             config = attempt.get("candidate_config_yaml", "")
@@ -349,12 +462,17 @@ def build_messages(context: AgentContext) -> list[dict[str, str]]:
             f"  - Max Drawdown: {m.max_drawdown:.4f}\n"
             f"  - Turnover: {m.turnover:.4f}\n\n"
             f"Hard gate limits (select — all must pass):\n"
-            f"  - In-sample max drawdown <= 0.20\n"
-            f"  - In-sample turnover <= 2.0\n"
+            f"  - In-sample max drawdown <= {context.dd_limit:.2f}\n"
+            f"  - In-sample turnover <= {context.turnover_limit:.2f}\n"
             f"  - All historical crisis regime stress tests must pass\n"
             f"  - Target metric must strictly exceed the incumbent in-sample value above.\n"
+            f"  - Annualized return must be at least {context.min_return_ratio * 100:.0f}% "
+            f"of the incumbent's annualized return.\n"
             f"  - Deflated Sharpe (DSR) non-degradation is **always enforced** on the "
             f"in-sample selection basis.\n\n"
+            f"> [!WARNING]\n"
+            f"> While the hard drawdown limit is {context.dd_limit:.2f}, strategies pushing close to\n"
+            f"> the boundary are risky — prefer candidates that operate well within constraints.\n\n"
             f"Strategies that pass the in-sample select gate face a hidden OOS holdout\n"
             f"confirmation gate before commit. That holdout is **not visible** here.\n\n"
         )
@@ -362,9 +480,15 @@ def build_messages(context: AgentContext) -> list[dict[str, str]]:
         performance_target_section = (
             "## Performance Target\n"
             "No incumbent evaluation yet (first iteration). "
-            "Hard gate limits: in-sample drawdown <= 0.20, turnover <= 2.0, "
+            f"Hard gate limits: in-sample drawdown <= {context.dd_limit:.2f}, "
+            f"turnover <= {context.turnover_limit:.2f}, "
             "all regime stress tests must pass. "
+            f"Once a baseline exists, annualized return must be at least "
+            f"{context.min_return_ratio * 100:.0f}% of the baseline.\n"
             "DSR non-degradation is always enforced on the in-sample selection basis.\n"
+            f"> [!WARNING]\n"
+            f"> While the hard drawdown limit is {context.dd_limit:.2f}, strategies pushing close to\n"
+            f"> the boundary are risky — prefer candidates that operate well within constraints.\n\n"
             "Strategies that pass select are confirmed against a hidden OOS holdout.\n\n"
         )
 
@@ -374,7 +498,9 @@ def build_messages(context: AgentContext) -> list[dict[str, str]]:
             "## Mode\n"
             "**EXPLOIT** — Locally refine the incumbent strategy. The diversity gate is suspended this round.\n"
             "Make small, targeted parameter tweaks or minor signal adjustments to the best strategy found so far.\n"
-            "Do NOT make large structural changes. Focus on squeezing out marginal improvements."
+            "Do NOT make large structural changes. Focus on squeezing out marginal improvements.\n"
+            "IMPORTANT: You MUST change at least one parameter value — returning the incumbent config unchanged\n"
+            "is rejected automatically. Every exploit candidate must differ from the current best strategy."
         )
     else:
         mode_section = (
@@ -387,9 +513,6 @@ def build_messages(context: AgentContext) -> list[dict[str, str]]:
 Current Loop Iteration: {context.iteration}
 
 {mode_section}
-
-## Objective
-{context.program_text}
 
 ## Lessons
 {injected_lessons}

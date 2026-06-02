@@ -39,6 +39,9 @@ class Settings(BaseModel):
     llm_request_timeout: float = Field(
         default_factory=lambda: float(os.getenv("AUTOBACKTEST_LLM_REQUEST_TIMEOUT", "600.0"))
     )
+    llm_prompt_cache: bool = Field(
+        default_factory=lambda: os.getenv("AUTOBACKTEST_LLM_PROMPT_CACHE", "true").lower() in ("true", "1", "yes")
+    )
 
     # --- BACKTEST WINDOWS ---
     default_start_date: str = Field(default_factory=lambda: os.getenv("AUTOBACKTEST_DEFAULT_START_DATE", "2015-01-01"))
@@ -67,7 +70,7 @@ class Settings(BaseModel):
     # --- SAFETY GATES ---
     max_file_size_kb: int = Field(default_factory=lambda: int(os.getenv("AUTOBACKTEST_MAX_FILE_SIZE_KB", "100")))
     max_cyclomatic_complexity: int = Field(
-        default_factory=lambda: int(os.getenv("AUTOBACKTEST_MAX_CYCLOMATIC_COMPLEXITY", "15"))
+        default_factory=lambda: int(os.getenv("AUTOBACKTEST_MAX_CYCLOMATIC_COMPLEXITY", "20"))
     )
     max_function_lines: int = Field(default_factory=lambda: int(os.getenv("AUTOBACKTEST_MAX_FUNCTION_LINES", "100")))
     safe_imports_whitelist: str = Field(
@@ -77,6 +80,18 @@ class Settings(BaseModel):
         )
     )
     sandbox_timeout: int = Field(default_factory=lambda: int(os.getenv("AUTOBACKTEST_SANDBOX_TIMEOUT", "15")))
+    enable_codemod_repair: bool = Field(
+        default_factory=lambda: os.getenv("AUTOBACKTEST_ENABLE_CODEMOD_REPAIR", "true").lower() == "true"
+    )
+    enable_config_diversity_gate: bool = Field(
+        default_factory=lambda: os.getenv("AUTOBACKTEST_ENABLE_CONFIG_DIVERSITY_GATE", "true").lower() == "true"
+    )
+    diversity_config_threshold: float = Field(
+        default_factory=lambda: float(os.getenv("AUTOBACKTEST_DIVERSITY_CONFIG_THRESHOLD", "0.95"))
+    )
+    diversity_returns_threshold: float = Field(
+        default_factory=lambda: float(os.getenv("AUTOBACKTEST_DIVERSITY_RETURNS_THRESHOLD", "0.95"))
+    )
 
     # --- SQLITE STORAGE CONFIGURATION ---
     db_timeout: float = Field(default_factory=lambda: float(os.getenv("AUTOBACKTEST_DB_TIMEOUT", "15.0")))

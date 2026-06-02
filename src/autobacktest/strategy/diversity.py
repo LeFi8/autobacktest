@@ -7,11 +7,14 @@ to previously attempted or committed variants.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import numpy as np
 import pandas as pd
 import yaml
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Known parameter ranges for min-max normalization
@@ -69,7 +72,8 @@ def _parse_config_to_flat(config_yaml: str) -> dict[str, Any]:
 
     try:
         data = yaml.safe_load(config_yaml)
-    except Exception:
+    except Exception as e:
+        logger.warning("Failed to parse config YAML: %s", e)
         return {}
 
     if not isinstance(data, dict):
@@ -333,6 +337,10 @@ def check_returns_correlation(
 ) -> tuple[bool, float]:
     """Check whether *candidate_returns* is too highly correlated with any column in *historical_returns_matrix*.
 
+    Uses raw (signed) Pearson correlation — not absolute value — so that
+    negatively correlated candidates (which provide diversification benefit)
+    pass the diversity gate. Only excessive positive correlation is blocked.
+
     Args:
         candidate_returns: Daily net returns of the current strategy candidate.
         historical_returns_matrix: Each column is the return series of a
@@ -343,8 +351,9 @@ def check_returns_correlation(
 
     Returns:
         ``(passed, max_correlation)`` — *passed* is ``True`` when the
-        candidate is sufficiently different from all historical series
-        (i.e. every pairwise correlation is ≤ *threshold*).
+        candidate is not excessively correlated with any historical series
+        (i.e. every pairwise correlation is ≤ *threshold*). Negative
+        correlations always pass.
     """
     if candidate_returns.empty or historical_returns_matrix.empty:
         return True, 0.0
@@ -364,8 +373,7 @@ def check_returns_correlation(
         if np.isnan(corr):
             continue
 
-        abs_corr = abs(corr)
-        if abs_corr > max_corr:
-            max_corr = abs_corr
+        if corr > max_corr:
+            max_corr = corr
 
     return max_corr <= threshold, max_corr
