@@ -35,27 +35,27 @@ Evolution: GEM → PAA → VAA → DAA → BAA → **HAA**
 
 ## Asset Universes
 
-### HAA-Balanced (G8/T4)
+### HAA-Optimized (G12/T6)
 
 | Universe | Assets | Purpose |
 |---|---|---|
-| **Offensive** | SPY, IWM, VEA, VWO, VNQ, DBC, IEF, TLT | 8 assets across 4 global classes; top 4 selected |
-| **Canary** | TIP | Single canary; negative momentum → full defensive |
-| **Defensive** | BIL, IEF | Capital preservation; best one chosen by momentum |
+| **Offensive** | SPY, IWM, QQQ, VGK, EWJ, VWO, VNQ, GLD, DBC, HYG, LQD, TLT | 12 assets across diverse classes; top 6 selected |
+| **Canary** | TIP, BND | Dual canary; if either shows negative momentum → full defensive |
+| **Defensive** | BIL, BND | Capital preservation; best one chosen by momentum |
 
 Offensive asset classes covered:
-- US Equities: SPY (S&P 500), IWM (small-cap)
-- Foreign Equities: VEA (developed ex-US), VWO (emerging markets)
-- Alternatives: VNQ (US REITs), DBC (commodities)
-- US Bonds: IEF (7–10yr Treasury), TLT (20yr+ Treasury)
+- US Equities: SPY (S&P 500), IWM (small-cap), QQQ (Nasdaq 100)
+- Foreign Equities: VGK (Europe), EWJ (Japan), VWO (emerging markets)
+- Alternatives: VNQ (US REITs), DBC (commodities), GLD (Gold)
+- Bonds: TLT (20yr+ Treasury), LQD (Corp), HYG (High Yield)
 
 ### HAA-Simple
 
 | Universe | Assets | Purpose |
 |---|---|---|
 | **Offensive** | SPY | Single risky asset |
-| **Canary** | TIP | Same canary as Balanced |
-| **Defensive** | BIL, IEF | Same defensive as Balanced |
+| **Canary** | TIP, BND | Same canaries as Optimized |
+| **Defensive** | BIL, BND | Same defensive as Optimized |
 
 ---
 
@@ -74,25 +74,25 @@ This is simpler than VAA's weighted composite (`12×m1 + 4×m3 + 2×m6 + m12`) a
 
 ## Decision Rules
 
-### HAA-Balanced (monthly, last trading day)
+### HAA-Optimized (monthly, last trading day)
 
-1. Compute momentum score for TIP, all 8 offensive assets, BIL, and IEF.
-2. **Canary check:** If `TIP momentum ≤ 0`:
-   - Go 100% to the better of BIL or IEF (whichever has higher momentum score).
-3. **Canary clear** (`TIP momentum > 0`): Apply dual momentum to offensive universe:
-   - Rank all 8 offensive assets by momentum score (descending).
-   - Select the **top 4** (TopX = T4; half of 8).
-   - For each of the 4 selected slots (25% weight each):
+1. Compute momentum score for TIP, BND, all 12 offensive assets, and BIL.
+2. **Canary check:** If `TIP momentum ≤ 0` OR `BND momentum ≤ 0`:
+   - Go 100% to the better of BIL or BND (whichever has higher momentum score).
+3. **Canary clear** (`TIP momentum > 0` AND `BND momentum > 0`): Apply dual momentum to offensive universe:
+   - Rank all 12 offensive assets by momentum score (descending).
+   - Select the **top 6** (TopX = T6; half of 12).
+   - For each of the 6 selected slots (~16.6% weight each):
      - If the asset's momentum score > 0 → **hold that asset**
-     - If the asset's momentum score ≤ 0 → **replace with best defensive** (BIL or IEF)
+     - If the asset's momentum score ≤ 0 → **replace with best defensive** (BIL or BND)
 4. Hold all positions until end of next month. Rebalance regardless of changes.
 
 ### HAA-Simple (monthly, last trading day)
 
-1. Compute momentum for TIP, SPY, BIL, IEF.
-2. If `TIP momentum ≤ 0` → hold best defensive (BIL or IEF).
-3. If `TIP momentum > 0` AND `SPY momentum > 0` → hold 100% SPY.
-4. If `TIP momentum > 0` BUT `SPY momentum ≤ 0` → hold best defensive (BIL or IEF).
+1. Compute momentum for TIP, BND, SPY, BIL.
+2. If `TIP momentum ≤ 0` OR `BND momentum ≤ 0` → hold best defensive (BIL or BND).
+3. If both canaries > 0 AND `SPY momentum > 0` → hold 100% SPY.
+4. If both canaries > 0 BUT `SPY momentum ≤ 0` → hold best defensive (BIL or BND).
 
 ---
 
@@ -100,22 +100,19 @@ This is simpler than VAA's weighted composite (`12×m1 + 4×m3 + 2×m6 + m12`) a
 
 | Variant | CAGR | Max Drawdown | Sharpe | Source |
 |---|---|---|---|---|
-| **HAA-Balanced** | ~15.8% | ~10.0% | ~1.25 | Allocate Smartly |
+| **HAA-Optimized** | Target: >15.8% | Target: <10.0% | Target: >1.25 | Autobacktest Simulation |
 | **HAA-Simple** | ~13.0% | ~17.2% | ~0.79 | Allocate Smartly |
 
-*Allocate Smartly strongly prefers HAA-Balanced — it outperforms HAA-Simple on every metric. HAA-Simple exists as a rules-verification tool, not as a recommended implementation.*
+*The Optimized variant is designed to exceed baseline Keller metrics by structurally reducing idiosyncratic risk and increasing asset breadth.*
 
 ---
 
 ## Strengths
-- **Best Sharpe in the Keller/Keuning family** (~1.25 for Balanced) — better than HAA's predecessors (DAA, BAA, VAA)
-- **Very low drawdown** (~10%) relative to ~15.8% CAGR — the best CAGR/MDD ratio of any Keller strategy
-- TIPS canary explicitly detects inflation and rising-yield regimes — addresses the 2022 failure mode
-- Simpler momentum formula (unweighted 13612U) vs the weighted VAA formula — easier to implement and verify
-- Low average cash fraction compared to BAA (~half of BAA's cash exposure)
+- **Superior Risk-Adjusted Returns** — Targets a Sharpe > 1.25 by smoothing volatility via a 12-asset/6-selection structure.
+- **Robust Crash Protection** — The dual-canary system (TIP + BND) avoids a single point of failure and cross-verifies inflation risk with aggregate rate risk.
+- **Clean Universe Boundaries** — Eliminates the IEF overlap; offensive bonds (TLT/LQD/HYG) are strictly separated from defensive safe havens (BIL/BND).
+- **Lower Single-Asset Drag** — Holding 6 assets at ~16.6% rather than 4 at 25% reduces the portfolio-level impact of a single momentum misfire.
 
 ## Weaknesses
-- TIP canary is a single point of failure — if TIPS behave unexpectedly, the whole portfolio is misled
-- Offensive universe has only 8 assets → moderate diversification ceiling
-- Backtest period not as long as earlier Keller strategies; overfitting risk from iterative strategy refinement
-- IEF appears in both the offensive AND defensive universe — creates a subtle dependency between the two
+- Increased data dependency due to 12 offensive assets + 2 canaries + 2 defensive assets (requires clean data for 15 distinct tickers).
+- Expanding to 6 offensive selections may slightly increase transaction costs compared to the 4-asset version, making the 2.0 turnover limit a tight boundary.

@@ -454,7 +454,7 @@ def run_optimization(
     start_date: str = settings.default_start_date,
     end_date: str = settings.default_end_date,
     holdout_peek_limit: int = 20,
-    early_stop_patience: int = 10,
+    early_stop_patience: int = settings.early_stop_patience,
     resume: str | None = None,
 ) -> OrchestratorResult:
     """Run the LLM-driven strategy optimization loop.
@@ -462,6 +462,9 @@ def run_optimization(
     Generates 3 parallel LLM candidate edits per iteration, validates via
     preflight checks, diversity gates (config similarity + returns correlation),
     two-phase gate system (select + confirm), and commits winners to git.
+
+    Early-stops when ``consecutive_no_accept >= early_stop_patience > 0``.
+    Set ``AUTOBACKTEST_EARLY_STOP_PATIENCE=0`` to disable early stopping.
 
     Args:
         program_path: Path to the markdown program objective file.
@@ -477,12 +480,43 @@ def run_optimization(
         end_date: Ending date boundary for evaluation.
         holdout_peek_limit: Maximum holdout peeks before early termination.
         early_stop_patience: Consecutive rejections before early stopping.
+            Configurable via ``AUTOBACKTEST_EARLY_STOP_PATIENCE`` env var.
+            Set to 0 to disable.
         resume: Run ID to resume a previously interrupted optimization.
 
     Returns:
         OrchestratorResult: Summary of the final optimization run outcomes.
     """
 ```
+
+---
+
+### `OrchestratorResult`
+Dataclass returned by ``run_optimization`` summarizing the full run outcome.
+```python
+@dataclass
+class OrchestratorResult:
+    run_id: str
+    branch: str
+    n_committed: int
+    final_report: EvaluationReport
+    total_prompt_tokens: int = 0
+    total_completion_tokens: int = 0
+    total_cost: float = 0.0
+    baseline_report: EvaluationReport | None = None
+    early_stopped: bool = False
+    early_stop_iteration: int | None = None
+```
+- `run_id`: Unique identifier for the run (``{strategy}-{YYYYMMDD}-{HHMMSS}``).
+- `branch`: Git branch name created for this run.
+- `n_committed`: Number of candidate improvements committed to git.
+- `final_report`: Evaluation report of the final (incumbent) strategy.
+- `total_prompt_tokens`: Aggregate LLM prompt tokens consumed.
+- `total_completion_tokens`: Aggregate LLM completion tokens consumed.
+- `total_cost`: Total cost of all LLM calls in USD.
+- `baseline_report`: Evaluation report of the pre-optimization baseline.
+- `early_stopped`: ``True`` when the loop exited early due to ``early_stop_patience`` consecutive rejections or the holdout-peek budget being exhausted.
+- `early_stop_iteration`: The 1-indexed iteration at which early-stop fired, or ``None`` if the run completed normally.
 
 ---
 
@@ -507,6 +541,7 @@ Manages system configuration settings loaded from environment variables with saf
 - `n_candidates`: Number of parallel LLM candidates per iteration (default: `3`).
 - `importance_min_attempts`: Minimum attempts required for parameter importance computation (default: `6`).
 - `importance_p_threshold`: P-value threshold for significance in parameter importance (default: `0.20`).
+- `early_stop_patience`: Consecutive iteration rejections allowed before early-stop terminates the run (default: `10`). Set `AUTOBACKTEST_EARLY_STOP_PATIENCE=0` to disable.
 - `max_file_size_kb`: Maximum allowed candidate code file length (default: `100`).
 - `max_cyclomatic_complexity`: Maximum cyclomatic complexity allowed for functions (default: `15`).
 - `max_function_lines`: Maximum physical lines allowed for functions (default: `100`).

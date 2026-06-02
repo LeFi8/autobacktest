@@ -85,7 +85,7 @@ def run(
         help="Maximum holdout peeks before early termination.",
     ),
     early_stop_patience: int = typer.Option(
-        10,
+        settings.early_stop_patience,
         "--early-stop-patience",
         help="Number of consecutive rejections allowed before early stopping.",
     ),
@@ -182,6 +182,19 @@ def run(
             config_yaml=config_yaml,
             failure_summary=failure_summary,
             strategy_code=strategy_code,
+        )
+
+    # Early-stop warning
+    if result.early_stopped:
+        console = Console()
+        console.print(
+            Panel(
+                f"[bold red]⚠ Run stopped early at iteration "
+                f"{result.early_stop_iteration}/{iterations}[/]\n"
+                f"No candidate passed all gates for "
+                f"{early_stop_patience} consecutive iterations.",
+                border_style="red",
+            )
         )
 
     # Render Rich summary dashboard

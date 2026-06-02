@@ -64,7 +64,6 @@ DIVERSITY_RETURNS_THRESHOLD = 0.90
 STUCK_THRESHOLD = 5
 STUCK_ESCALATION_FACTOR = 0.8
 MAX_DIVERSITY_RETRIES = 2
-EARLY_STOP_PATIENCE = 10  # counts all non-acceptance outcomes (validation, diversity, gate)
 EXPLOIT_PATIENCE = 3  # consecutive non-improvements in EXPLOIT before returning to EXPLORE
 
 
@@ -101,6 +100,24 @@ class _ThreadSafeDict:
 
 @dataclass
 class OrchestratorResult:
+    """Summary of an optimization run returned by ``run_optimization``.
+
+    Attributes:
+        run_id: Unique run identifier ``{strategy}-{YYYYMMDD}-{HHMMSS}``.
+        branch: Git branch created for this run.
+        n_committed: Number of successful candidate commits.
+        final_report: Evaluation report of the final incumbent strategy.
+        total_prompt_tokens: Aggregate prompt tokens consumed across all LLM calls.
+        total_completion_tokens: Aggregate completion tokens consumed.
+        total_cost: Total cost of all LLM calls in USD.
+        baseline_report: Evaluation report of the pre-optimization baseline.
+        early_stopped: True when the loop exited early due to consecutive
+            rejections reaching ``early_stop_patience`` or the holdout-peek
+            budget being exhausted.
+        early_stop_iteration: The 1-indexed iteration at which early-stop
+            fired, or None if the run completed all iterations.
+    """
+
     run_id: str
     branch: str
     n_committed: int
@@ -109,6 +126,8 @@ class OrchestratorResult:
     total_completion_tokens: int = 0
     total_cost: float = 0.0
     baseline_report: EvaluationReport | None = None
+    early_stopped: bool = False
+    early_stop_iteration: int | None = None
 
 
 def run_optimization(
@@ -125,7 +144,7 @@ def run_optimization(
     start_date: str = settings.default_start_date,
     end_date: str = settings.default_end_date,
     holdout_peek_limit: int = 20,
-    early_stop_patience: int = 10,
+    early_stop_patience: int = settings.early_stop_patience,
     resume: str | None = None,
 ) -> OrchestratorResult:
     """Run the LLM-driven strategy optimization loop.
@@ -148,9 +167,20 @@ def run_optimization(
             Defaults to "2015-01-01".
         end_date: Ending date boundary for evaluation.
             Defaults to "2026-01-01".
+        holdout_peek_limit: Maximum holdout peeks before early termination.
+            Defaults to 20.
+        early_stop_patience: Consecutive rejections before early stopping.
+            Configurable via ``AUTOBACKTEST_EARLY_STOP_PATIENCE`` env var.
+            Set to 0 to disable. Defaults to ``settings.early_stop_patience``.
+        resume: Run ID to resume a previously interrupted optimization.
+            When provided the loop recovers the incumbent state from the
+            ledger and continues from the next unprocessed iteration.
 
     Returns:
         OrchestratorResult: Summary of the final optimization run outcomes.
+        ``early_stopped`` is True when the loop exited early due to
+        ``early_stop_patience`` consecutive rejections or the holdout-peek
+        budget being exhausted.
 
     Raises:
         FileNotFoundError: If the target strategy or configuration files are missing.
@@ -369,6 +399,7 @@ def run_optimization(
         consecutive_no_accept: int = 0
         rolling_history: list[bool] = []
         _early_stop = False
+        _early_stop_iteration: int = 0
         mode: str = "explore"
         exploit_stall: int = 0
         with Progress(
@@ -595,6 +626,7 @@ def run_optimization(
                                     "Aborting optimization loop immediately."
                                 )
                                 _early_stop = True
+                                _early_stop_iteration = k
                                 ev["valid"] = False
                                 ev["validation_stage"] = "holdout_peek_limit"
                                 ev["_peek_fail"] = True
@@ -890,12 +922,13 @@ def run_optimization(
                             f"[cyan]Optimizing {strategy_name}... (Incumbent Sharpe: {incumbent.observed_sharpe:.3f})"
                         ),
                     )
-                    if consecutive_no_accept >= early_stop_patience:
+                    if early_stop_patience > 0 and consecutive_no_accept >= early_stop_patience:
                         logger.info(
                             f"Early stop: no acceptance in {consecutive_no_accept} consecutive iterations. "
                             f"Stopping at iteration {k}/{iterations}."
                         )
                         _early_stop = True
+                        _early_stop_iteration = k
                 if _early_stop:
                     break
 
@@ -931,6 +964,8 @@ def run_optimization(
         total_completion_tokens=total_completion_tokens,
         total_cost=total_cost,
         baseline_report=baseline_at_start,
+        early_stopped=_early_stop_iteration > 0,
+        early_stop_iteration=_early_stop_iteration or None,
     )
 
 
