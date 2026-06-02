@@ -1,15 +1,9 @@
 universe:
   - SPY
-  - IWM
   - QQQ
   - VGK
-  - EWJ
   - VWO
-  - VNQ
   - GLD
-  - DBC
-  - HYG
-  - LQD
   - TLT
   - BIL
   - BND
@@ -18,23 +12,22 @@ benchmark: SPY
 max_drawdown_limit: 0.20
 turnover_limit: 2.0
 params:
-  offensive_assets:
-    - SPY
-    - IWM
-    - QQQ
-    - VGK
-    - EWJ
-    - VWO
-    - VNQ
-    - GLD
-    - DBC
-    - HYG
-    - LQD
-    - TLT
-  defensive_assets:
-    - BIL
-    - BND
-  canary_asset: TIP
+  mom_lookback: 252
   canary_assets:
     - TIP
     - BND
+  vol_period: 21
+  vol_threshold: 0.25
+  trend_asset: SPY
+  trend_period: 200
+  defensive_assets:
+    - BIL
+    - BND
+  offensive_assets:
+    - SPY
+    - QQQ
+    - VGK
+    - VWO
+    - GLD
+    - TLT
+  top_n: 4

@@ -1,117 +1,114 @@
-"""Hybrid Asset Allocation (HAA) Optimized (G12/T6) per Keller 2023.
-
-Implements the 13612U momentum scoring, dual-canary (TIP/BND) check,
-top-N offensive selection (half of offensive universe) with defensive
-substitution, and config-driven defensive allocation (BIL/BND).
-"""
-
 from typing import Any
-
 import numpy as np
 import pandas as pd
 
+def _monthly_rebalance_dates(prices: pd.DataFrame) -> pd.DatetimeIndex:
+    """Get last trading day of each month."""
+    return prices.groupby(prices.index.to_period('M')).tail(1).index
 
-def _momentum_13612u(prices: pd.Series, current_date: pd.Timestamp) -> float:
-    """Compute the unweighted 13612U momentum score.
+def _momentum(prices: pd.DataFrame, period: int) -> pd.DataFrame:
+    """Compute simple returns over specified period."""
+    return prices.pct_change(period)
 
-    Returns the simple average of 1-month, 3-month, 6-month, and 12-month
-    simple returns ending at current_date:
-        Momentum = (r_1m + r_3m + r_6m + r_12m) / 4
+def _volatility(prices: pd.Series, period: int) -> pd.Series:
+    """Annualized volatility of daily returns."""
+    return prices.pct_change().rolling(period).std() * np.sqrt(252)
 
-    If insufficient price history for any window, that window is omitted
-    from the average.
-    """
-    lookbacks = [21, 63, 126, 252]
-    returns = []
-    for lb in lookbacks:
-        try:
-            idx = prices.index.get_loc(current_date)
-            if idx >= lb:
-                r = (prices.iloc[idx] / prices.iloc[idx - lb]) - 1.0
-                returns.append(r)
-        except (KeyError, IndexError):
-            continue
-    if not returns:
-        return -1.0
-    return float(np.mean(returns))
+def _trend_filter(prices: pd.Series, period: int) -> pd.Series:
+    """Trend: asset price above SMA."""
+    sma = prices.rolling(period).mean()
+    return prices > sma
 
+def _canary_triggered(mom: pd.DataFrame, vol: pd.Series, trend: pd.Series,
+                      canary_assets: list, vol_threshold: float,
+                      trend_asset: str, date: pd.Timestamp) -> bool:
+    """Check if any canary condition is violated."""
+    # Momentum canary: any canary <= 0
+    for c in canary_assets:
+        if c in mom.columns:
+            m = mom.loc[date, c]
+            if np.isnan(m) or m <= 0:
+                return True
+    # Volatility canary
+    if trend_asset in mom.columns and not vol.empty and date in vol.index:
+        v = vol.loc[date]
+        if not np.isnan(v) and v > vol_threshold:
+            return True
+    # Trend canary
+    if trend_asset in mom.columns and not trend.empty and date in trend.index:
+        t = trend.loc[date]
+        if not t:  # asset below SMA
+            return True
+    return False
+
+def _best_defensive(mom: pd.DataFrame, defensive_assets: list, date: pd.Timestamp) -> str:
+    """Return defensive asset with highest momentum."""
+    best = None
+    best_mom = -np.inf
+    for d in defensive_assets:
+        if d in mom.columns:
+            m = mom.loc[date, d]
+            if not np.isnan(m) and m > best_mom:
+                best_mom = m
+                best = d
+    return best if best is not None else defensive_assets[0]
+
+def _top_offensive(mom: pd.DataFrame, offensive_assets: list, top_n: int, date: pd.Timestamp) -> list:
+    """Return top N offensive assets by momentum, with positive momentum."""
+    scores = []
+    for a in offensive_assets:
+        if a in mom.columns:
+            m = mom.loc[date, a]
+            if not np.isnan(m):
+                scores.append((a, m))
+    scores.sort(key=lambda x: x[1], reverse=True)
+    selected = scores[:top_n]
+    return [a for a, m in selected if m > 0]
 
 def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFrame:
-    """Generate HAA Optimized portfolio weights.
-
-    Args:
-        prices: Daily prices DataFrame (DatetimeIndex, columns=tickers).
-        config: Configuration dict with keys:
-            - params.offensive_assets: list of offensive tickers
-            - params.defensive_assets: list of defensive tickers (BIL, BND)
-            - params.canary_asset: legacy single canary ticker (string)
-            - params.canary_assets: multi-canary tickers (list)
-
-    Returns:
-        pd.DataFrame: Weights indexed by rebalance dates.
-    """
-    params = config.get("params", {})
-    offensive_assets = params.get(
-        "offensive_assets",
-        [
-            "SPY",
-            "IWM",
-            "QQQ",
-            "VGK",
-            "EWJ",
-            "VWO",
-            "VNQ",
-            "GLD",
-            "DBC",
-            "HYG",
-            "LQD",
-            "TLT",
-        ],
-    )
-    defensive_assets = params.get("defensive_assets", ["BIL", "BND"])
-    canary_raw = params.get("canary_assets") or params.get("canary_asset", "TIP")
-    canary_assets = [canary_raw] if isinstance(canary_raw, str) else list(canary_raw)
+    """Generate HAA weights with dual canary, trend filter, and top-N selection."""
+    params = config.get('params', {})
+    mom_lookback = params.get('mom_lookback', 252)
+    canary_assets = params.get('canary_assets', ['TIP', 'BND'])
+    vol_period = params.get('vol_period', 21)
+    vol_threshold = params.get('vol_threshold', 0.25)
+    trend_asset = params.get('trend_asset', 'SPY')
+    trend_period = params.get('trend_period', 200)
+    defensive_assets = params.get('defensive_assets', ['BIL', 'BND'])
+    offensive_assets = params.get('offensive_assets', ['SPY', 'QQQ', 'VGK', 'VWO', 'GLD', 'TLT'])
+    top_n = params.get('top_n', 4)
 
     all_assets = list(prices.columns)
-
     if prices.empty:
         return pd.DataFrame(0.0, index=pd.DatetimeIndex([]), columns=all_assets)
 
-    # Rebalance on last trading day of each month
-    monthly_dates = prices.groupby(prices.index.to_period("M")).tail(1).index
+    available_offensive = [a for a in offensive_assets if a in all_assets]
+    available_defensive = [a for a in defensive_assets if a in all_assets]
+    available_canary = [a for a in canary_assets if a in all_assets]
+    if not available_offensive or not available_defensive:
+        return pd.DataFrame(0.0, index=pd.DatetimeIndex([]), columns=all_assets)
 
-    weights = pd.DataFrame(0.0, index=monthly_dates, columns=all_assets)
+    mom = _momentum(prices.loc[:, available_offensive + available_defensive + available_canary + [trend_asset] if trend_asset not in (available_offensive + available_defensive) else []], mom_lookback)
+    vol = _volatility(prices[trend_asset], vol_period) if trend_asset in all_assets else pd.Series()
+    trend = _trend_filter(prices[trend_asset], trend_period) if trend_asset in all_assets else pd.Series()
 
-    available_offensive = [o for o in offensive_assets if o in all_assets]
-    top_n = max(1, len(available_offensive) // 2)
+    rebalance_dates = _monthly_rebalance_dates(prices)
+    weights = pd.DataFrame(0.0, index=rebalance_dates, columns=all_assets)
     slot_weight = 1.0 / top_n
 
-    for date in monthly_dates:
-        # Compute momentum for all assets
-        mom_scores = {}
-        for asset in all_assets:
-            if asset in prices.columns:
-                mom_scores[asset] = _momentum_13612u(prices[asset], date)
-
-        # Best defensive asset (shared across defensive and substitution paths)
-        def_mom_vals = [(d, mom_scores.get(d, -1.0)) for d in defensive_assets if d in all_assets]
-        best_def = max(def_mom_vals, key=lambda x: x[1])[0] if def_mom_vals else None
-
-        # Dual-canary check: OR gate — any canary negative triggers full defensive
-        if any(mom_scores.get(c, -1.0) <= 0 for c in canary_assets):
-            if best_def is not None:
-                weights.loc[date, best_def] = 1.0
+    for date in rebalance_dates:
+        if date not in mom.index:
             continue
-
-        # Clear skies: rank offensive assets, pick top N
-        off_mom_vals = [(o, mom_scores.get(o, -1.0)) for o in available_offensive]
-        off_mom_vals.sort(key=lambda x: x[1], reverse=True)
-        top_selected = off_mom_vals[:top_n]
-
-        for asset, mom in top_selected:
-            if mom > 0:
+        if _canary_triggered(mom, vol, trend, available_canary, vol_threshold, trend_asset, date):
+            best_def = _best_defensive(mom, available_defensive, date)
+            weights.loc[date, best_def] = 1.0
+        else:
+            selected = _top_offensive(mom, available_offensive, top_n, date)
+            for asset in selected:
                 weights.loc[date, asset] = slot_weight
-            elif best_def is not None:
-                weights.loc[date, best_def] = weights.loc[date, best_def] + slot_weight
+            remaining_slots = top_n - len(selected)
+            if remaining_slots > 0:
+                best_def = _best_defensive(mom, available_defensive, date)
+                weights.loc[date, best_def] = remaining_slots * slot_weight
 
     return weights
