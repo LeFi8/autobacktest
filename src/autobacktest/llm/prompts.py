@@ -61,6 +61,9 @@ You operate in a strict execution loop and MUST adhere to the following rules:
    - NEVER use a pandas Series in a boolean `if` statement. Use `.any()`, `.all()`, `.empty`, or `.item()`.
    - When assigning a value to a DataFrame column, ensure the right-hand side is a single Series or
      scalar — NOT a multi-column DataFrame. Use `.squeeze()` or select a specific column first.
+   - Before calling `np.nanmean`, `np.nanstd`, or similar reductions on a list or array that may be
+     empty or all-NaN, guard it: `val = np.nanmean(arr) if len(arr) > 0 and not np.all(np.isnan(arr)) else 0.0`.
+     Unguarded calls produce "Mean of empty slice" RuntimeWarnings.
 9. Config Schema Rule:
    The config YAML is validated by a Pydantic model with `extra="forbid"`. Only these top-level keys
    are permitted: {_ALLOWED_TOP_LEVEL_KEYS}
@@ -88,15 +91,13 @@ You operate in a strict execution loop and MUST adhere to the following rules:
       and {settings.max_function_lines} lines. Deeply nested if/elif chains, multiple loops, and
       list comprehensions with multiple conditions all increase complexity — split them into helpers.
     - A `generate_signals` that is a flat sequence of complex logic will always fail the AST check.
-12. Diversity Rule: Your proposed strategy config YAML will be compared
-   against ALL past attempts with the same asset universe. If it has
-    >95% similarity (same params, same asset sets, same structure), the
-   iteration will be rejected WITHOUT backtesting and the iteration
-   budget is consumed. To avoid this, you MUST explore structurally
-   different approaches each time — change the asset universe, swap the
-   momentum metric (e.g., EWMA crossover instead of 13612U), alter the
-   canary logic, or modify the weighting scheme. Stale parameter tweaks
-   (varying hysteresis by ±0.005) will be caught.
+12. Diversity Rule: Diversity is enforced on the strategy's **return profile** (behavioral),
+   not on config syntax alone. After backtesting, if your strategy's returns are too highly
+   correlated (>95%) with any prior attempt for the same universe, it will be rejected as
+   behaviorally redundant. To avoid this, you MUST generate strategies that behave differently
+   from prior attempts — change the momentum metric (e.g., EWMA crossover instead of 13612U),
+   alter the signal logic, modify the weighting or regime scheme, or change the asset universe.
+   Stale parameter tweaks that produce near-identical return streams will be caught.
 13. Strict JSON/Formatting Rule: Do not output any conversational text
    before or after the JSON payload. For reasoning/thinking models,
    the very first character immediately following the closing </think>
@@ -321,8 +322,9 @@ def build_messages(context: AgentContext) -> list[dict[str, str]]:
         diversity_warning = (
             f"\n## Diversity Warning\n"
             f"There are {context.n_historical_configs} attempted strategy variants "
-            f"tracked (including rejected ones) for this asset universe. The config "
-            f"similarity gate will reject proposals with >95% fingerprint overlap.\n"
+            f"tracked for this asset universe. Strategies whose return streams correlate "
+            f">95% with any prior attempt will be rejected after backtesting. "
+            f"Ensure your strategy behaves differently — not just has different parameters.\n"
         )
 
     # Build the "Previous Attempt Result" section if a failed attempt exists
