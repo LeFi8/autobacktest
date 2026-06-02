@@ -16,7 +16,9 @@ from autobacktest.evaluator.report import EvaluationReport, WindowReport
 from autobacktest.gate import GateResult
 from autobacktest.llm.base import AgentContext, AgentEdit
 from autobacktest.llm.mock_provider import MockProvider
-from autobacktest.orchestrator import EARLY_STOP_PATIENCE, run_optimization
+from autobacktest.orchestrator import run_optimization
+
+EARLY_STOP_PATIENCE = settings.early_stop_patience
 
 # ---------------------------------------------------------------------------
 # Shared helpers

@@ -192,7 +192,7 @@ def run(
                 f"[bold red]⚠ Run stopped early at iteration "
                 f"{result.early_stop_iteration}/{iterations}[/]\n"
                 f"No candidate passed all gates for "
-                f"{settings.early_stop_patience} consecutive iterations.",
+                f"{early_stop_patience} consecutive iterations.",
                 border_style="red",
             )
         )

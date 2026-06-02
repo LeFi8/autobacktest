@@ -82,7 +82,8 @@ def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFra
 
     weights = pd.DataFrame(0.0, index=monthly_dates, columns=all_assets)
 
-    top_n = max(1, len(offensive_assets) // 2)
+    available_offensive = [o for o in offensive_assets if o in all_assets]
+    top_n = max(1, len(available_offensive) // 2)
     slot_weight = 1.0 / top_n
 
     for date in monthly_dates:
@@ -103,7 +104,7 @@ def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFra
             continue
 
         # Clear skies: rank offensive assets, pick top N
-        off_mom_vals = [(o, mom_scores.get(o, -1.0)) for o in offensive_assets if o in all_assets]
+        off_mom_vals = [(o, mom_scores.get(o, -1.0)) for o in available_offensive]
         off_mom_vals.sort(key=lambda x: x[1], reverse=True)
         top_selected = off_mom_vals[:top_n]
 
