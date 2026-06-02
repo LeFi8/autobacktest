@@ -8,6 +8,7 @@ universe:
   - BIL
   - BND
   - TIP
+  - IEF
 benchmark: SPY
 max_drawdown_limit: 0.20
 turnover_limit: 2.0
@@ -18,10 +19,10 @@ min_improvement: 0.0
 select_min_return_ratio: 0.5
 params:
   mom_lags: [21, 63, 126, 252]
-  vol_window: 63
-  canary_z_window: 252
+  vol_window: 126
+  canary_z_window: 126
   top_n: 6
-  smooth: 0.3
+  smooth: 0.25
   defensive_assets:
     - BIL
     - BND
@@ -32,6 +33,7 @@ params:
     - VWO
     - GLD
     - TLT
+    - IEF
   canary_assets:
     - TIP
     - BND
