@@ -82,9 +82,7 @@ class _PandasDeprecationTransformer(ast.NodeTransformer):
                 old_val = first_arg.value
                 node.args[0] = ast.Constant(value=new_val)
                 ast.fix_missing_locations(node.args[0])
-                self.fixes_applied.append(
-                    f"Remapped freq alias '{old_val}' to '{new_val}' for {context} context"
-                )
+                self.fixes_applied.append(f"Remapped freq alias '{old_val}' to '{new_val}' for {context} context")
 
     def _remap_freq_kwarg(self, node: ast.Call, alias_map: dict[str, str], context: str) -> None:
         """Remap a freq= keyword if it is a deprecated freq string for *context*."""
@@ -95,9 +93,7 @@ class _PandasDeprecationTransformer(ast.NodeTransformer):
                     old_val = kw.value.value
                     kw.value = ast.Constant(value=new_val)
                     ast.fix_missing_locations(kw.value)
-                    self.fixes_applied.append(
-                        f"Remapped freq alias '{old_val}' to '{new_val}' for {context} context"
-                    )
+                    self.fixes_applied.append(f"Remapped freq alias '{old_val}' to '{new_val}' for {context} context")
 
     def _remap_freq(self, node: ast.Call, name: str) -> None:
         """Apply context-sensitive freq alias remapping for known freq functions."""
