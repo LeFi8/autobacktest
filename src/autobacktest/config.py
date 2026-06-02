@@ -77,6 +77,9 @@ class Settings(BaseModel):
         )
     )
     sandbox_timeout: int = Field(default_factory=lambda: int(os.getenv("AUTOBACKTEST_SANDBOX_TIMEOUT", "15")))
+    enable_codemod_repair: bool = Field(
+        default_factory=lambda: os.getenv("AUTOBACKTEST_ENABLE_CODEMOD_REPAIR", "true").lower() == "true"
+    )
 
     # --- SQLITE STORAGE CONFIGURATION ---
     db_timeout: float = Field(default_factory=lambda: float(os.getenv("AUTOBACKTEST_DB_TIMEOUT", "15.0")))
