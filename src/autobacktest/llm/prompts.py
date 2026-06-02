@@ -456,7 +456,9 @@ def build_messages(context: AgentContext) -> list[dict[str, str]]:
             "## Mode\n"
             "**EXPLOIT** — Locally refine the incumbent strategy. The diversity gate is suspended this round.\n"
             "Make small, targeted parameter tweaks or minor signal adjustments to the best strategy found so far.\n"
-            "Do NOT make large structural changes. Focus on squeezing out marginal improvements."
+            "Do NOT make large structural changes. Focus on squeezing out marginal improvements.\n"
+            "IMPORTANT: You MUST change at least one parameter value — returning the incumbent config unchanged\n"
+            "is rejected automatically. Every exploit candidate must differ from the current best strategy."
         )
     else:
         mode_section = (

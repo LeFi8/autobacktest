@@ -525,6 +525,17 @@ def run_optimization(
                                 lesson_store.ingest_markdown(edit.lessons_text, strategy_name)
                                 lessons_text = lesson_store.get_filtered_markdown(strategy_name)
 
+                            # Apply deterministic pandas codemod (repairs deprecated API calls)
+                            if settings.enable_codemod_repair:
+                                from autobacktest.strategy.codemod import repair_pandas_code
+                                repaired_code, applied_fixes = repair_pandas_code(edit.strategy_code)
+                                if applied_fixes:
+                                    import dataclasses as _dc
+                                    edit = _dc.replace(edit, strategy_code=repaired_code)
+                                    logger.info(
+                                        "codemod repaired candidate in iter %s: %s", k, applied_fixes
+                                    )
+
                             # Validate
                             ok, err_code, err_detail = _validate_candidate(
                                 strategy_name, edit, strategies_dir, configs_dir
@@ -561,6 +572,14 @@ def run_optimization(
                                 ev["validation_stage"] = "diversity_config"
                                 ev["detail"] = (
                                     f"Config similarity {max_sim:.3f} exceeded threshold {DIVERSITY_CONFIG_THRESHOLD}."
+                                )
+                        elif mode == "exploit":
+                            max_sim = max_config_similarity(e_config_yaml, [current_yaml])
+                            if max_sim >= 0.999:
+                                ev["valid"] = False
+                                ev["validation_stage"] = "exploit_no_change"
+                                ev["detail"] = (
+                                    "Exploit candidate is identical to the incumbent config; no change to evaluate."
                                 )
                         valid_candidates.append(ev)
 
