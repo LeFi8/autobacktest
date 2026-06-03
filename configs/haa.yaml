@@ -20,13 +20,13 @@ min_improvement: 0.0
 select_min_return_ratio: 0.5
 params:
   mom_lags: [21, 63, 126, 252]
-  vol_window: 126
+  vol_window: 150
   trend_window: 200
-  port_vol_window: 21
-  target_vol: 0.10
+  port_vol_window: 15
+  target_vol: 0.11
   top_n: 6
   min_mom_threshold: 0.0
-  smooth: 0.25
+  smooth: 0.20
   defensive_assets:
     - BIL
     - BND
