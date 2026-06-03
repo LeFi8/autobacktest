@@ -5,24 +5,20 @@ import pandas as pd
 
 
 def _rebalance_dates(prices: pd.DataFrame) -> pd.DatetimeIndex:
-    """Return business month end dates that exist in the price index.
-
-    Using a deterministic calendar avoids lookahead that occurs when future data
-    within a month shifts the last-observed-day for that month."""
+    """Return business month end dates that exist in the price index."""
     start = prices.index.min()
     end = prices.index.max()
     possible = pd.date_range(start=start, end=end, freq="BME")
     return possible.intersection(prices.index)
 
 
-def _composite_momentum(prices: pd.DataFrame, lags: list[int]) -> pd.DataFrame:
-    """Equal-weight average of simple returns over the given lag periods."""
-    moments = [prices.pct_change(lag) for lag in lags]
-    stacked = np.stack([m.values for m in moments], axis=2)
-    valid = ~np.isnan(stacked)
-    count = valid.sum(axis=2)
-    avg = np.where(count > 0, np.where(valid, stacked, 0.0).sum(axis=2) / np.maximum(count, 1.0), 0.0)
-    return pd.DataFrame(avg, index=moments[0].index, columns=moments[0].columns)
+def _min_momentum(prices: pd.DataFrame, lags: list[int]) -> pd.DataFrame:
+    """Compute the minimum return across the given lag periods."""
+    returns = [prices.pct_change(lag) for lag in lags]
+    stacked = np.stack([r.values for r in returns], axis=2)
+    # Use nanmin ignoring NaN slices; if all NaN, result is NaN
+    min_mom = np.nanmin(stacked, axis=2)
+    return pd.DataFrame(min_mom, index=returns[0].index, columns=returns[0].columns)
 
 
 def _trailing_volatility(prices: pd.DataFrame, window: int) -> pd.DataFrame:
@@ -31,84 +27,141 @@ def _trailing_volatility(prices: pd.DataFrame, window: int) -> pd.DataFrame:
     return returns.rolling(window).std() * np.sqrt(252)
 
 
-def _risk_adjusted_momentum(mom: pd.DataFrame, vol: pd.DataFrame) -> pd.DataFrame:
-    """Divide composite momentum by annualized volatility (plus tiny epsilon)."""
+def _sma(prices: pd.DataFrame, window: int) -> pd.DataFrame:
+    """Simple moving average of prices."""
+    return prices.rolling(window).mean()
+
+
+def _risk_adjusted_min_mom(min_mom: pd.DataFrame, vol: pd.DataFrame) -> pd.DataFrame:
+    """Divide min momentum by annualized volatility."""
     epsilon = 1e-6
-    return mom.div(vol.add(epsilon))
+    return min_mom.div(vol.add(epsilon))
 
 
-def _canary_scale(rmom: pd.DataFrame, canary_assets: list[str], z_window: int) -> pd.Series:
-    """Continuous exposure scale in [0,1] using rolling z-score of canary assets' mean rmom."""
-    if not canary_assets or not all(a in rmom.columns for a in canary_assets):
-        return pd.Series(1.0, index=rmom.index)
-    mean_rmom = rmom[canary_assets].mean(axis=1)
-    rolling_mean = mean_rmom.rolling(z_window, min_periods=1).mean()
-    rolling_std = mean_rmom.rolling(z_window, min_periods=1).std()
-    rolling_std = rolling_std.replace(0.0, 1e-6).fillna(1e-6)
-    z = (mean_rmom - rolling_mean) / rolling_std
-    scale = (np.tanh(z) + 1.0) / 2.0
-    return scale
+def _canary_triggered(min_mom: pd.DataFrame, canary_assets: list[str], date: pd.Timestamp) -> bool:
+    """Return True if any canary asset's min momentum <= 0."""
+    for asset in canary_assets:
+        if asset in min_mom.columns and not pd.isna(min_mom.at[date, asset]):
+            if min_mom.at[date, asset] <= 0:
+                return True
+    return False
 
 
-def _select_offensive(rmom: pd.DataFrame, offensive_assets: list[str], top_n: int, date: pd.Timestamp) -> list[str]:
-    """Return top_n offensive assets with positive risk-adjusted momentum on `date`."""
-    available = [a for a in offensive_assets if a in rmom.columns and not pd.isna(rmom.at[date, a])]
-    scores = [(a, rmom.at[date, a]) for a in available if rmom.at[date, a] > 0]
-    scores.sort(key=lambda x: x[1], reverse=True)
-    return [a for a, _ in scores[:top_n]]
+def _eligible_offensive(
+    prices: pd.DataFrame,
+    date: pd.Timestamp,
+    rmom: pd.DataFrame,
+    sma: pd.DataFrame,
+    offensive_assets: list[str],
+    threshold: float,
+) -> list[str]:
+    """Return offensive assets with positive risk-adjusted momentum and above SMA."""
+    eligible = []
+    for a in offensive_assets:
+        if a not in rmom.columns or a not in sma.columns or a not in prices.columns:
+            continue
+        if pd.isna(rmom.at[date, a]) or pd.isna(sma.at[date, a]):
+            continue
+        if rmom.at[date, a] > threshold and prices.at[date, a] > sma.at[date, a]:
+            eligible.append(a)
+    # Sort by rmom descending
+    eligible.sort(key=lambda a: rmom.at[date, a], reverse=True)
+    return eligible
 
 
-def _best_defensive(rmom: pd.DataFrame, defensive_assets: list[str], date: pd.Timestamp) -> str | None:
-    """Return defensive asset with highest risk-adjusted momentum; None if none available."""
-    best, best_mom = None, -np.inf
+def _best_defensive(
+    min_mom: pd.DataFrame, defensive_assets: list[str], date: pd.Timestamp
+) -> str | None:
+    """Return defensive asset with highest min momentum (safety preference)."""
+    best = None
+    best_mom = -np.inf
     for d in defensive_assets:
-        if d in rmom.columns and not pd.isna(rmom.at[date, d]):
-            m = rmom.at[date, d]
+        if d in min_mom.columns and not pd.isna(min_mom.at[date, d]):
+            m = min_mom.at[date, d]
             if m > best_mom:
                 best_mom, best = m, d
     return best
 
 
+def _portfolio_volatility(
+    daily_returns: pd.DataFrame,
+    selected_assets: list[str],
+    date: pd.Timestamp,
+    window: int,
+    vol_df: pd.DataFrame,
+) -> float:
+    """Estimate annualized volatility of an equal-weighted portfolio of selected assets."""
+    if not selected_assets:
+        return np.inf
+    slice_ret = daily_returns.loc[:date, selected_assets]
+    valid_mask = ~slice_ret.isna().any(axis=1)
+    port_ret = slice_ret[valid_mask].mean(axis=1)
+    if len(port_ret) < window:
+        return vol_df.loc[date, selected_assets].mean()
+    rolling_std = port_ret.rolling(window).std()
+    port_vol = rolling_std.iloc[-1] * np.sqrt(252)
+    if pd.isna(port_vol) or port_vol == 0:
+        port_vol = vol_df.loc[date, selected_assets].mean()
+    return port_vol
+
+
 def _target_weights(
     date: pd.Timestamp,
+    prices: pd.DataFrame,
+    daily_returns: pd.DataFrame,
+    min_mom: pd.DataFrame,
     rmom: pd.DataFrame,
-    canary: pd.Series,
-    offensive_assets: list[str],
-    defensive_assets: list[str],
-    top_n: int,
+    sma: pd.DataFrame,
+    vol_df: pd.DataFrame,
+    config: dict[str, Any],
+    prev_weights: pd.Series | None,
 ) -> pd.Series:
     """Compute target weights for one rebalance date."""
-    all_cols = rmom.columns
+    params = config.get("params", {})
+    defensive_assets = params.get("defensive_assets", ["BIL", "BND"])
+    offensive_assets = params.get("offensive_assets", [])
+    canary_assets = params.get("canary_assets", [])
+    top_n = params.get("top_n", 6)
+    target_vol = params.get("target_vol", 0.10)
+    port_vol_window = params.get("port_vol_window", 21)
+    smooth = params.get("smooth", 0.25)
+    min_mom_threshold = params.get("min_mom_threshold", 0.0)
+
+    all_cols = min_mom.columns
     target = pd.Series(0.0, index=all_cols)
-    slot_weight = 1.0 / top_n
 
-    scale = canary.get(date, 1.0)
-    if pd.isna(scale):
-        scale = 1.0
-    scale = np.clip(scale, 0.0, 1.0)
-
-    selected = _select_offensive(rmom, offensive_assets, top_n, date)
-    for asset in selected:
-        if asset in all_cols:
-            target[asset] = slot_weight * scale
-
-    defensive_exposure = 1.0 - target.sum()
-    if defensive_exposure > 0.0:
-        best_def = _best_defensive(rmom, defensive_assets, date)
-        if best_def is not None and best_def in all_cols:
-            target[best_def] += defensive_exposure
+    # Canary check
+    if _canary_triggered(min_mom, canary_assets, date):
+        best_def = _best_defensive(min_mom, defensive_assets, date)
+        if best_def and best_def in all_cols:
+            target[best_def] = 1.0
+    else:
+        eligible = _eligible_offensive(prices, date, rmom, sma, offensive_assets, min_mom_threshold)
+        if not eligible:
+            best_def = _best_defensive(min_mom, defensive_assets, date)
+            if best_def and best_def in all_cols:
+                target[best_def] = 1.0
         else:
-            # Distribute remaining equally among selected offensive if no defensive
-            if selected:
-                per_slot = defensive_exposure / len(selected)
-                for a in selected:
-                    target[a] += per_slot
-            else:
-                # Edge case: assign to first available offensive
-                for a in offensive_assets:
-                    if a in all_cols and not pd.isna(rmom.at[date, a]):
-                        target[a] = defensive_exposure
-                        break
+            selected = eligible[:top_n]
+            port_vol = _portfolio_volatility(daily_returns, selected, date, port_vol_window, vol_df)
+            scale = min(1.0, target_vol / port_vol) if port_vol > 0 else 1.0
+            slot_weight = scale / max(1, len(selected))
+            for asset in selected:
+                target[asset] = slot_weight
+            defensive_exposure = 1.0 - target.sum()
+            if defensive_exposure > 0:
+                best_def = _best_defensive(min_mom, defensive_assets, date)
+                if best_def and best_def in all_cols:
+                    target[best_def] += defensive_exposure
+                else:
+                    # Redistribute among selected assets
+                    if selected:
+                        per_slot = defensive_exposure / len(selected)
+                        for a in selected:
+                            target[a] += per_slot
+
+    if prev_weights is not None:
+        target = smooth * target + (1.0 - smooth) * prev_weights
 
     target = target.clip(lower=0.0)
     total = target.sum()
@@ -118,37 +171,37 @@ def _target_weights(
 
 
 def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFrame:
-    """Generate HAA variant with risk-adjusted momentum, continuous canary, and smoothing.
+    """Generate signals for a robust momentum strategy with binary canary, trend filter, and volatility targeting.
 
     Parameters (all under `params`):
-        mom_lags: list[int]          momentum lookback periods (default [21,63,126,252])
-        vol_window: int              volatility rolling window (default 63)
-        canary_z_window: int         rolling z-score window for canary scale (default 252)
-        top_n: int                   number of offensive slots (default 6)
-        smooth: float                blending factor for new weights (0-1, default 0.3)
-        defensive_assets: list[str]
-        offensive_assets: list[str]
-        canary_assets: list[str]
+        mom_lags: list[int]              momentum lookback periods for min momentum (default [21,63,126,252])
+        vol_window: int                  volatility rolling window for asset vol (default 126)
+        trend_window: int                SMA window for trend filter (default 200)
+        port_vol_window: int             window for portfolio volatility (default 21)
+        target_vol: float                annualized target volatility (default 0.10)
+        top_n: int                       number of offensive slots (default 6)
+        min_mom_threshold: float         minimum risk-adjusted min momentum to be eligible (default 0.0)
+        smooth: float                    blending factor for weight smoothing (default 0.25)
+        defensive_assets: list[str]      safe haven assets
+        offensive_assets: list[str]      risky assets to select from
+        canary_assets: list[str]         assets used for binary canary (e.g., ["TIP", "BND"])
     """
     params = config.get("params", {})
     mom_lags = params.get("mom_lags", [21, 63, 126, 252])
-    vol_window = params.get("vol_window", 63)
-    canary_z_window = params.get("canary_z_window", 252)
-    top_n = params.get("top_n", 6)
-    smooth = params.get("smooth", 0.3)
-    defensive_assets = params.get("defensive_assets", ["BIL", "BND"])
-    offensive_assets = params.get("offensive_assets", ["SPY", "QQQ", "VGK", "VWO", "GLD", "TLT"])
-    canary_assets = params.get("canary_assets", ["TIP", "BND", "GLD", "TLT"])
+    vol_window = params.get("vol_window", 126)
+    trend_window = params.get("trend_window", 200)
+    # other params are used inside _target_weights via config pass
 
     all_assets = list(prices.columns)
     if prices.empty:
         return pd.DataFrame(0.0, index=pd.DatetimeIndex([]), columns=all_assets)
 
     # Pre-compute all signals (strictly backward-looking)
-    comp_mom = _composite_momentum(prices, mom_lags)
+    mm = _min_momentum(prices, mom_lags)
     vol = _trailing_volatility(prices, vol_window)
-    rmom = _risk_adjusted_momentum(comp_mom, vol)
-    canary = _canary_scale(rmom, canary_assets, canary_z_window)
+    sma = _sma(prices, trend_window)
+    rmom = _risk_adjusted_min_mom(mm, vol)
+    daily_returns = prices.pct_change()
 
     # Business month end dates (no lookahead)
     rebalance_dates = _rebalance_dates(prices)
@@ -159,12 +212,17 @@ def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFra
     for date in rebalance_dates:
         if date not in rmom.index:
             continue
-        new_w = _target_weights(date, rmom, canary, offensive_assets, defensive_assets, top_n)
-        if prev_weights is not None:
-            new_w = smooth * new_w + (1.0 - smooth) * prev_weights
-        new_w = new_w.clip(lower=0.0)
-        if new_w.sum() > 0:
-            new_w = new_w / new_w.sum()
+        new_w = _target_weights(
+            date=date,
+            prices=prices,
+            daily_returns=daily_returns,
+            min_mom=mm,
+            rmom=rmom,
+            sma=sma,
+            vol_df=vol,
+            config=config,
+            prev_weights=prev_weights,
+        )
         weights.loc[date] = new_w
         prev_weights = new_w.copy()
 
