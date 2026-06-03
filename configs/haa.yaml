@@ -20,7 +20,7 @@ min_improvement: 0.0
 select_min_return_ratio: 0.5
 params:
   mom_lags: [21, 63, 126, 252]
-  vol_window: 150
+  vol_window: 252
   trend_window: 200
   port_vol_window: 15
   target_vol: 0.11
