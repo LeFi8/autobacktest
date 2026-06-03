@@ -110,19 +110,17 @@ def _target_weights(
     rmom: pd.DataFrame,
     sma: pd.DataFrame,
     vol_df: pd.DataFrame,
-    config: dict[str, Any],
+    defensive_assets: list[str],
+    offensive_assets: list[str],
+    canary_assets: list[str],
+    top_n: int,
+    target_vol: float,
+    port_vol_window: int,
+    smooth: float,
+    min_mom_threshold: float,
     prev_weights: pd.Series | None,
 ) -> pd.Series:
     """Compute target weights for one rebalance date."""
-    params = config.get("params", {})
-    defensive_assets = params.get("defensive_assets", ["BIL", "BND"])
-    offensive_assets = params.get("offensive_assets", [])
-    canary_assets = params.get("canary_assets", [])
-    top_n = params.get("top_n", 6)
-    target_vol = params.get("target_vol", 0.10)
-    port_vol_window = params.get("port_vol_window", 21)
-    smooth = params.get("smooth", 0.25)
-    min_mom_threshold = params.get("min_mom_threshold", 0.0)
 
     all_cols = min_mom.columns
     target = pd.Series(0.0, index=all_cols)
@@ -187,7 +185,14 @@ def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFra
     mom_lags = params.get("mom_lags", [21, 63, 126, 252])
     vol_window = params.get("vol_window", 126)
     trend_window = params.get("trend_window", 200)
-    # other params are used inside _target_weights via config pass
+    defensive_assets = params.get("defensive_assets", ["BIL", "BND"])
+    offensive_assets = params.get("offensive_assets", [])
+    canary_assets = params.get("canary_assets", [])
+    top_n = params.get("top_n", 6)
+    target_vol = params.get("target_vol", 0.10)
+    port_vol_window = params.get("port_vol_window", 21)
+    smooth = params.get("smooth", 0.25)
+    min_mom_threshold = params.get("min_mom_threshold", 0.0)
 
     all_assets = list(prices.columns)
     if prices.empty:
@@ -217,7 +222,14 @@ def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFra
             rmom=rmom,
             sma=sma,
             vol_df=vol,
-            config=config,
+            defensive_assets=defensive_assets,
+            offensive_assets=offensive_assets,
+            canary_assets=canary_assets,
+            top_n=top_n,
+            target_vol=target_vol,
+            port_vol_window=port_vol_window,
+            smooth=smooth,
+            min_mom_threshold=min_mom_threshold,
             prev_weights=prev_weights,
         )
         weights.loc[date] = new_w

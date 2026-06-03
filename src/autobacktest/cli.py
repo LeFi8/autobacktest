@@ -191,6 +191,7 @@ def run(
         )
 
     # MC histogram
+    # getattr for backward compat with pre-mc_sharpes serialized reports
     mc_sharpes = getattr(result.final_report, "mc_sharpes", None)
     if mc_sharpes is not None and mc_sharpes.size > 0:
         plot_mc_histogram(

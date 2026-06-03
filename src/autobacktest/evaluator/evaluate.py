@@ -73,7 +73,7 @@ def _compute_returns_metrics(
         sortino_ratio=sortino,
         max_drawdown=max_dd,
         turnover=0.0,
-        information_ratio=0.0,
+        information_ratio=0.0,  # N/A for standalone benchmark self-comparison
     )
 
 

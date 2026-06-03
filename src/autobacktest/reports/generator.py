@@ -26,8 +26,8 @@ def plot_equity_curves(
 
     has_benchmark = benchmark_returns is not None and not benchmark_returns.empty
     if has_benchmark:
-        bench_ret: pd.Series = benchmark_returns
-        bench_cum = (1 + bench_ret).cumprod()
+        assert benchmark_returns is not None  # narrow type inside guard
+        bench_cum = (1 + benchmark_returns).cumprod()
         fig, (ax_top, ax_mid, ax_bot) = plt.subplots(
             3,
             1,
@@ -232,6 +232,29 @@ def compile_failure_summary(run_dir: Path) -> dict[str, Any]:
             # diversity, eval errors, and LLM errors.
             candidates = event.get("candidates")
             if not isinstance(candidates, list):
+                # Legacy fallback: parse top-level failure keys for events
+                # produced before the candidates array schema was introduced.
+                val = event.get("validation")
+                if isinstance(val, dict) and val.get("passed") is False:
+                    code = val.get("error_code", "unknown")
+                    summary["Validation"][code] = summary["Validation"].get(code, 0) + 1
+                    continue
+                gate = event.get("gate")
+                if isinstance(gate, dict) and gate.get("accepted") is False:
+                    fg = gate.get("failed_gate", "unknown")
+                    summary["Gate"][fg] = summary["Gate"].get(fg, 0) + 1
+                    continue
+                div = event.get("diversity")
+                if isinstance(div, dict) and div.get("passed") is False:
+                    tier = div.get("tier", "unknown")
+                    summary["Diversity"][tier] = summary["Diversity"].get(tier, 0) + 1
+                    continue
+                if event.get("llm_error") is not None:
+                    summary["LLM Error"] += 1
+                    continue
+                eval_err = event.get("evaluation")
+                if isinstance(eval_err, dict) and eval_err.get("error") is not None:
+                    summary["Eval Error"] += 1
                 continue
 
             for c in candidates:
