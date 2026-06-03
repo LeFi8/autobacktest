@@ -28,6 +28,55 @@ from autobacktest.strategy.config_schema import StrategyConfig
 logger = logging.getLogger(__name__)
 
 
+def _compute_returns_metrics(
+    returns: pd.Series,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+) -> WindowReport:
+    """Compute standard performance metrics directly from a return series."""
+    period_returns = returns.loc[start:end]
+    if period_returns.empty:
+        return WindowReport(
+            start_date=start.strftime("%Y-%m-%d"),
+            end_date=end.strftime("%Y-%m-%d"),
+            annualized_return=0.0,
+            annualized_volatility=0.0,
+            sharpe_ratio=0.0,
+            sortino_ratio=0.0,
+            max_drawdown=0.0,
+            turnover=0.0,
+        )
+
+    mean_ret = period_returns.mean()
+    std_ret = period_returns.std(ddof=1) if len(period_returns) >= 2 else 0.0
+
+    cum = (1.0 + period_returns).cumprod()
+    total_growth = cum.iloc[-1] if not cum.empty else 1.0
+    ann_ret = float(total_growth ** (252.0 / len(period_returns)) - 1.0) if total_growth > 0.0 else -1.0
+    ann_vol = float(std_ret * np.sqrt(252))
+    sharpe = float((mean_ret / std_ret * np.sqrt(252)) if std_ret > 0.0 else 0.0)
+
+    running_max = cum.cummax()
+    drawdowns = (cum - running_max) / running_max
+    max_dd = float(abs(drawdowns.min())) if not drawdowns.empty else 0.0
+
+    negative_returns = np.minimum(period_returns, 0.0)
+    downside_std = float(np.sqrt((negative_returns**2).mean()))
+    sortino = float((mean_ret / downside_std) * np.sqrt(252)) if downside_std > 0.0 else 0.0
+
+    return WindowReport(
+        start_date=start.strftime("%Y-%m-%d"),
+        end_date=end.strftime("%Y-%m-%d"),
+        annualized_return=ann_ret,
+        annualized_volatility=ann_vol,
+        sharpe_ratio=sharpe,
+        sortino_ratio=sortino,
+        max_drawdown=max_dd,
+        turnover=0.0,
+        information_ratio=0.0,
+    )
+
+
 class _CacheProtocol(Protocol):
     """Minimal eval-result cache interface — satisfies both ``dict`` and ``_LRUCache``."""
 
@@ -492,6 +541,10 @@ def evaluate_strategy_detailed(
         effective_trials=1,
     )
 
+    # Compute benchmark metrics for both periods
+    benchmark_in_sample = _compute_returns_metrics(bench_returns, in_sample_idx.min(), in_sample_idx.max())
+    benchmark_holdout_m = _compute_returns_metrics(bench_returns, holdout_start, holdout_end)
+
     # Generate complete stable dataset hash including date parameters
     dataset_hash = compute_dataset_hash(
         tickers,
@@ -522,6 +575,8 @@ def evaluate_strategy_detailed(
         holdout_net_returns=holdout_net_returns,
         benchmark_returns=bench_holdout,
         benchmark_ticker=benchmark_ticker,
+        benchmark_in_sample_metrics=benchmark_in_sample,
+        benchmark_holdout_metrics=benchmark_holdout_m,
     )
 
     # Delegate standalone gate checks to backward-compat accept (hard constraints only)

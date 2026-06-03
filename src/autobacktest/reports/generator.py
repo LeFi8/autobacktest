@@ -130,35 +130,37 @@ def compile_failure_summary(run_dir: Path) -> dict[str, Any]:
             if not isinstance(event, dict):
                 continue
 
-            val = event.get("validation")
-            if isinstance(val, dict) and val.get("passed") is False:
-                code = val.get("error_code", "unknown")
-                bucket = summary["Validation"]
-                bucket[code] = bucket.get(code, 0) + 1
+            # Parse per-candidate failures from the candidates array.
+            # These cover all failure modes: preflight validation, gate,
+            # diversity, eval errors, and LLM errors.
+            candidates = event.get("candidates")
+            if not isinstance(candidates, list):
                 continue
 
-            gate = event.get("gate")
-            if isinstance(gate, dict) and gate.get("accepted") is False:
-                fg = gate.get("failed_gate", "unknown")
-                bucket = summary["Gate"]
-                bucket[fg] = bucket.get(fg, 0) + 1
-                continue
+            for c in candidates:
+                if not isinstance(c, dict):
+                    continue
+                if c.get("passed") is True:
+                    continue
+                if c.get("llm_error"):
+                    summary["LLM Error"] += 1
+                    continue
 
-            div = event.get("diversity")
-            if isinstance(div, dict) and div.get("passed") is False:
-                tier = div.get("tier", "unknown")
-                bucket = summary["Diversity"]
-                bucket[tier] = bucket.get(tier, 0) + 1
-                continue
-
-            if event.get("llm_error") is not None:
-                summary["LLM Error"] += 1
-                continue
-
-            eval_err = event.get("evaluation")
-            if isinstance(eval_err, dict) and eval_err.get("error") is not None:
-                summary["Eval Error"] += 1
-                continue
+                stage = c.get("stage", "")
+                if stage == "validation":
+                    code = c.get("detail", "unknown")
+                    bucket = summary["Validation"]
+                    bucket[code] = bucket.get(code, 0) + 1
+                elif stage == "gate":
+                    fg = c.get("failed_gate") or "unknown"
+                    bucket = summary["Gate"]
+                    bucket[fg] = bucket.get(fg, 0) + 1
+                elif stage in ("diversity_config", "diversity_returns"):
+                    tier = stage.removeprefix("diversity_")
+                    bucket = summary["Diversity"]
+                    bucket[tier] = bucket.get(tier, 0) + 1
+                elif stage == "eval_error":
+                    summary["Eval Error"] += 1
 
     return summary
 
@@ -229,6 +231,30 @@ def compile_strategy_report(
                 f"| {w.turnover:.2f}x |"
             )
 
+    _h2(lines, "Benchmark Comparison")
+    bench_is = final_report.benchmark_in_sample_metrics
+    bench_ho = final_report.benchmark_holdout_metrics
+    if bench_is is not None and bench_ho is not None:
+        ticker = final_report.benchmark_ticker
+        lines.append("")
+        _window_table(lines, final_report.in_sample_metrics, "Strategy (IS)")
+        _window_table(lines, bench_is, f"{ticker} (IS)")
+        lines.append("")
+        _window_table(lines, final_report.holdout_metrics, "Strategy (HO)")
+        _window_table(lines, bench_ho, f"{ticker} (HO)")
+        strat_ho_ret = final_report.holdout_metrics.annualized_return
+        bench_ho_ret = bench_ho.annualized_return
+        excess = strat_ho_ret - bench_ho_ret
+        lines.append("")
+        _kv(lines, f"Active Return ({ticker})", f"{excess * 100:+.2f}%")
+        excess_vol = (final_report.holdout_metrics.annualized_volatility - bench_ho.annualized_volatility) * 100
+        _kv(lines, "Excess Volatility", f"{excess_vol:+.2f}%")
+        _kv(lines, "Information Ratio (HO)", f"{final_report.holdout_metrics.information_ratio:+.4f}")
+    else:
+        lines.append("")
+        lines.append("*(Benchmark performance data not available — re-run evaluation with benchmark price data.)*")
+        lines.append("")
+
     _h2(lines, "Failure Summary")
     if failure_summary:
         lines.append("")
@@ -241,7 +267,7 @@ def compile_strategy_report(
     lines.append("")
     png_path = output_dir / "equity_curves.png"
     if png_path.exists():
-        lines.append("![equity_curves](equity_curves.png)")
+        lines.append(f"![equity_curves]({png_path.resolve().as_uri()})")
     else:
         lines.append("*(Chart not generated)*")
     lines.append("")

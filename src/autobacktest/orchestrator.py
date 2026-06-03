@@ -880,6 +880,7 @@ def run_optimization(
                                 "passed": False,
                                 "stage": ev.get("validation_stage"),
                                 "detail": ev.get("detail"),
+                                "failed_gate": ev.get("_failed_gate"),
                             }
                             candidates_summary.append(fail_item)
                         else:

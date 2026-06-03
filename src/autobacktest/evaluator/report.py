@@ -76,6 +76,9 @@ class EvaluationReport:
     # to_dict()).  Will be None after from_json() round-trip.
     benchmark_returns: pd.Series | None = field(default=None, repr=False, compare=False)
     benchmark_ticker: str = "SPY"
+    # Benchmark performance metrics (survives JSON round-trip)
+    benchmark_in_sample_metrics: WindowReport | None = None
+    benchmark_holdout_metrics: WindowReport | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert the report to a dictionary representation."""
@@ -102,6 +105,10 @@ class EvaluationReport:
             d["benchmark_returns"] = None
         if "benchmark_ticker" not in d:
             d["benchmark_ticker"] = "SPY"
+        if "benchmark_in_sample_metrics" in d and d["benchmark_in_sample_metrics"] is not None:
+            d["benchmark_in_sample_metrics"] = WindowReport.from_dict(d["benchmark_in_sample_metrics"])
+        if "benchmark_holdout_metrics" in d and d["benchmark_holdout_metrics"] is not None:
+            d["benchmark_holdout_metrics"] = WindowReport.from_dict(d["benchmark_holdout_metrics"])
         return cls(**d)
 
     @classmethod
