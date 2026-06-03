@@ -25,6 +25,8 @@ from autobacktest.reports.generator import (
     compile_failure_summary,
     compile_strategy_report,
     plot_equity_curves,
+    plot_mc_histogram,
+    plot_walk_forward_bars,
 )
 from autobacktest.strategy.config_schema import StrategyConfig
 from autobacktest.strategy.validator import preflight
@@ -186,6 +188,27 @@ def run(
             output_dir,
             benchmark_returns=benchmark_returns,
             benchmark_ticker=benchmark_ticker,
+        )
+
+    # MC histogram
+    mc_sharpes = getattr(result.final_report, "mc_sharpes", None)
+    if mc_sharpes is not None and mc_sharpes.size > 0:
+        plot_mc_histogram(
+            mc_sharpes,
+            result.final_report.observed_sharpe,
+            result.final_report.mc_sharpe_5th,
+            result.final_report.mc_sharpe_50th,
+            result.final_report.mc_sharpe_95th,
+            result.run_id,
+            output_dir,
+        )
+
+    # Walk-forward bar chart
+    if result.final_report.walk_forward_metrics:
+        plot_walk_forward_bars(
+            result.final_report.walk_forward_metrics,
+            result.run_id,
+            output_dir,
         )
 
     # Failure summary from events.jsonl

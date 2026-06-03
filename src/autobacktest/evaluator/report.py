@@ -4,6 +4,7 @@ import json
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 
@@ -76,6 +77,8 @@ class EvaluationReport:
     # to_dict()).  Will be None after from_json() round-trip.
     benchmark_returns: pd.Series | None = field(default=None, repr=False, compare=False)
     benchmark_ticker: str = "SPY"
+    # Full Monte Carlo Sharpe array for histogram — excluded from serialization
+    mc_sharpes: np.ndarray | None = field(default=None, repr=False, compare=False)
     # Benchmark performance metrics (survives JSON round-trip)
     benchmark_in_sample_metrics: WindowReport | None = None
     benchmark_holdout_metrics: WindowReport | None = None
@@ -85,6 +88,7 @@ class EvaluationReport:
         d = asdict(self)
         d.pop("holdout_net_returns", None)
         d.pop("benchmark_returns", None)
+        d.pop("mc_sharpes", None)
         return d
 
     def to_json(self, indent: int = 4) -> str:

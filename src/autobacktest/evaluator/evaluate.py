@@ -519,7 +519,7 @@ def evaluate_strategy_detailed(
         daily_weights=daily_weights,
         n_tickers=len(tickers),
     )
-    mc_5th, mc_50th, mc_95th = run_block_bootstrap(net_returns, n_paths=1000, seed=42)
+    mc_5th, mc_50th, mc_95th, mc_sharpes = run_block_bootstrap(net_returns, n_paths=1000, seed=42)
 
     # --- DSR accounting ---
     # Selection DSR uses POOLED walk-forward returns (same basis as observed_sharpe)
@@ -568,6 +568,7 @@ def evaluate_strategy_detailed(
         mc_sharpe_5th=mc_5th,
         mc_sharpe_50th=mc_50th,
         mc_sharpe_95th=mc_95th,
+        mc_sharpes=mc_sharpes,
         observed_sharpe=pooled_sharpe,
         effective_trials=effective_trials,
         deflated_sharpe=selection_dsr,

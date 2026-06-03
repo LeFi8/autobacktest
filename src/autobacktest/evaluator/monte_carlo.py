@@ -9,7 +9,7 @@ def run_block_bootstrap(
     n_paths: int = 10000,
     block_size: int = 21,
     seed: int | None = None,
-) -> tuple[float, float, float]:
+) -> tuple[float, float, float, np.ndarray]:
     """Execute block bootstrap to yield 5th, 50th, 95th Sharpe percentiles.
 
     Preserves short-term serial correlation by grouping returns into blocks.
@@ -21,10 +21,10 @@ def run_block_bootstrap(
         seed: Seed for random number generator.
 
     Returns:
-        tuple: (5th_percentile_sharpe, 50th_percentile_sharpe, 95th_percentile_sharpe)
+        tuple: (5th_percentile_sharpe, 50th_percentile_sharpe, 95th_percentile_sharpe, all_sharpes)
     """
     if returns.empty or len(returns) < block_size:
-        return 0.0, 0.0, 0.0
+        return 0.0, 0.0, 0.0, np.array([])
 
     ret_arr = returns.values
     n_samples = len(ret_arr)
@@ -42,7 +42,7 @@ def run_block_bootstrap(
     # permissible start indices cover the entire original span.
     max_start = n_samples
     if max_start <= 0:
-        return 0.0, 0.0, 0.0
+        return 0.0, 0.0, 0.0, np.array([])
 
     # Draw random block starting indices across paths in a vectorized matrix
     # using a local RNG generator for reproducibility
@@ -71,4 +71,7 @@ def run_block_bootstrap(
     p50 = float(np.percentile(sharpes, 50))
     p95 = float(np.percentile(sharpes, 95))
 
-    return p5, p50, p95
+    # return path_sharpes as well for MC histogram plotting
+    path_sharpes = sharpes
+
+    return p5, p50, p95, path_sharpes
