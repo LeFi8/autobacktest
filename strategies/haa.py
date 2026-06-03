@@ -41,9 +41,8 @@ def _risk_adjusted_min_mom(min_mom: pd.DataFrame, vol: pd.DataFrame) -> pd.DataF
 def _canary_triggered(min_mom: pd.DataFrame, canary_assets: list[str], date: pd.Timestamp) -> bool:
     """Return True if any canary asset's min momentum <= 0."""
     for asset in canary_assets:
-        if asset in min_mom.columns and not pd.isna(min_mom.at[date, asset]):
-            if min_mom.at[date, asset] <= 0:
-                return True
+        if asset in min_mom.columns and not pd.isna(min_mom.at[date, asset]) and min_mom.at[date, asset] <= 0:
+            return True
     return False
 
 
@@ -69,9 +68,7 @@ def _eligible_offensive(
     return eligible
 
 
-def _best_defensive(
-    min_mom: pd.DataFrame, defensive_assets: list[str], date: pd.Timestamp
-) -> str | None:
+def _best_defensive(min_mom: pd.DataFrame, defensive_assets: list[str], date: pd.Timestamp) -> str | None:
     """Return defensive asset with highest min momentum (safety preference)."""
     best = None
     best_mom = -np.inf

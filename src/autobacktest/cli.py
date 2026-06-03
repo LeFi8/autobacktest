@@ -13,6 +13,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from autobacktest import configure_verbosity
 from autobacktest.config import settings
 from autobacktest.evaluator.evaluate import evaluate_strategy
 from autobacktest.gate import TargetMetric
@@ -97,8 +98,15 @@ def run(
         "--json",
         help="Output raw JSON instead of the Rich summary dashboard.",
     ),
+    quiet: bool = typer.Option(
+        settings.quiet,
+        "--quiet",
+        "-q",
+        help="Suppress non-critical warnings and reduce terminal noise.",
+    ),
 ) -> None:
     """Run the optimization loop on a strategy."""
+    configure_verbosity(quiet=quiet)
     # Resolve target metric
     try:
         metric = TargetMetric(target_metric)
@@ -478,8 +486,15 @@ def evaluate(
         "--end-date",
         help="End date YYYY-MM-DD for backtesting.",
     ),
+    quiet: bool = typer.Option(
+        settings.quiet,
+        "--quiet",
+        "-q",
+        help="Suppress non-critical warnings and reduce terminal noise.",
+    ),
 ) -> None:
     """Run walk-forward and holdout evaluation on a target strategy file."""
+    configure_verbosity(quiet=quiet)
     strategy_path = Path(strategy)
     if not strategy_path.exists():
         typer.echo(f"Error: Strategy file not found at {strategy_path}")
@@ -559,8 +574,15 @@ def llm_test(
         "-p",
         help="LLM provider: 'litellm' or 'mock'.",
     ),
+    quiet: bool = typer.Option(
+        settings.quiet,
+        "--quiet",
+        "-q",
+        help="Suppress non-critical warnings and reduce terminal noise.",
+    ),
 ) -> None:
     """Test LLM-driven strategy edits against validation preflight checks."""
+    configure_verbosity(quiet=quiet)
     strategies_dir = settings.strategies_dir
     configs_dir = settings.configs_dir
 

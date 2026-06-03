@@ -93,6 +93,11 @@ class Settings(BaseModel):
         default_factory=lambda: float(os.getenv("AUTOBACKTEST_DIVERSITY_RETURNS_THRESHOLD", "0.95"))
     )
 
+    # --- VERBOSITY CONTROL ---
+    quiet: bool = Field(
+        default_factory=lambda: os.getenv("AUTOBACKTEST_QUIET", "false").lower() in ("true", "1", "yes")
+    )
+
     # --- SQLITE STORAGE CONFIGURATION ---
     db_timeout: float = Field(default_factory=lambda: float(os.getenv("AUTOBACKTEST_DB_TIMEOUT", "15.0")))
 

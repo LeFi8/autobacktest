@@ -220,7 +220,7 @@ class CachedDataProvider(DataProvider):
                     # Skip known non-trading days to avoid pointless yfinance calls.
                     while not is_trading_day(next_day) and next_day <= end_dt:
                         next_day += pd.Timedelta(days=1)
-                    if next_day > end_dt:
+                    if next_day >= end_dt:
                         # Entire suffix is non-trading — mark as confirmed_empty.
                         # Use cache_start so the full parquet range is recognised
                         # on future requests (confirmed_empty only prevents
