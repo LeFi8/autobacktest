@@ -409,7 +409,7 @@ def compile_strategy_report(
     lines.append("")
     wf_path = output_dir / "walk_forward_bars.png"
     if wf_path.exists():
-        lines.append(f"![walk_forward_bars]({wf_path.resolve().as_uri()})")
+        lines.append("![walk_forward_bars](walk_forward_bars.png)")
     else:
         lines.append("*(Walk-forward bar chart not available)*")
     lines.append("")

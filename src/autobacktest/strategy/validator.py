@@ -893,6 +893,16 @@ def _build_function_scope(func_node: ast.FunctionDef | ast.AsyncFunctionDef) -> 
     return scope
 
 
+def _is_descendant(child: ast.AST, ancestor: ast.AST, parent_map: dict[int, ast.AST]) -> bool:
+    """Return True if child is a descendant of ancestor node in the AST."""
+    curr: ast.AST | None = child
+    while curr is not None:
+        if curr == ancestor:
+            return True
+        curr = parent_map.get(id(curr))
+    return False
+
+
 def _check_undefined_names(tree: ast.Module) -> ValidationResult | None:
     """Return a failed :class:`ValidationResult` if any function references a
     name that is not defined in the function body, the module scope, or among
@@ -960,6 +970,47 @@ def _check_undefined_names(tree: ast.Module) -> ValidationResult | None:
             name = ref_node.id
             if name in closure_scope:
                 continue
+
+            # Check enclosing comprehension or lambda scopes
+            defined_in_comp_or_lambda = False
+            curr_parent = parent_map.get(id(ref_node))
+            while curr_parent is not func_node and curr_parent is not None:
+                if isinstance(curr_parent, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+                    for gen_idx, gen in enumerate(curr_parent.generators):
+                        is_in_iter = False
+                        for p_idx in range(gen_idx + 1):
+                            if _is_descendant(ref_node, curr_parent.generators[p_idx].iter, parent_map):
+                                is_in_iter = True
+                                break
+                        if not is_in_iter:
+                            comp_targets: set[str] = set()
+                            _extract_names(gen.target, comp_targets)
+                            if name in comp_targets:
+                                defined_in_comp_or_lambda = True
+                                break
+                    if defined_in_comp_or_lambda:
+                        break
+                elif isinstance(curr_parent, ast.Lambda):
+                    if _is_descendant(ref_node, curr_parent.body, parent_map):
+                        lambda_args: set[str] = set()
+                        for arg in curr_parent.args.args:
+                            lambda_args.add(arg.arg)
+                        if curr_parent.args.vararg:
+                            lambda_args.add(curr_parent.args.vararg.arg)
+                        if curr_parent.args.kwarg:
+                            lambda_args.add(curr_parent.args.kwarg.arg)
+                        for arg in curr_parent.args.kwonlyargs:
+                            lambda_args.add(arg.arg)
+                        for arg in curr_parent.args.posonlyargs:
+                            lambda_args.add(arg.arg)
+                        if name in lambda_args:
+                            defined_in_comp_or_lambda = True
+                            break
+                curr_parent = parent_map.get(id(curr_parent))
+
+            if defined_in_comp_or_lambda:
+                continue
+
             if name not in func_scope and name not in module_scope and name not in _BUILTIN_NAMES:
                 return ValidationResult(
                     passed=False,

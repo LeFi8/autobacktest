@@ -728,6 +728,98 @@ def generate_signals(prices, config):
     assert res.passed
 
 
+def test_check_undefined_list_comprehension_pass():
+    """List comprehension variables must NOT be flagged."""
+    code = """
+def generate_signals(prices, config):
+    y = [1, 2, 3]
+    return [x for x in y]
+"""
+    res = _check_ast(code)
+    assert res.passed
+
+
+def test_check_undefined_dict_comprehension_pass():
+    """Dict comprehension variables must NOT be flagged."""
+    code = """
+def generate_signals(prices, config):
+    y = {'a': 1, 'b': 2}
+    return {k: v for k, v in y.items()}
+"""
+    res = _check_ast(code)
+    assert res.passed
+
+
+def test_check_undefined_set_comprehension_pass():
+    """Set comprehension variables must NOT be flagged."""
+    code = """
+def generate_signals(prices, config):
+    y = [1, 2, 3, 3]
+    return {x for x in y}
+"""
+    res = _check_ast(code)
+    assert res.passed
+
+
+def test_check_undefined_generator_expression_pass():
+    """Generator expression variables must NOT be flagged."""
+    code = """
+def generate_signals(prices, config):
+    y = [1, 2, 3]
+    return list(x for x in y)
+"""
+    res = _check_ast(code)
+    assert res.passed
+
+
+def test_check_undefined_nested_comprehension_pass():
+    """Nested comprehension and multi-generator comprehension variables must NOT be flagged."""
+    code = """
+def generate_signals(prices, config):
+    matrix = [[1, 2], [3, 4]]
+    flat = [y for x in matrix for y in x]
+    return flat
+"""
+    res = _check_ast(code)
+    assert res.passed
+
+
+def test_check_undefined_lambda_arguments_pass():
+    """Lambda argument references inside the lambda body must NOT be flagged."""
+    code = """
+def generate_signals(prices, config):
+    f = lambda col: col.mean()
+    return prices
+"""
+    res = _check_ast(code)
+    assert res.passed
+
+
+def test_check_undefined_comprehension_fail():
+    """Referencing an undefined variable inside a comprehension must fail."""
+    code = """
+def generate_signals(prices, config):
+    return [x for x in z]
+"""
+    res = _check_ast(code)
+    assert not res.passed
+    assert res.error_code == ValidationError.UNDEFINED_NAME
+    assert "z" in res.detail
+
+
+def test_check_undefined_lambda_fail():
+    """Referencing an undefined variable inside a lambda must fail."""
+    code = """
+def generate_signals(prices, config):
+    f = lambda col: col.mean() + z
+    return prices
+"""
+    res = _check_ast(code)
+    assert not res.passed
+    assert res.error_code == ValidationError.UNDEFINED_NAME
+    assert "z" in res.detail
+
+
 # ---------------------------------------------------------------------------
 # End of undefined-name tests
 # ---------------------------------------------------------------------------
