@@ -273,14 +273,16 @@ class _WeightRenormalizer(ast.NodeTransformer):
     # ------------------------------------------------------------------
     @staticmethod
     def _has_renormalization(stmts: list[ast.stmt]) -> bool:
-        """Return ``True`` if *stmts* already contain ``.clip(lower=0.0)``."""
+        """Return ``True`` if *stmts* already contain ``.clip(lower=0.0)`` or ``.clip(0.0)``."""
         for stmt in stmts:
             for child in ast.walk(stmt):
                 if isinstance(child, ast.Call):
                     name = _get_call_name(child)
                     if name == "clip":
+                        if child.args and isinstance(child.args[0], ast.Constant) and child.args[0].value in (0.0, 0):
+                            return True
                         for kw in child.keywords:
-                            if kw.arg == "lower" and isinstance(kw.value, ast.Constant) and kw.value.value == 0.0:
+                            if kw.arg == "lower" and isinstance(kw.value, ast.Constant) and kw.value.value in (0.0, 0):
                                 return True
         return False
 

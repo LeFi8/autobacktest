@@ -947,6 +947,16 @@ def _check_undefined_names(tree: ast.Module) -> ValidationResult | None:
         for ref_node in ast.walk(func_node):
             if not isinstance(ref_node, ast.Name) or not isinstance(ref_node.ctx, ast.Load):
                 continue
+            # Only validate names whose immediate enclosing function is func_node
+            enclosing = None
+            cur = parent_map.get(id(ref_node))
+            while cur is not None:
+                if isinstance(cur, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    enclosing = cur
+                    break
+                cur = parent_map.get(id(cur))
+            if enclosing != func_node:
+                continue
             name = ref_node.id
             if name in closure_scope:
                 continue

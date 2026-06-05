@@ -323,6 +323,34 @@ def generate_signals(prices: pd.DataFrame, config: dict) -> pd.DataFrame:
     assert fixes == []  # renormalization already in place, no pandas issues
 
 
+def test_skip_if_already_renormalized_positional():
+    """clip(0.0) positional → no injection."""
+    code = """
+import pandas as pd
+
+def generate_signals(prices: pd.DataFrame, config: dict) -> pd.DataFrame:
+    w = prices * 0.5
+    w = w.clip(0.0)
+    return w
+"""
+    _, fixes = repair_strategy_code(code)
+    assert fixes == []
+
+
+def test_skip_if_already_renormalized_positional_int():
+    """clip(0) positional int → no injection."""
+    code = """
+import pandas as pd
+
+def generate_signals(prices: pd.DataFrame, config: dict) -> pd.DataFrame:
+    w = prices * 0.5
+    w = w.clip(0)
+    return w
+"""
+    _, fixes = repair_strategy_code(code)
+    assert fixes == []
+
+
 def test_skip_complex_return():
     """Complex return expression → no injection."""
     code = """

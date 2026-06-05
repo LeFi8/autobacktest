@@ -877,7 +877,7 @@ def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFra
 
     start = prices.index.min()
     end = prices.index.max()
-    rebalance_dates = pd.date_range(start=start, end=end, freq="BME").intersection(prices.index)
+    rebalance_dates = pd.date_range(start=start, end=end, freq="BME", tz=prices.index.tz).intersection(prices.index)
     weights = pd.DataFrame(0.0, index=rebalance_dates, columns=prices.columns)
 
     for date in rebalance_dates:

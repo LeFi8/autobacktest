@@ -610,6 +610,19 @@ def generate_signals(prices, config):
     assert "x" in res.detail
 
 
+def test_check_undefined_nested_function_local_var_not_flagged():
+    """Local var inside nested helper must NOT cause false-positive in outer function."""
+    code = """
+def generate_signals(prices, config):
+    def helper():
+        local_val = prices * 0.5
+        return local_val
+    return helper()
+"""
+    res = _check_ast(code)
+    assert res.passed
+
+
 def test_check_undefined_aug_assign():
     """Augmented assignment (x += 1) defines x."""
     code = """
