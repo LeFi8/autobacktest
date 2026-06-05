@@ -150,11 +150,13 @@ Consumes prices and strategy signals to compute detailed performance metrics.
 Enforces code correctness, type-safety, and logic uniqueness constraints on candidate mutations.
 - `config_schema.py`: Pydantic v2 strategy configuration validation model (`StrategyConfig`). Enforces parameter boundaries, types, and flattens custom parameters in `params` avoiding root schema collisions.
 - `contract.py`: Dynamic weight and signature correctness validators. Verifies shape conformity, asset indexes, and time series offsets.
-- `validator.py`: Safe code pre-flight runner. Includes AST parsing for imports whitelisting, isolated compile execution, and sub-window lookahead testing on synthetic price curves.
+- `validator.py`: Safe code pre-flight runner. Includes AST parsing for imports whitelisting, isolated compile execution, sub-window lookahead testing on synthetic price curves, and an undefined-name AST scan that catches LLM hallucinations (misspelled identifiers, out-of-scope variable references).
 - `diversity.py`: Quantitative diversity analyzer. Extracts configuration fingerprints and computes cosine similarity of parameters or Pearson correlation of backtest returns.
 - `normalization.py`: Code normalization utility (`normalize_python_code`) that strips comments/docstrings and standardizes whitespace for stable eval cache key computation.
 - `parameter_importance.py`: Computes Spearman rank correlation between numeric config parameters and the target metric across optimization attempts to identify which parameters most strongly influence performance.
-- `codemod.py`: AST-based repair module (`repair_pandas_code`) for deprecated pandas API calls (frequency aliases, fillna, groupby, level-based aggregation).
+- `codemod.py`: AST-based repair module with two entry points:
+  - `repair_pandas_code`: Fixes deprecated pandas API calls (frequency aliases, fillna, groupby, level-based aggregation) for pandas 3.x compatibility.
+  - `repair_strategy_code`: Chains all repair passes — pandas deprecation transformer, missing `typing.Any` import injection (placed after module docstring), and weight renormalization before `return` in `generate_signals`.
 
 ### 10. Program Parser (`program.py`)
 Parses and validates the markdown program file (`program.md`), extracting `# Objective` and `# Constraints` sections. Returns a `ProgramSpec` dataclass with structured objectives, constraints, and raw text (passed to the LLM as-is).

@@ -204,7 +204,12 @@ class _PandasDeprecationTransformer(ast.NodeTransformer):
 class _MissingImportInjector(ast.NodeTransformer):
     """Injects ``from typing import Any`` when ``Any`` is used in type annotations
     but not imported.  This is a common LLM mistake that causes a hard runtime
-    :class:`NameError` in the sandboxed subprocess."""
+    :class:`NameError` in the sandboxed subprocess.
+
+    The import is placed after the module docstring (if one exists) to avoid
+    breaking Python's docstring recognition — any statement before a string
+    literal at module level prevents it from being registered as ``__doc__``.
+    """
 
     def __init__(self) -> None:
         self.fixes_applied: list[str] = []

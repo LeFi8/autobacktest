@@ -831,6 +831,9 @@ def _walk_body(body: list[ast.stmt], scope: set[str]) -> None:
     Traverses compound-statement bodies (``if``, ``for``, ``while``,
     ``try``, ``with``) but stops at ``FunctionDef`` / ``AsyncFunctionDef``
     boundaries — nested function bodies are not walked.
+
+    Uses :func:`_extract_names` to handle both simple names and
+    tuple/list unpacking targets (``a, b = ...``, ``for i, col in ...``).
     """
     for stmt in body:
         if isinstance(stmt, ast.Assign):

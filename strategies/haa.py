@@ -18,7 +18,12 @@ class HAAParams:
 
 
 def _rebalance_dates(prices: pd.DataFrame) -> pd.DatetimeIndex:
-    """Return business month end dates that exist in the price index."""
+    """Return business month end dates that exist in the price index.
+
+    Preserves the timezone of *prices.index* (if any) when constructing the
+    BME date range, preventing empty intersections when ``pd.date_range``
+    defaults to timezone-naive but the price index is timezone-aware.
+    """
     start = prices.index.min()
     end = prices.index.max()
     tz = prices.index.tz
