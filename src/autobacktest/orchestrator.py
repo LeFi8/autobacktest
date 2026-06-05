@@ -156,6 +156,7 @@ def run_optimization(
     holdout_peek_limit: int = 20,
     early_stop_patience: int = settings.early_stop_patience,
     resume: str | None = None,
+    quiet: bool = False,
 ) -> OrchestratorResult:
     """Run the LLM-driven strategy optimization loop.
 
@@ -185,6 +186,8 @@ def run_optimization(
         resume: Run ID to resume a previously interrupted optimization.
             When provided the loop recovers the incumbent state from the
             ledger and continues from the next unprocessed iteration.
+        quiet: Suppress non-critical warnings and reduce terminal noise
+            during the optimization loop. Defaults to False.
 
     Returns:
         OrchestratorResult: Summary of the final optimization run outcomes.
@@ -434,6 +437,7 @@ def run_optimization(
             BarColumn(),
             TaskProgressColumn(),
             MofNCompleteColumn(),
+            disable=quiet,
         ) as progress:
             task = progress.add_task(
                 f"[cyan]Optimizing {strategy_name}... (Incumbent Sharpe: {incumbent.observed_sharpe:.3f})",
@@ -969,15 +973,16 @@ def run_optimization(
                             f"→  FAIL  {reasons_str}  "
                             f"${_iter_cost:.4f}"
                         )
-                    progress.console.print(summary)
+                    if not quiet:
+                        progress.console.print(summary)
 
-                    if consecutive_no_backtest >= 5:
+                    if consecutive_no_backtest >= 5 and not quiet:
                         progress.console.print(
-                            f"[yellow]⚠ Iter {k}/{iterations}: {consecutive_no_backtest} consecutive "
-                            f"iterations with zero candidates reaching backtest. "
-                            f"The LLM may be struggling with code generation — "
-                            f"check preflight errors above.[/]"
-                        )
+                                f"[yellow]⚠ Iter {k}/{iterations}: {consecutive_no_backtest} consecutive "
+                                f"iterations with zero candidates reaching backtest. "
+                                f"The LLM may be struggling with code generation — "
+                                f"check preflight errors above.[/]"
+                            )
 
                     event_log.write(event)
                 finally:

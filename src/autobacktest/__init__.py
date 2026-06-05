@@ -20,5 +20,6 @@ def configure_verbosity(quiet: bool = False) -> None:
     """
     if quiet:
         warnings.filterwarnings("ignore", message="All-NaN slice")
+        warnings.filterwarnings("ignore", message="Mean of empty slice")
         for name in ("autobacktest", "yfinance", "urllib3", "requests"):
             logging.getLogger(name).setLevel(logging.ERROR)

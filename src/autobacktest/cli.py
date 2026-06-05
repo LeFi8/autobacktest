@@ -151,6 +151,7 @@ def run(
             holdout_peek_limit=holdout_peek_limit,
             early_stop_patience=early_stop_patience,
             resume=resume,
+            quiet=quiet,
         )
     except Exception as e:
         typer.echo(f"Error: {e}")
