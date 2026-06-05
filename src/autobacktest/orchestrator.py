@@ -1189,18 +1189,21 @@ def _deflate(
 ) -> None:
     """Deflate the in-sample selection DSR using the ledger's multi-trial history.
 
-    The null distribution is grounded entirely on **independent** historical
-    trials — the candidate's own returns and Sharpe are excluded from the
-    correlation matrix and Sharpe list to prevent self-contamination.
+    The null distribution is grounded entirely on all historical trials including
+    the candidate's own returns and Sharpe.
     """
     hist_matrix, hist_sharpes = ledger.fetch_historical_returns(report.dataset_hash, exclude_id=exclude_id)
 
     if hist_matrix.empty:
-        return
+        hist_matrix = pd.DataFrame({"candidate": selection_returns})
+    else:
+        hist_matrix = hist_matrix.copy()
+        hist_matrix["candidate"] = selection_returns
 
-    # Use only historical trials — do NOT append the current candidate
+    sharpes = list(hist_sharpes) if hist_sharpes is not None else []
+    sharpes.append(report.observed_sharpe)
+
     n = max(1, calculate_effective_trials(hist_matrix))
-    sharpes = hist_sharpes  # candidate's Sharpe intentionally excluded
 
     report.effective_trials = n
     report.deflated_sharpe = calculate_psr_dsr(selection_returns, sharpes, n)
@@ -1213,8 +1216,8 @@ def _deflate_holdout(
 ) -> None:
     """Deflate ``report.holdout_deflated_sharpe`` by the holdout-peek count.
 
-    The null distribution uses only prior holdout peeks — the current
-    candidate's returns and Sharpe are excluded to avoid self-contamination.
+    The null distribution uses all prior holdout peeks including the current
+    candidate's returns and Sharpe.
     """
     hist_matrix, hist_sharpes = ledger.fetch_holdout_history(report.dataset_hash, exclude_id=exclude_id)
 
@@ -1222,15 +1225,15 @@ def _deflate_holdout(
         return
 
     if hist_matrix.empty:
-        report.holdout_deflated_sharpe = calculate_psr_dsr(
-            report.holdout_net_returns,
-            effective_trials=1,
-        )
-        return
+        hist_matrix = pd.DataFrame({"candidate": report.holdout_net_returns})
+    else:
+        hist_matrix = hist_matrix.copy()
+        hist_matrix["candidate"] = report.holdout_net_returns
 
-    # Use only historical holdout peeks — exclude the current candidate
+    sharpes = list(hist_sharpes) if hist_sharpes is not None else []
+    sharpes.append(report.holdout_metrics.sharpe_ratio)
+
     n = max(1, calculate_effective_trials(hist_matrix))
-    sharpes = hist_sharpes  # candidate's holdout Sharpe intentionally excluded
 
     report.holdout_deflated_sharpe = calculate_psr_dsr(
         report.holdout_net_returns,

@@ -533,6 +533,37 @@ def run_checks():
                 "detail": f"Lookahead bias sniff test execution failed: {e}",
             }
 
+        # 5. Lookahead Shift Test
+        try:
+            prices_shifted = prices_base.shift(1).dropna()
+            with timeout_sandbox(seconds=sandbox_timeout):
+                weights_shifted = module.generate_signals(prices_shifted, config_dict)
+
+            w_base_shifted = weights_base.shift(1).dropna()
+            w_shifted_clean = weights_shifted.dropna()
+
+            common_shift_idx = w_base_shifted.index.intersection(w_shifted_clean.index)
+            if not common_shift_idx.empty and len(common_shift_idx) > 260:
+                warmup_idx = common_shift_idx[260:]
+                w_b_s = w_base_shifted.loc[warmup_idx]
+                w_s_c = w_shifted_clean.loc[warmup_idx]
+
+                if not np.allclose(w_b_s.values, w_s_c.values, rtol=0.0, atol=1e-5):
+                    return {
+                        "passed": False,
+                        "error_code": "lookahead_detected",
+                        "detail": (
+                            "Lookahead Shift Test failed: signals did not shift consistently"
+                            " with price history shift."
+                        ),
+                    }
+        except Exception as e:
+            return {
+                "passed": False,
+                "error_code": "smoke_test_failed",
+                "detail": f"Lookahead Shift Test execution failed: {e}",
+            }
+
         return {"passed": True, "error_code": None, "detail": None}
     finally:
         sys.modules.pop(strategy_name, None)

@@ -55,8 +55,8 @@ def calculate_turnover_and_costs(
     # Sum of trades across assets at each day
     daily_trade_volume = trades.sum(axis=1)
 
-    # Linear fee + market impact (quadratic term)
-    costs = daily_trade_volume * cost_per_trade_value + impact_coef * (daily_trade_volume**2)
+    # Linear fee + market impact (quadratic term calculated per asset)
+    costs = daily_trade_volume * cost_per_trade_value + impact_coef * (trades**2).sum(axis=1)
 
     # Deduct transaction costs from gross daily returns
     net_returns = daily_returns - costs
