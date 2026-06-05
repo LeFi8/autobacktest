@@ -20,7 +20,7 @@ from autobacktest.evaluator.costs import calculate_turnover_and_costs
 from autobacktest.evaluator.deflated_sharpe import calculate_psr_dsr
 from autobacktest.evaluator.holdout import partition_holdout_data
 from autobacktest.evaluator.monte_carlo import run_block_bootstrap
-from autobacktest.evaluator.regime import evaluate_stress_regimes
+from autobacktest.evaluator.regime import calculate_regime_haircut, evaluate_stress_regimes
 from autobacktest.evaluator.report import EvaluationReport, WindowReport
 from autobacktest.evaluator.walk_forward import generate_walk_forward_windows
 from autobacktest.strategy.config_schema import StrategyConfig
@@ -158,6 +158,7 @@ def generate_window_report(
     benchmark_returns: pd.Series | None = None,
     *,
     asset_returns: pd.DataFrame | None = None,
+    borrow_cost_bps: float = 100.0,
 ) -> WindowReport:
     """Run backtest and cost assessment for a specific date window."""
     window_prices = prices.loc[start:end]
@@ -175,6 +176,7 @@ def generate_window_report(
         daily_weights,
         window_prices,
         asset_returns=asset_returns,
+        borrow_cost_bps=borrow_cost_bps,
     )
 
     # Standard performance metrics
@@ -260,6 +262,7 @@ def _run_walk_forward_windows(
     bench_returns: pd.Series | None = None,
     *,
     asset_returns: pd.DataFrame | None = None,
+    borrow_cost_bps: float = 100.0,
 ) -> list[WindowReport]:
     """Run walk-forward window evaluations in parallel via thread pool.
 
@@ -285,6 +288,7 @@ def _run_walk_forward_windows(
                 test_end,
                 bench_returns,
                 asset_returns=asset_returns,
+                borrow_cost_bps=borrow_cost_bps,
             )
             future_map[future] = i
 
@@ -420,6 +424,7 @@ def evaluate_strategy_detailed(
         wf_daily_weights,
         prices,
         asset_returns=_asset_returns,
+        borrow_cost_bps=flat_config.get("borrow_cost_bps", 100.0),
     )
 
     # Slice pooled returns to the contiguous walk-forward test-window span
@@ -464,6 +469,7 @@ def evaluate_strategy_detailed(
         wf_windows,
         bench_returns,
         asset_returns=_asset_returns,
+        borrow_cost_bps=flat_config.get("borrow_cost_bps", 100.0),
     )
 
     # ------------------------------------------------------------------
@@ -485,6 +491,7 @@ def evaluate_strategy_detailed(
         holdout_end,
         bench_returns,
         asset_returns=_asset_returns,
+        borrow_cost_bps=flat_config.get("borrow_cost_bps", 100.0),
     )
 
     holdout_prices = prices.loc[holdout_start:holdout_end]
@@ -499,6 +506,7 @@ def evaluate_strategy_detailed(
         h_daily_weights,
         holdout_prices,
         asset_returns=_asset_returns,
+        borrow_cost_bps=flat_config.get("borrow_cost_bps", 100.0),
     )
 
     # Full period evaluation for Monte Carlo and Regime tests
@@ -512,6 +520,7 @@ def evaluate_strategy_detailed(
         daily_weights,
         prices,
         asset_returns=_asset_returns,
+        borrow_cost_bps=flat_config.get("borrow_cost_bps", 100.0),
     )
 
     regime_drawdowns, regime_passed = evaluate_stress_regimes(
@@ -544,6 +553,14 @@ def evaluate_strategy_detailed(
     # Compute benchmark metrics for both periods
     benchmark_in_sample = _compute_returns_metrics(bench_returns, wf_start, wf_end)
     benchmark_holdout_m = _compute_returns_metrics(bench_returns, holdout_start, holdout_end)
+
+    # Calculate launch regime haircut and apply to strategy returns
+    haircut = calculate_regime_haircut(prices[benchmark_ticker], holdout_start)
+    if haircut > 0.0:
+        in_sample_metrics.annualized_return *= 1.0 - haircut
+        holdout_report.annualized_return *= 1.0 - haircut
+        for r in wf_reports:
+            r.annualized_return *= 1.0 - haircut
 
     # Generate complete stable dataset hash including date parameters
     dataset_hash = compute_dataset_hash(

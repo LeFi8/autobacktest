@@ -23,6 +23,7 @@ class StrategyConfig(BaseModel):
     momentum_lookback: int = Field(12, ge=1, description="Momentum lookback window (months)")
     max_drawdown_limit: float = Field(0.20, ge=0.0, le=1.0, description="Max permitted drawdown")
     turnover_limit: float = Field(2.0, gt=0.0, le=10.0, description="Max annualized turnover (capped at 10x)")
+    borrow_cost_bps: float = Field(100.0, ge=0.0, description="Annualized short borrowing cost in bps")
     params: dict[str, Any] = Field(default_factory=dict, description="Strategy-specific parameters")
     min_improvement: float = Field(0.0, ge=0.0, description="Minimum target-metric improvement epsilon for select gate")
     select_min_return_ratio: float = Field(

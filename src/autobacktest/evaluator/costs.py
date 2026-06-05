@@ -11,8 +11,9 @@ def calculate_turnover_and_costs(
     impact_coef: float = 0.0,
     *,
     asset_returns: pd.DataFrame | None = None,
+    borrow_cost_bps: float = 100.0,
 ) -> tuple[pd.Series, pd.Series, float]:
-    """Calculate net returns after transaction costs and annualized turnover.
+    """Calculate net returns after transaction costs, borrowing costs, and annualized turnover.
 
     Accounts for weight drift due to price changes between rebalances.
 
@@ -23,6 +24,7 @@ def calculate_turnover_and_costs(
         commission_bps: Commission fee in basis points (1 bp = 0.0001).
         spread_bps: Bid-ask spread in basis points.
         impact_coef: Market impact parameter (quadratic/linear cost).
+        borrow_cost_bps: Short borrowing cost in basis points annualized.
 
     Returns:
         tuple containing:
@@ -56,10 +58,17 @@ def calculate_turnover_and_costs(
     daily_trade_volume = trades.sum(axis=1)
 
     # Linear fee + market impact (quadratic term calculated per asset)
-    costs = daily_trade_volume * cost_per_trade_value + impact_coef * (trades**2).sum(axis=1)
+    transaction_costs = daily_trade_volume * cost_per_trade_value + impact_coef * (trades**2).sum(axis=1)
 
-    # Deduct transaction costs from gross daily returns
-    net_returns = daily_returns - costs
+    # Calculate short borrowing cost
+    # w_{i,t} is the weight of asset i at day t.
+    negative_weights = daily_weights.where(daily_weights < 0.0, 0.0).abs()
+    daily_borrow_cost = negative_weights.sum(axis=1) * (borrow_cost_bps / 2520000.0)
+
+    total_costs = transaction_costs + daily_borrow_cost
+
+    # Deduct costs from gross daily returns
+    net_returns = daily_returns - total_costs
 
     # Recalculate net equity curve
     net_equity = (1.0 + net_returns).cumprod()

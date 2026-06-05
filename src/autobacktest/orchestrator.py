@@ -1208,6 +1208,11 @@ def _deflate(
     report.effective_trials = n
     report.deflated_sharpe = calculate_psr_dsr(selection_returns, sharpes, n)
 
+    # Compute and store PBO (Probability of Backtest Overfitting)
+    from autobacktest.evaluator.cscv import calculate_pbo
+
+    report.pbo = calculate_pbo(hist_matrix)
+
 
 def _deflate_holdout(
     report: EvaluationReport,

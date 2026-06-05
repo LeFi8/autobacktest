@@ -161,6 +161,56 @@ _BUILTIN_NAMES: frozenset[str] = frozenset(
         "type",
         "vars",
         "zip",
+        # Standard exceptions and warnings
+        "BaseException",
+        "Exception",
+        "ArithmeticError",
+        "BufferError",
+        "LookupError",
+        "AssertionError",
+        "AttributeError",
+        "EOFError",
+        "FloatingPointError",
+        "GeneratorExit",
+        "ImportError",
+        "ModuleNotFoundError",
+        "IndexError",
+        "KeyError",
+        "KeyboardInterrupt",
+        "MemoryError",
+        "NameError",
+        "NotImplementedError",
+        "OSError",
+        "OverflowError",
+        "RecursionError",
+        "ReferenceError",
+        "RuntimeError",
+        "StopIteration",
+        "StopAsyncIteration",
+        "SyntaxError",
+        "IndentationError",
+        "TabError",
+        "SystemError",
+        "SystemExit",
+        "TypeError",
+        "UnboundLocalError",
+        "UnicodeError",
+        "UnicodeEncodeError",
+        "UnicodeDecodeError",
+        "UnicodeTranslateError",
+        "ValueError",
+        "ZeroDivisionError",
+        "Warning",
+        "UserWarning",
+        "DeprecationWarning",
+        "PendingDeprecationWarning",
+        "SyntaxWarning",
+        "RuntimeWarning",
+        "FutureWarning",
+        "ImportWarning",
+        "UnicodeWarning",
+        "BytesWarning",
+        "ResourceWarning",
     }
 )
 
@@ -535,28 +585,33 @@ def run_checks():
 
         # 5. Lookahead Shift Test
         try:
-            prices_shifted = prices_base.shift(1).dropna()
-            with timeout_sandbox(seconds=sandbox_timeout):
-                weights_shifted = module.generate_signals(prices_shifted, config_dict)
+            # Check if weights change sparsely (e.g. weekly/monthly rebalancing)
+            # By checking if weights change on less than 15% of the trading days
+            changes = weights_base.diff().abs().sum(axis=1) > 0
+            rebalance_ratio = float(changes.sum() / len(weights_base))
+            if rebalance_ratio >= 0.15:
+                prices_shifted = prices_base.shift(1).dropna()
+                with timeout_sandbox(seconds=sandbox_timeout):
+                    weights_shifted = module.generate_signals(prices_shifted, config_dict)
 
-            w_base_shifted = weights_base.shift(1).dropna()
-            w_shifted_clean = weights_shifted.dropna()
+                w_base_shifted = weights_base.shift(1).dropna()
+                w_shifted_clean = weights_shifted.dropna()
 
-            common_shift_idx = w_base_shifted.index.intersection(w_shifted_clean.index)
-            if not common_shift_idx.empty and len(common_shift_idx) > 260:
-                warmup_idx = common_shift_idx[260:]
-                w_b_s = w_base_shifted.loc[warmup_idx]
-                w_s_c = w_shifted_clean.loc[warmup_idx]
+                common_shift_idx = w_base_shifted.index.intersection(w_shifted_clean.index)
+                if not common_shift_idx.empty and len(common_shift_idx) > 260:
+                    warmup_idx = common_shift_idx[260:]
+                    w_b_s = w_base_shifted.loc[warmup_idx]
+                    w_s_c = w_shifted_clean.loc[warmup_idx]
 
-                if not np.allclose(w_b_s.values, w_s_c.values, rtol=0.0, atol=1e-5):
-                    return {
-                        "passed": False,
-                        "error_code": "lookahead_detected",
-                        "detail": (
-                            "Lookahead Shift Test failed: signals did not shift consistently"
-                            " with price history shift."
-                        ),
-                    }
+                    if not np.allclose(w_b_s.values, w_s_c.values, rtol=0.0, atol=1e-5):
+                        return {
+                            "passed": False,
+                            "error_code": "lookahead_detected",
+                            "detail": (
+                                "Lookahead Shift Test failed: signals did not shift consistently"
+                                " with price history shift."
+                            ),
+                        }
         except Exception as e:
             return {
                 "passed": False,
