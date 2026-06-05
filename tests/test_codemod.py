@@ -360,3 +360,19 @@ def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFra
     assert "from typing import Any" in result  # missing import fixed
     assert "clip(lower=0.0)" in result  # renormalization added
     assert len(fixes) >= 2
+
+
+def test_inject_any_import_after_docstring():
+    """Module docstring must be preserved when injecting from typing import Any."""
+    code = '''
+"""Strategy module for the HAA approach with canary triggers."""
+
+import pandas as pd
+
+def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFrame:
+    return pd.DataFrame()
+'''
+    result, fixes = repair_strategy_code(code)
+    assert result.startswith('"""Strategy module') or '"""Strategy module' in result[:200]
+    assert "from typing import Any" in result
+    assert fixes

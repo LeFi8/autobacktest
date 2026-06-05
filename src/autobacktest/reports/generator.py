@@ -369,7 +369,9 @@ def compile_strategy_report(
         _kv(lines, f"Active Return ({ticker})", f"{excess * 100:+.2f}%")
         excess_vol = (final_report.holdout_metrics.annualized_volatility - bench_ho.annualized_volatility) * 100
         _kv(lines, "Excess Volatility", f"{excess_vol:+.2f}%")
-        _kv(lines, "Information Ratio (HO)", f"{final_report.holdout_metrics.information_ratio:+.4f}")
+        ho_ir = final_report.holdout_metrics.information_ratio
+        ho_ir_str = f"{ho_ir:+.4f}" if ho_ir is not None else "N/A"
+        _kv(lines, "Information Ratio (HO)", ho_ir_str)
         if bench_is.information_ratio is None:
             lines.append("- *Benchmark IR shown as 0.0 — computed against itself, not meaningful.*")
     else:

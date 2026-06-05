@@ -662,6 +662,59 @@ def generate_signals(prices, config):
     assert "x" in scope
 
 
+def test_check_undefined_tuple_unpacking_pass():
+    """Tuple unpacking (a, b = prices.shape) must NOT be flagged."""
+    code = """
+def generate_signals(prices, config):
+    rows, cols = prices.shape
+    return prices
+"""
+    res = _check_ast(code)
+    assert res.passed
+
+
+def test_check_undefined_for_enumerate_unpacking_pass():
+    """For-loop tuple unpacking (for i, col in enumerate(...)) must NOT be flagged."""
+    code = """
+import pandas as pd
+
+def generate_signals(prices: pd.DataFrame, config: dict) -> pd.DataFrame:
+    for i, col in enumerate(prices.columns):
+        pass
+    return prices
+"""
+    res = _check_ast(code)
+    assert res.passed
+
+
+def test_check_undefined_for_list_unpacking_pass():
+    """List unpacking in for (for a, b in [(1,2)]) must NOT be flagged."""
+    code = """
+def generate_signals(prices, config):
+    pairs = [(1, 2), (3, 4)]
+    for x, y in pairs:
+        pass
+    return prices
+"""
+    res = _check_ast(code)
+    assert res.passed
+
+
+def test_check_undefined_top_level_constants_pass():
+    """Top-level constants referenced inside functions must NOT be flagged."""
+    code = """
+DEFAULT_LAG = 21
+MAX_WEIGHT = 0.5
+
+def generate_signals(prices, config):
+    lag = DEFAULT_LAG
+    cap = MAX_WEIGHT
+    return prices
+"""
+    res = _check_ast(code)
+    assert res.passed
+
+
 # ---------------------------------------------------------------------------
 # End of undefined-name tests
 # ---------------------------------------------------------------------------

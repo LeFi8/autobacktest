@@ -21,7 +21,8 @@ def _rebalance_dates(prices: pd.DataFrame) -> pd.DatetimeIndex:
     """Return business month end dates that exist in the price index."""
     start = prices.index.min()
     end = prices.index.max()
-    possible = pd.date_range(start=start, end=end, freq="BME")
+    tz = prices.index.tz
+    possible = pd.date_range(start=start, end=end, freq="BME", tz=tz)
     return possible.intersection(prices.index)
 
 

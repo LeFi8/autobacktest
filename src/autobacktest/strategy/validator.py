@@ -811,6 +811,20 @@ def _check_config(path: Path) -> ValidationResult:
         )
 
 
+def _extract_names(node: ast.AST | None, scope: set[str]) -> None:
+    """Recursively extract variable names from *node* into *scope*.
+
+    Handles simple ``ast.Name`` targets, tuple/list unpacking, and ``None``.
+    """
+    if node is None:
+        return
+    if isinstance(node, ast.Name):
+        scope.add(node.id)
+    elif isinstance(node, (ast.Tuple, ast.List)):
+        for elt in node.elts:
+            _extract_names(elt, scope)
+
+
 def _walk_body(body: list[ast.stmt], scope: set[str]) -> None:
     """Recursively collect locally-defined names from *body*.
 
@@ -821,13 +835,11 @@ def _walk_body(body: list[ast.stmt], scope: set[str]) -> None:
     for stmt in body:
         if isinstance(stmt, ast.Assign):
             for target in stmt.targets:
-                if isinstance(target, ast.Name):
-                    scope.add(target.id)
+                _extract_names(target, scope)
         elif isinstance(stmt, (ast.AnnAssign, ast.AugAssign)) and isinstance(stmt.target, ast.Name):
             scope.add(stmt.target.id)
         elif isinstance(stmt, ast.For):
-            if isinstance(stmt.target, ast.Name):
-                scope.add(stmt.target.id)
+            _extract_names(stmt.target, scope)
             _walk_body(stmt.body, scope)
             _walk_body(stmt.orelse, scope)
         elif isinstance(stmt, (ast.While, ast.If)):
@@ -843,8 +855,7 @@ def _walk_body(body: list[ast.stmt], scope: set[str]) -> None:
             _walk_body(stmt.finalbody, scope)
         elif isinstance(stmt, (ast.With, ast.AsyncWith)):
             for item in stmt.items:
-                if isinstance(item.optional_vars, ast.Name):
-                    scope.add(item.optional_vars.id)
+                _extract_names(item.optional_vars, scope)
             _walk_body(stmt.body, scope)
         elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
             scope.add(stmt.name)
@@ -891,7 +902,7 @@ def _check_undefined_names(tree: ast.Module) -> ValidationResult | None:
     Returns ``None`` (pass) or a ``ValidationResult`` with
     ``error_code=UNDEFINED_NAME``.
     """
-    # Build module-level scope (imports + top-level defs)
+    # Build module-level scope (imports + top-level defs + top-level assignments)
     module_scope: set[str] = set()
     for child in tree.body:
         if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -904,6 +915,11 @@ def _check_undefined_names(tree: ast.Module) -> ValidationResult | None:
             for alias in child.names:
                 name = alias.asname or alias.name
                 module_scope.add(name)
+        elif isinstance(child, ast.Assign):
+            for target in child.targets:
+                _extract_names(target, module_scope)
+        elif isinstance(child, (ast.AnnAssign, ast.AugAssign)) and isinstance(child.target, ast.Name):
+            module_scope.add(child.target.id)
 
     # Build parent map for closure-scope resolution
     parent_map: dict[int, ast.AST] = {}

@@ -237,7 +237,15 @@ class _MissingImportInjector(ast.NodeTransformer):
                 level=0,
             )
             ast.fix_missing_locations(import_node)
-            node.body.insert(0, import_node)
+            insert_idx = 0
+            if (
+                node.body
+                and isinstance(node.body[0], ast.Expr)
+                and isinstance(node.body[0].value, ast.Constant)
+                and isinstance(node.body[0].value.value, str)
+            ):
+                insert_idx = 1
+            node.body.insert(insert_idx, import_node)
             self.fixes_applied.append("Injected missing `from typing import Any`")
 
         return self.generic_visit(node)
