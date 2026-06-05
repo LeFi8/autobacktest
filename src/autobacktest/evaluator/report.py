@@ -20,7 +20,7 @@ class WindowReport:
     sortino_ratio: float
     max_drawdown: float
     turnover: float
-    information_ratio: float = 0.0
+    information_ratio: float | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "WindowReport":

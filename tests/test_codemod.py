@@ -253,6 +253,41 @@ def generate_signals(prices, config):
     assert fixes == []
 
 
+def test_no_false_positive_any_in_docstring():
+    """Docstring containing 'Return True if any asset meets condition' → no Any import."""
+    code = '''
+def generate_signals(prices, config):
+    """Return True if any asset meets the condition."""
+    return prices
+'''
+    result, _ = repair_strategy_code(code)
+    assert "from typing import Any" not in result
+
+
+def test_inject_any_word_boundary_annotation():
+    """String annotation 'dict[str, Any]' still triggers injection (regression)."""
+    code = """
+def generate_signals(prices: 'pd.DataFrame', config: 'dict[str, Any]') -> 'pd.DataFrame':
+    return prices
+"""
+    result, fixes = repair_strategy_code(code)
+    assert "from typing import Any" in result
+    assert fixes
+
+
+def test_skip_if_any_via_module_qualified():
+    """typing.Any via module attribute → no injection needed."""
+    code = """
+import typing
+
+def generate_signals(prices, config):
+    x: typing.Any = prices
+    return prices
+"""
+    result, _ = repair_strategy_code(code)
+    assert "from typing import Any" not in result  # no extra import (already has import typing)
+
+
 # ---------------------------------------------------------------------------
 # WeightRenormalizer tests
 # ---------------------------------------------------------------------------

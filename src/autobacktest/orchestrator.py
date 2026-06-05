@@ -1246,7 +1246,7 @@ def _get_metric_value(report: EvaluationReport, metric: TargetMetric) -> float:
     elif metric == TargetMetric.SORTINO:
         return report.in_sample_metrics.sortino_ratio
     else:  # INFORMATION_RATIO
-        return report.in_sample_metrics.information_ratio
+        return report.in_sample_metrics.information_ratio or 0.0
 
 
 def _extract_best_failure(candidate_results: list[dict[str, Any]]) -> dict[str, Any]:

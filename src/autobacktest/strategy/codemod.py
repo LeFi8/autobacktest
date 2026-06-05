@@ -15,6 +15,9 @@ Frequency aliases are context-sensitive in pandas 3.x:
 """
 
 import ast
+import re
+
+_ANY_WORD_RE = re.compile(r"\bAny\b")
 
 # Deprecated DatetimeIndex freq aliases → pandas 3.x replacements (forward)
 _FREQ_ALIAS_MAP: dict[str, str] = {
@@ -215,7 +218,7 @@ class _MissingImportInjector(ast.NodeTransformer):
                 any_used = True
             elif isinstance(child, ast.Constant) and isinstance(child.value, str):
                 # String annotations like ``'dict[str, Any]'``
-                if "Any" in child.value:
+                if _ANY_WORD_RE.search(child.value):
                     any_used = True
             elif isinstance(child, ast.ImportFrom):
                 if child.module == "typing":

@@ -9,6 +9,7 @@ from autobacktest.config import settings
 from autobacktest.strategy.validator import (
     ValidationError,
     ValidationResult,
+    _build_function_scope,
     _calculate_complexity,
     _check_ast,
     _count_node_lines,
@@ -581,6 +582,84 @@ def generate_signals(prices: pd.DataFrame, config: dict) -> pd.DataFrame:
     assert not res.passed
     assert res.error_code == ValidationError.UNDEFINED_NAME
     assert "ret" in res.detail
+
+
+def test_check_undefined_nested_function_def_name_pass():
+    """Inner function def'd inside outer function must NOT be flagged."""
+    code = """
+def generate_signals(prices, config):
+    def helper():
+        return prices
+    return helper()
+"""
+    res = _check_ast(code)
+    assert res.passed
+
+
+def test_check_undefined_nested_function_local_not_leaking():
+    """Local var inside inner function must NOT leak into outer scope."""
+    code = """
+def generate_signals(prices, config):
+    def inner():
+        x = 1
+    return x
+"""
+    res = _check_ast(code)
+    assert not res.passed
+    assert res.error_code == ValidationError.UNDEFINED_NAME
+    assert "x" in res.detail
+
+
+def test_check_undefined_aug_assign():
+    """Augmented assignment (x += 1) defines x."""
+    code = """
+def generate_signals(prices, config):
+    x = 0
+    x += 1
+    return prices
+"""
+    res = _check_ast(code)
+    assert res.passed
+
+
+def test_check_undefined_with_as():
+    """with ... as x: defines x (tested via direct _build_function_scope call)."""
+    tree = ast.parse("""
+def generate_signals(prices, config):
+    from contextlib import nullcontext
+    with nullcontext() as x:
+        pass
+    return x
+""")
+    func = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "generate_signals":
+            func = node
+            break
+    assert func is not None
+    scope = _build_function_scope(func)
+    assert "x" in scope
+
+
+def test_check_undefined_except_as():
+    """except ... as e: defines e (tested via direct _build_function_scope call)."""
+    tree = ast.parse("""
+def generate_signals(prices, config):
+    try:
+        x = 1
+    except Exception as e:
+        pass
+    return prices
+""")
+    func = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "generate_signals":
+            func = node
+            break
+    assert func is not None
+    scope = _build_function_scope(func)
+    assert "e" in scope
+    assert "x" in scope
 
 
 # ---------------------------------------------------------------------------

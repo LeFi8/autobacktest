@@ -811,6 +811,51 @@ def _check_config(path: Path) -> ValidationResult:
         )
 
 
+def _walk_body(body: list[ast.stmt], scope: set[str]) -> None:
+    """Recursively collect locally-defined names from *body*.
+
+    Traverses compound-statement bodies (``if``, ``for``, ``while``,
+    ``try``, ``with``) but stops at ``FunctionDef`` / ``AsyncFunctionDef``
+    boundaries — nested function bodies are not walked.
+    """
+    for stmt in body:
+        if isinstance(stmt, ast.Assign):
+            for target in stmt.targets:
+                if isinstance(target, ast.Name):
+                    scope.add(target.id)
+        elif isinstance(stmt, (ast.AnnAssign, ast.AugAssign)) and isinstance(stmt.target, ast.Name):
+            scope.add(stmt.target.id)
+        elif isinstance(stmt, ast.For):
+            if isinstance(stmt.target, ast.Name):
+                scope.add(stmt.target.id)
+            _walk_body(stmt.body, scope)
+            _walk_body(stmt.orelse, scope)
+        elif isinstance(stmt, (ast.While, ast.If)):
+            _walk_body(stmt.body, scope)
+            _walk_body(stmt.orelse, scope)
+        elif isinstance(stmt, ast.Try):
+            _walk_body(stmt.body, scope)
+            for handler in stmt.handlers:
+                if isinstance(handler.name, str):
+                    scope.add(handler.name)
+                _walk_body(handler.body, scope)
+            _walk_body(stmt.orelse, scope)
+            _walk_body(stmt.finalbody, scope)
+        elif isinstance(stmt, (ast.With, ast.AsyncWith)):
+            for item in stmt.items:
+                if isinstance(item.optional_vars, ast.Name):
+                    scope.add(item.optional_vars.id)
+            _walk_body(stmt.body, scope)
+        elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            scope.add(stmt.name)
+        elif (
+            isinstance(stmt, ast.Expr)
+            and isinstance(stmt.value, ast.NamedExpr)
+            and isinstance(stmt.value.target, ast.Name)
+        ):
+            scope.add(stmt.value.target.id)
+
+
 def _build_function_scope(func_node: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
     """Build a ``set`` of locally defined names within *func_node*'s body.
 
@@ -830,19 +875,7 @@ def _build_function_scope(func_node: ast.FunctionDef | ast.AsyncFunctionDef) -> 
     for arg in func_node.args.posonlyargs:
         scope.add(arg.arg)
 
-    for stmt in ast.walk(func_node):
-        if isinstance(stmt, ast.Assign):
-            for target in stmt.targets:
-                if isinstance(target, ast.Name):
-                    scope.add(target.id)
-        elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
-            scope.add(stmt.target.id)
-        elif isinstance(stmt, ast.For):
-            if isinstance(stmt.target, ast.Name):
-                scope.add(stmt.target.id)
-        elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            scope.add(stmt.name)
-
+    _walk_body(func_node.body, scope)
     return scope
 
 
@@ -851,6 +884,9 @@ def _check_undefined_names(tree: ast.Module) -> ValidationResult | None:
     name that is not defined in the function body, the module scope, or among
     builtins.  Catches LLM hallucinations such as ``_canary_sign``,
     out-of-scope ``prices`` references, and similar simple mistakes.
+
+    Respects closure-scope chains: names defined in an enclosing function
+    (parameters, locals) are considered defined for nested functions.
 
     Returns ``None`` (pass) or a ``ValidationResult`` with
     ``error_code=UNDEFINED_NAME``.
@@ -869,15 +905,32 @@ def _check_undefined_names(tree: ast.Module) -> ValidationResult | None:
                 name = alias.asname or alias.name
                 module_scope.add(name)
 
+    # Build parent map for closure-scope resolution
+    parent_map: dict[int, ast.AST] = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):  # type: ignore[assignment]
+            parent_map[id(child)] = node
+
     for func_node in ast.walk(tree):
         if not isinstance(func_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
+
         func_scope = _build_function_scope(func_node)
+
+        # Build closure scope: names from all enclosing function defs
+        closure_scope: set[str] = set()
+        curr = parent_map.get(id(func_node))
+        while curr is not None:
+            if isinstance(curr, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                closure_scope |= _build_function_scope(curr)
+            curr = parent_map.get(id(curr))
 
         for ref_node in ast.walk(func_node):
             if not isinstance(ref_node, ast.Name) or not isinstance(ref_node.ctx, ast.Load):
                 continue
             name = ref_node.id
+            if name in closure_scope:
+                continue
             if name not in func_scope and name not in module_scope and name not in _BUILTIN_NAMES:
                 return ValidationResult(
                     passed=False,
