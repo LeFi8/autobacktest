@@ -1,7 +1,20 @@
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 import pandas as pd
+
+
+@dataclass
+class HAAParams:
+    defensive_assets: list[str]
+    offensive_assets: list[str]
+    canary_assets: list[str]
+    top_n: int = 6
+    target_vol: float = 0.10
+    port_vol_window: int = 21
+    smooth: float = 0.25
+    min_mom_threshold: float = 0.0
 
 
 def _rebalance_dates(prices: pd.DataFrame) -> pd.DatetimeIndex:
@@ -110,14 +123,7 @@ def _target_weights(
     rmom: pd.DataFrame,
     sma: pd.DataFrame,
     vol_df: pd.DataFrame,
-    defensive_assets: list[str],
-    offensive_assets: list[str],
-    canary_assets: list[str],
-    top_n: int,
-    target_vol: float,
-    port_vol_window: int,
-    smooth: float,
-    min_mom_threshold: float,
+    params: HAAParams,
     prev_weights: pd.Series | None,
 ) -> pd.Series:
     """Compute target weights for one rebalance date."""
@@ -126,26 +132,26 @@ def _target_weights(
     target = pd.Series(0.0, index=all_cols)
 
     # Canary check
-    if _canary_triggered(min_mom, canary_assets, date):
-        best_def = _best_defensive(min_mom, defensive_assets, date)
+    if _canary_triggered(min_mom, params.canary_assets, date):
+        best_def = _best_defensive(min_mom, params.defensive_assets, date)
         if best_def and best_def in all_cols:
             target[best_def] = 1.0
     else:
-        eligible = _eligible_offensive(prices, date, rmom, sma, offensive_assets, min_mom_threshold)
+        eligible = _eligible_offensive(prices, date, rmom, sma, params.offensive_assets, params.min_mom_threshold)
         if not eligible:
-            best_def = _best_defensive(min_mom, defensive_assets, date)
+            best_def = _best_defensive(min_mom, params.defensive_assets, date)
             if best_def and best_def in all_cols:
                 target[best_def] = 1.0
         else:
-            selected = eligible[:top_n]
-            port_vol = _portfolio_volatility(daily_returns, selected, date, port_vol_window, vol_df)
-            scale = min(1.0, target_vol / port_vol) if port_vol > 0 else 1.0
+            selected = eligible[: params.top_n]
+            port_vol = _portfolio_volatility(daily_returns, selected, date, params.port_vol_window, vol_df)
+            scale = min(1.0, params.target_vol / port_vol) if port_vol > 0 else 1.0
             slot_weight = scale / max(1, len(selected))
             for asset in selected:
                 target[asset] = slot_weight
             defensive_exposure = 1.0 - target.sum()
             if defensive_exposure > 0:
-                best_def = _best_defensive(min_mom, defensive_assets, date)
+                best_def = _best_defensive(min_mom, params.defensive_assets, date)
                 if best_def and best_def in all_cols:
                     target[best_def] += defensive_exposure
                 else:
@@ -156,7 +162,7 @@ def _target_weights(
                             target[a] += per_slot
 
     if prev_weights is not None:
-        target = smooth * target + (1.0 - smooth) * prev_weights
+        target = params.smooth * target + (1.0 - params.smooth) * prev_weights
 
     target = target.clip(lower=0.0)
     total = target.sum()
@@ -181,18 +187,20 @@ def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFra
         offensive_assets: list[str]      risky assets to select from
         canary_assets: list[str]         assets used for binary canary (e.g., ["TIP", "BND"])
     """
-    params = config.get("params", {})
-    mom_lags = params.get("mom_lags", [21, 63, 126, 252])
-    vol_window = params.get("vol_window", 126)
-    trend_window = params.get("trend_window", 200)
-    defensive_assets = params.get("defensive_assets", ["BIL", "BND"])
-    offensive_assets = params.get("offensive_assets", [])
-    canary_assets = params.get("canary_assets", [])
-    top_n = params.get("top_n", 6)
-    target_vol = params.get("target_vol", 0.10)
-    port_vol_window = params.get("port_vol_window", 21)
-    smooth = params.get("smooth", 0.25)
-    min_mom_threshold = params.get("min_mom_threshold", 0.0)
+    cfg = config.get("params", {})
+    mom_lags = cfg.get("mom_lags", [21, 63, 126, 252])
+    vol_window = cfg.get("vol_window", 126)
+    trend_window = cfg.get("trend_window", 200)
+    p = HAAParams(
+        defensive_assets=cfg.get("defensive_assets", ["BIL", "BND"]),
+        offensive_assets=cfg.get("offensive_assets", ["SPY", "QQQ", "IWM", "VGK", "VWO", "DBC", "GLD", "VNQ"]),
+        canary_assets=cfg.get("canary_assets", ["TIP", "BND"]),
+        top_n=cfg.get("top_n", 6),
+        target_vol=cfg.get("target_vol", 0.10),
+        port_vol_window=cfg.get("port_vol_window", 21),
+        smooth=cfg.get("smooth", 0.25),
+        min_mom_threshold=cfg.get("min_mom_threshold", 0.0),
+    )
 
     all_assets = list(prices.columns)
     if prices.empty:
@@ -222,14 +230,7 @@ def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFra
             rmom=rmom,
             sma=sma,
             vol_df=vol,
-            defensive_assets=defensive_assets,
-            offensive_assets=offensive_assets,
-            canary_assets=canary_assets,
-            top_n=top_n,
-            target_vol=target_vol,
-            port_vol_window=port_vol_window,
-            smooth=smooth,
-            min_mom_threshold=min_mom_threshold,
+            params=p,
             prev_weights=prev_weights,
         )
         weights.loc[date] = new_w

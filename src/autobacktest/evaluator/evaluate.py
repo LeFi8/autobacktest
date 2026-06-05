@@ -542,7 +542,7 @@ def evaluate_strategy_detailed(
     )
 
     # Compute benchmark metrics for both periods
-    benchmark_in_sample = _compute_returns_metrics(bench_returns, in_sample_idx.min(), in_sample_idx.max())
+    benchmark_in_sample = _compute_returns_metrics(bench_returns, wf_start, wf_end)
     benchmark_holdout_m = _compute_returns_metrics(bench_returns, holdout_start, holdout_end)
 
     # Generate complete stable dataset hash including date parameters

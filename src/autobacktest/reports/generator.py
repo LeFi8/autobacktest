@@ -370,6 +370,8 @@ def compile_strategy_report(
         excess_vol = (final_report.holdout_metrics.annualized_volatility - bench_ho.annualized_volatility) * 100
         _kv(lines, "Excess Volatility", f"{excess_vol:+.2f}%")
         _kv(lines, "Information Ratio (HO)", f"{final_report.holdout_metrics.information_ratio:+.4f}")
+        if bench_is.information_ratio == 0.0:
+            lines.append("- *Benchmark IR shown as 0.0 — computed against itself, not meaningful.*")
     else:
         lines.append("")
         lines.append("*(Benchmark performance data not available — re-run evaluation with benchmark price data.)*")
@@ -387,7 +389,7 @@ def compile_strategy_report(
     lines.append("")
     png_path = output_dir / "equity_curves.png"
     if png_path.exists():
-        lines.append(f"![equity_curves]({png_path.resolve().as_uri()})")
+        lines.append("![equity_curves](equity_curves.png)")
     else:
         lines.append("*(Chart not generated)*")
     lines.append("")
@@ -396,7 +398,7 @@ def compile_strategy_report(
     lines.append("")
     mc_path = output_dir / "mc_histogram.png"
     if mc_path.exists():
-        lines.append(f"![mc_histogram]({mc_path.resolve().as_uri()})")
+        lines.append("![mc_histogram](mc_histogram.png)")
     else:
         lines.append("*(MC histogram not available)*")
     lines.append("")
