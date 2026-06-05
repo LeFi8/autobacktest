@@ -10,6 +10,7 @@ from autobacktest.strategy.validator import (
     ValidationError,
     ValidationResult,
     _calculate_complexity,
+    _check_ast,
     _count_node_lines,
     preflight,
 )
@@ -499,6 +500,92 @@ def test_preflight_rejects_overly_complex_function() -> None:
         assert "cyclomatic complexity" in res.detail
     finally:
         settings.max_cyclomatic_complexity = original
+
+
+# ---------------------------------------------------------------------------
+# Undefined-name pre-check tests
+# ---------------------------------------------------------------------------
+
+
+def test_check_undefined_name_catches_undefined():
+    """A function referencing an undefined name is rejected."""
+    code = """
+import pandas as pd
+
+def generate_signals(prices: pd.DataFrame, config: dict) -> pd.DataFrame:
+    return _canary_sign
+"""
+    res = _check_ast(code)
+    assert not res.passed
+    assert res.error_code == ValidationError.UNDEFINED_NAME
+    assert "_canary_sign" in res.detail
+
+
+def test_check_undefined_name_builtins_pass():
+    """Python builtins must NOT be flagged."""
+    code = """
+import pandas as pd
+
+def generate_signals(prices: pd.DataFrame, config: dict) -> pd.DataFrame:
+    n = len(prices)
+    return prices
+"""
+    res = _check_ast(code)
+    assert res.passed
+
+
+def test_check_undefined_name_imports_pass():
+    """Imported names must NOT be flagged."""
+    code = """
+import pandas as pd
+import numpy as np
+
+def generate_signals(prices: pd.DataFrame, config: dict) -> pd.DataFrame:
+    a = np.array([1, 2, 3])
+    return pd.DataFrame(index=prices.index)
+"""
+    res = _check_ast(code)
+    assert res.passed
+
+
+def test_check_undefined_name_params_pass():
+    """Function parameters must NOT be flagged."""
+    code = """
+def generate_signals(prices, config):
+    return prices
+"""
+    res = _check_ast(code)
+    assert res.passed
+
+
+def test_check_undefined_name_local_vars_pass():
+    """Locally assigned variables must NOT be flagged."""
+    code = """
+def generate_signals(prices, config):
+    w = prices * 0.5
+    return w
+"""
+    res = _check_ast(code)
+    assert res.passed
+
+
+def test_check_undefined_name_ret_missing():
+    """Undefined name 'ret' in return is caught."""
+    code = """
+import pandas as pd
+
+def generate_signals(prices: pd.DataFrame, config: dict) -> pd.DataFrame:
+    return ret
+"""
+    res = _check_ast(code)
+    assert not res.passed
+    assert res.error_code == ValidationError.UNDEFINED_NAME
+    assert "ret" in res.detail
+
+
+# ---------------------------------------------------------------------------
+# End of undefined-name tests
+# ---------------------------------------------------------------------------
 
 
 def _run_with_code(code: str) -> ValidationResult | None:

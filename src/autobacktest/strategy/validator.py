@@ -92,6 +92,79 @@ FORBIDDEN_NAMES = {
 }
 
 
+# Names available as Python builtins (never cause NameError).
+_BUILTIN_NAMES: frozenset[str] = frozenset(
+    {
+        "abs",
+        "all",
+        "any",
+        "ascii",
+        "bin",
+        "bool",
+        "bytearray",
+        "bytes",
+        "callable",
+        "chr",
+        "classmethod",
+        "compile",
+        "complex",
+        "delattr",
+        "dict",
+        "dir",
+        "divmod",
+        "enumerate",
+        "eval",
+        "exec",
+        "filter",
+        "float",
+        "format",
+        "frozenset",
+        "getattr",
+        "globals",
+        "hasattr",
+        "hash",
+        "hex",
+        "id",
+        "input",
+        "int",
+        "isinstance",
+        "issubclass",
+        "iter",
+        "len",
+        "list",
+        "locals",
+        "map",
+        "max",
+        "memoryview",
+        "min",
+        "next",
+        "object",
+        "oct",
+        "open",
+        "ord",
+        "pow",
+        "print",
+        "property",
+        "range",
+        "repr",
+        "reversed",
+        "round",
+        "set",
+        "setattr",
+        "slice",
+        "sorted",
+        "staticmethod",
+        "str",
+        "sum",
+        "super",
+        "tuple",
+        "type",
+        "vars",
+        "zip",
+    }
+)
+
+
 # API key patterns to redact from error output
 _SANITIZE_PATTERNS = [
     (re.compile(r"(sk-[a-zA-Z0-9]{20,})"), r"sk-***REDACTED***"),
@@ -119,6 +192,7 @@ class ValidationError(StrEnum):
     SIGNATURE_MISMATCH = "signature_mismatch"
     SMOKE_TEST_FAILED = "smoke_test_failed"
     LOOKAHEAD_DETECTED = "lookahead_detected"
+    UNDEFINED_NAME = "undefined_name"
 
 
 @dataclass
@@ -704,6 +778,11 @@ def _check_ast(content: str) -> ValidationResult:
                     ),
                 )
 
+    # Undefined-name pre-check
+    undefined_res = _check_undefined_names(tree)
+    if undefined_res is not None:
+        return undefined_res
+
     return ValidationResult(passed=True)
 
 
@@ -730,6 +809,83 @@ def _check_config(path: Path) -> ValidationResult:
             error_code=ValidationError.CONFIG_SCHEMA_INVALID,
             detail=f"Config load error: {e}",
         )
+
+
+def _build_function_scope(func_node: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+    """Build a ``set`` of locally defined names within *func_node*'s body.
+
+    Includes parameters, assignment targets, ``for``-loop variables,
+    nested defs, and augmented-assignment targets.
+    """
+    scope: set[str] = set()
+
+    for arg in func_node.args.args:
+        scope.add(arg.arg)
+    if func_node.args.vararg:
+        scope.add(func_node.args.vararg.arg)
+    if func_node.args.kwarg:
+        scope.add(func_node.args.kwarg.arg)
+    for arg in func_node.args.kwonlyargs:
+        scope.add(arg.arg)
+    for arg in func_node.args.posonlyargs:
+        scope.add(arg.arg)
+
+    for stmt in ast.walk(func_node):
+        if isinstance(stmt, ast.Assign):
+            for target in stmt.targets:
+                if isinstance(target, ast.Name):
+                    scope.add(target.id)
+        elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+            scope.add(stmt.target.id)
+        elif isinstance(stmt, ast.For):
+            if isinstance(stmt.target, ast.Name):
+                scope.add(stmt.target.id)
+        elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            scope.add(stmt.name)
+
+    return scope
+
+
+def _check_undefined_names(tree: ast.Module) -> ValidationResult | None:
+    """Return a failed :class:`ValidationResult` if any function references a
+    name that is not defined in the function body, the module scope, or among
+    builtins.  Catches LLM hallucinations such as ``_canary_sign``,
+    out-of-scope ``prices`` references, and similar simple mistakes.
+
+    Returns ``None`` (pass) or a ``ValidationResult`` with
+    ``error_code=UNDEFINED_NAME``.
+    """
+    # Build module-level scope (imports + top-level defs)
+    module_scope: set[str] = set()
+    for child in tree.body:
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            module_scope.add(child.name)
+        elif isinstance(child, ast.Import):
+            for alias in child.names:
+                name = alias.asname or alias.name.split(".")[0]
+                module_scope.add(name)
+        elif isinstance(child, ast.ImportFrom):
+            for alias in child.names:
+                name = alias.asname or alias.name
+                module_scope.add(name)
+
+    for func_node in ast.walk(tree):
+        if not isinstance(func_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        func_scope = _build_function_scope(func_node)
+
+        for ref_node in ast.walk(func_node):
+            if not isinstance(ref_node, ast.Name) or not isinstance(ref_node.ctx, ast.Load):
+                continue
+            name = ref_node.id
+            if name not in func_scope and name not in module_scope and name not in _BUILTIN_NAMES:
+                return ValidationResult(
+                    passed=False,
+                    error_code=ValidationError.UNDEFINED_NAME,
+                    detail=(f"Name '{name}' is not defined in function '{func_node.name}' or any enclosing scope."),
+                )
+
+    return None
 
 
 def _generate_synthetic_prices(tickers: list[str], n_days: int, seed: int = 42) -> pd.DataFrame:

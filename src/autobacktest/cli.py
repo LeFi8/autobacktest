@@ -875,7 +875,9 @@ def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFra
     if cash_asset not in available:
         raise ValueError(f"Cash asset {{cash_asset}} not in price data")
 
-    rebalance_dates = prices.groupby(prices.index.to_period("M")).tail(1).index
+    start = prices.index.min()
+    end = prices.index.max()
+    rebalance_dates = pd.date_range(start=start, end=end, freq="BME").intersection(prices.index)
     weights = pd.DataFrame(0.0, index=rebalance_dates, columns=prices.columns)
 
     for date in rebalance_dates:

@@ -532,9 +532,9 @@ def run_optimization(
 
                             # Apply deterministic pandas codemod (repairs deprecated API calls)
                             if settings.enable_codemod_repair:
-                                from autobacktest.strategy.codemod import repair_pandas_code
+                                from autobacktest.strategy.codemod import repair_strategy_code
 
-                                repaired_code, applied_fixes = repair_pandas_code(edit.strategy_code)
+                                repaired_code, applied_fixes = repair_strategy_code(edit.strategy_code)
                                 if applied_fixes:
                                     import dataclasses as _dc
 
@@ -978,11 +978,11 @@ def run_optimization(
 
                     if consecutive_no_backtest >= 5 and not quiet:
                         progress.console.print(
-                                f"[yellow]⚠ Iter {k}/{iterations}: {consecutive_no_backtest} consecutive "
-                                f"iterations with zero candidates reaching backtest. "
-                                f"The LLM may be struggling with code generation — "
-                                f"check preflight errors above.[/]"
-                            )
+                            f"[yellow]⚠ Iter {k}/{iterations}: {consecutive_no_backtest} consecutive "
+                            f"iterations with zero candidates reaching backtest. "
+                            f"The LLM may be struggling with code generation — "
+                            f"check preflight errors above.[/]"
+                        )
 
                     event_log.write(event)
                 finally:
