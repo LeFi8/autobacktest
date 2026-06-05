@@ -47,28 +47,28 @@ def test_market_holiday_skips_redundant_fetches() -> None:
         raw_provider = MockResilientDataProvider()
         cached_provider = CachedDataProvider(raw_provider, cache_dir=tmp_dir)
 
-        # 1. Fetch normal date range first
-        cached_provider.get_prices(["SPY"], "2026-05-20", "2026-05-22")
+        # 1. Fetch normal date range first (Mon-Wed, 3 trading days)
+        cached_provider.get_prices(["SPY"], "2026-05-11", "2026-05-13")
         assert raw_provider.fetch_count == 1
 
-        # 2. Simulate holiday fetch (return empty DataFrame representing closed market)
+        # 2. Extend range to include Thu+Fri (return empty to simulate market closure)
         raw_provider.return_empty = True
-        cached_provider.get_prices(["SPY"], "2026-05-20", "2026-05-25")
-        # Assert provider was called once for the incremental suffix (May 23 to 25)
+        cached_provider.get_prices(["SPY"], "2026-05-11", "2026-05-15")
+        # Assert provider was called once for the incremental suffix (May 14 to 15)
         assert raw_provider.fetch_count == 2
 
-        # Verify companion JSON metadata covers May 25
+        # Verify companion JSON metadata covers May 15
         meta_file = Path(tmp_dir) / "SPY_1d.json"
         assert meta_file.exists()
         _, meta_end = cached_provider._load_metadata("SPY", "1d")
-        assert meta_end == pd.to_datetime("2026-05-25")
+        assert meta_end == pd.to_datetime("2026-05-15")
 
-        # 3. Query the same range again (holiday is now covered by metadata bounds)
+        # 3. Query the same range again (gap is now covered by metadata bounds)
         raw_provider.return_empty = False
-        df = cached_provider.get_prices(["SPY"], "2026-05-20", "2026-05-25")
-        # Fetch count MUST remain 2 (complete cache hit on the holiday bounds!)
+        df = cached_provider.get_prices(["SPY"], "2026-05-11", "2026-05-15")
+        # Fetch count MUST remain 2 (complete cache hit on the confirmed_empty bounds!)
         assert raw_provider.fetch_count == 2
-        assert len(df) == 3  # only has the original 3 business days (May 20, 21, 22)
+        assert len(df) == 3  # only has the original 3 business days (May 11, 12, 13)
 
 
 def test_provider_errors_graceful_handling() -> None:
@@ -77,17 +77,17 @@ def test_provider_errors_graceful_handling() -> None:
         raw_provider = MockResilientDataProvider()
         cached_provider = CachedDataProvider(raw_provider, cache_dir=tmp_dir)
 
-        # 1. Populate cache first
-        cached_provider.get_prices(["SPY"], "2026-05-20", "2026-05-22")
+        # 1. Populate cache first (Mon-Wed, 3 trading days)
+        cached_provider.get_prices(["SPY"], "2026-05-11", "2026-05-13")
         assert raw_provider.fetch_count == 1
 
         # 2. Raw provider starts raising exceptions (e.g. rate limits, disconnects)
         raw_provider.raise_error = True
 
         # Incremental fetch shouldn't crash, but log a warning and return whatever is in cache
-        df = cached_provider.get_prices(["SPY"], "2026-05-20", "2026-05-25")
+        df = cached_provider.get_prices(["SPY"], "2026-05-11", "2026-05-15")
         assert raw_provider.fetch_count == 2
-        # Returns cached slice for May 20-22
+        # Returns cached slice for May 11-13
         assert len(df) == 3
 
 

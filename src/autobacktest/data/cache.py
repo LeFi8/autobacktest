@@ -6,8 +6,19 @@ import threading
 from pathlib import Path
 
 import pandas as pd
+import pandas.tseries.holiday as hol
 
 from autobacktest.data.base import DataProvider
+
+_US_HOLIDAY_CAL = hol.USFederalHolidayCalendar()
+
+
+def is_trading_day(date: pd.Timestamp) -> bool:
+    """Check if date is a US trading day (not weekend, not federal holiday)."""
+    if date.weekday() >= 5:
+        return False
+    return date not in _US_HOLIDAY_CAL.holidays(start=date, end=date)
+
 
 logger = logging.getLogger(__name__)
 
@@ -206,37 +217,49 @@ class CachedDataProvider(DataProvider):
                 elif cache_start <= start_dt and cache_end < end_dt:
                     # Incremental suffix: fetch [cache_end+1d, end].
                     next_day = cache_end + pd.Timedelta(days=1)
-                    fetch_start = next_day.strftime("%Y-%m-%d")
-                    new_data, fetch_ok = self._safe_fetch(
-                        ticker, fetch_start, end, interval, "incremental suffix update"
-                    )
-
-                    if not fetch_ok:
-                        # Provider errored — don't advance metadata.
+                    # Skip known non-trading days to avoid pointless yfinance calls.
+                    while not is_trading_day(next_day) and next_day <= end_dt:
+                        next_day += pd.Timedelta(days=1)
+                    if next_day > end_dt:
+                        # Entire suffix is non-trading — mark as confirmed_empty.
+                        # Use cache_start so the full parquet range is recognised
+                        # on future requests (confirmed_empty only prevents
+                        # re-fetching the suffix, not reading existing data).
+                        self._save_metadata(ticker, interval, cache_start, end_dt, confirmed_empty=True)
                         ticker_df = self._slice_window(cached_df, start_dt, end_dt)
                         needs_fetch = False
                     else:
-                        if not new_data.empty:
-                            cached_df = pd.concat([cached_df, new_data])
-                            cached_df = cached_df[~cached_df.index.duplicated(keep="last")]
-                            cached_df.sort_index(inplace=True)
-                            lock = _get_cache_lock(cache_file)
-                            with lock:
-                                _atomic_write(cached_df, cache_file)
-                            # P0-1: advance boundary only when rows were received.
-                            self._save_metadata(ticker, interval, cache_start, cached_df.index.max())
+                        fetch_start = next_day.strftime("%Y-%m-%d")
+                        new_data, fetch_ok = self._safe_fetch(
+                            ticker, fetch_start, end, interval, "incremental suffix update"
+                        )
+
+                        if not fetch_ok:
+                            # Provider errored — don't advance metadata.
+                            ticker_df = self._slice_window(cached_df, start_dt, end_dt)
+                            needs_fetch = False
                         else:
-                            # Provider responded cleanly but has no rows (holiday/gap).
-                            # Record the boundary so we don't re-query this range.
-                            self._save_metadata(
-                                ticker,
-                                interval,
-                                cache_start,
-                                end_dt,
-                                confirmed_empty=True,
-                            )
-                        ticker_df = self._slice_window(cached_df, start_dt, end_dt)
-                        needs_fetch = False
+                            if not new_data.empty:
+                                cached_df = pd.concat([cached_df, new_data])
+                                cached_df = cached_df[~cached_df.index.duplicated(keep="last")]
+                                cached_df.sort_index(inplace=True)
+                                lock = _get_cache_lock(cache_file)
+                                with lock:
+                                    _atomic_write(cached_df, cache_file)
+                                # P0-1: advance boundary only when rows were received.
+                                self._save_metadata(ticker, interval, cache_start, cached_df.index.max())
+                            else:
+                                # Provider responded cleanly but has no rows (holiday/gap).
+                                # Record the boundary so we don't re-query this range.
+                                self._save_metadata(
+                                    ticker,
+                                    interval,
+                                    cache_start,
+                                    end_dt,
+                                    confirmed_empty=True,
+                                )
+                            ticker_df = self._slice_window(cached_df, start_dt, end_dt)
+                            needs_fetch = False
 
                 elif cache_start > start_dt and cache_end >= end_dt:
                     # Incremental prefix: fetch [start, cache_start-1d].

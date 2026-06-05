@@ -13,6 +13,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from autobacktest import configure_verbosity
 from autobacktest.config import settings
 from autobacktest.evaluator.evaluate import evaluate_strategy
 from autobacktest.gate import TargetMetric
@@ -24,6 +25,8 @@ from autobacktest.reports.generator import (
     compile_failure_summary,
     compile_strategy_report,
     plot_equity_curves,
+    plot_mc_histogram,
+    plot_walk_forward_bars,
 )
 from autobacktest.strategy.config_schema import StrategyConfig
 from autobacktest.strategy.validator import preflight
@@ -97,8 +100,15 @@ def run(
         "--json",
         help="Output raw JSON instead of the Rich summary dashboard.",
     ),
+    quiet: bool = typer.Option(
+        settings.quiet,
+        "--quiet",
+        "-q",
+        help="Suppress non-critical warnings and reduce terminal noise.",
+    ),
 ) -> None:
     """Run the optimization loop on a strategy."""
+    configure_verbosity(quiet=quiet)
     # Resolve target metric
     try:
         metric = TargetMetric(target_metric)
@@ -141,6 +151,7 @@ def run(
             holdout_peek_limit=holdout_peek_limit,
             early_stop_patience=early_stop_patience,
             resume=resume,
+            quiet=quiet,
         )
     except Exception as e:
         typer.echo(f"Error: {e}")
@@ -178,6 +189,28 @@ def run(
             output_dir,
             benchmark_returns=benchmark_returns,
             benchmark_ticker=benchmark_ticker,
+        )
+
+    # MC histogram
+    # getattr for backward compat with pre-mc_sharpes serialized reports
+    mc_sharpes = getattr(result.final_report, "mc_sharpes", None)
+    if mc_sharpes is not None and mc_sharpes.size > 0:
+        plot_mc_histogram(
+            mc_sharpes,
+            result.final_report.observed_sharpe,
+            result.final_report.mc_sharpe_5th,
+            result.final_report.mc_sharpe_50th,
+            result.final_report.mc_sharpe_95th,
+            result.run_id,
+            output_dir,
+        )
+
+    # Walk-forward bar chart
+    if result.final_report.walk_forward_metrics:
+        plot_walk_forward_bars(
+            result.final_report.walk_forward_metrics,
+            result.run_id,
+            output_dir,
         )
 
     # Failure summary from events.jsonl
@@ -478,8 +511,15 @@ def evaluate(
         "--end-date",
         help="End date YYYY-MM-DD for backtesting.",
     ),
+    quiet: bool = typer.Option(
+        settings.quiet,
+        "--quiet",
+        "-q",
+        help="Suppress non-critical warnings and reduce terminal noise.",
+    ),
 ) -> None:
     """Run walk-forward and holdout evaluation on a target strategy file."""
+    configure_verbosity(quiet=quiet)
     strategy_path = Path(strategy)
     if not strategy_path.exists():
         typer.echo(f"Error: Strategy file not found at {strategy_path}")
@@ -559,8 +599,15 @@ def llm_test(
         "-p",
         help="LLM provider: 'litellm' or 'mock'.",
     ),
+    quiet: bool = typer.Option(
+        settings.quiet,
+        "--quiet",
+        "-q",
+        help="Suppress non-critical warnings and reduce terminal noise.",
+    ),
 ) -> None:
     """Test LLM-driven strategy edits against validation preflight checks."""
+    configure_verbosity(quiet=quiet)
     strategies_dir = settings.strategies_dir
     configs_dir = settings.configs_dir
 
@@ -828,7 +875,9 @@ def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFra
     if cash_asset not in available:
         raise ValueError(f"Cash asset {{cash_asset}} not in price data")
 
-    rebalance_dates = prices.groupby(prices.index.to_period("M")).tail(1).index
+    start = prices.index.min()
+    end = prices.index.max()
+    rebalance_dates = pd.date_range(start=start, end=end, freq="BME", tz=prices.index.tz).intersection(prices.index)
     weights = pd.DataFrame(0.0, index=rebalance_dates, columns=prices.columns)
 
     for date in rebalance_dates:

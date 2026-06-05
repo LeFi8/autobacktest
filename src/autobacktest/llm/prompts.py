@@ -27,8 +27,15 @@ You operate in a strict execution loop and MUST adhere to the following rules:
 3. The returned DataFrame MUST have the exact same shape, columns, and index as input.
 4. You MUST NOT import any module outside whitelisted ALLOWED_IMPORTS:
    {sorted_imports}
+   Critically, you MUST always include `from typing import Any` — strategies
+   that type-annotate with `dict[str, Any]` without this import will crash at runtime.
 5. You MUST keep the portfolio weights non-negative (weights >= 0.0)
-   and summing to at most 1.0 (sum <= 1.0) for every rebalance day
+   and summing to at most 1.0 (sum <= 1.0) for every rebalance day.
+   As a mandatory final step before returning, always apply:
+   `weights = weights.clip(lower=0.0)`
+   `weights = weights.div(weights.sum(axis=1), axis=0).fillna(0.0)`
+   This renormalization prevents float-accumulation errors from multiple sequential
+   normalization/capping passes that cause weight sums to drift above 1.0.
 6. The output strategy code and config YAML MUST be complete file contents, NOT diffs.
 7. You MUST maintain a running markdown document of "lessons learned"
    in the lessons_text field. In every response, you will output an updated

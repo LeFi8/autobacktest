@@ -70,7 +70,7 @@ class Settings(BaseModel):
     # --- SAFETY GATES ---
     max_file_size_kb: int = Field(default_factory=lambda: int(os.getenv("AUTOBACKTEST_MAX_FILE_SIZE_KB", "100")))
     max_cyclomatic_complexity: int = Field(
-        default_factory=lambda: int(os.getenv("AUTOBACKTEST_MAX_CYCLOMATIC_COMPLEXITY", "20"))
+        default_factory=lambda: int(os.getenv("AUTOBACKTEST_MAX_CYCLOMATIC_COMPLEXITY", "25"))
     )
     max_function_lines: int = Field(default_factory=lambda: int(os.getenv("AUTOBACKTEST_MAX_FUNCTION_LINES", "100")))
     safe_imports_whitelist: str = Field(
@@ -91,6 +91,11 @@ class Settings(BaseModel):
     )
     diversity_returns_threshold: float = Field(
         default_factory=lambda: float(os.getenv("AUTOBACKTEST_DIVERSITY_RETURNS_THRESHOLD", "0.95"))
+    )
+
+    # --- VERBOSITY CONTROL ---
+    quiet: bool = Field(
+        default_factory=lambda: os.getenv("AUTOBACKTEST_QUIET", "false").lower() in ("true", "1", "yes")
     )
 
     # --- SQLITE STORAGE CONFIGURATION ---

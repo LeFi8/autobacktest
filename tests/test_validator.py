@@ -9,7 +9,9 @@ from autobacktest.config import settings
 from autobacktest.strategy.validator import (
     ValidationError,
     ValidationResult,
+    _build_function_scope,
     _calculate_complexity,
+    _check_ast,
     _count_node_lines,
     preflight,
 )
@@ -499,6 +501,328 @@ def test_preflight_rejects_overly_complex_function() -> None:
         assert "cyclomatic complexity" in res.detail
     finally:
         settings.max_cyclomatic_complexity = original
+
+
+# ---------------------------------------------------------------------------
+# Undefined-name pre-check tests
+# ---------------------------------------------------------------------------
+
+
+def test_check_undefined_name_catches_undefined():
+    """A function referencing an undefined name is rejected."""
+    code = """
+import pandas as pd
+
+def generate_signals(prices: pd.DataFrame, config: dict) -> pd.DataFrame:
+    return _canary_sign
+"""
+    res = _check_ast(code)
+    assert not res.passed
+    assert res.error_code == ValidationError.UNDEFINED_NAME
+    assert "_canary_sign" in res.detail
+
+
+def test_check_undefined_name_builtins_pass():
+    """Python builtins must NOT be flagged."""
+    code = """
+import pandas as pd
+
+def generate_signals(prices: pd.DataFrame, config: dict) -> pd.DataFrame:
+    n = len(prices)
+    return prices
+"""
+    res = _check_ast(code)
+    assert res.passed
+
+
+def test_check_undefined_name_imports_pass():
+    """Imported names must NOT be flagged."""
+    code = """
+import pandas as pd
+import numpy as np
+
+def generate_signals(prices: pd.DataFrame, config: dict) -> pd.DataFrame:
+    a = np.array([1, 2, 3])
+    return pd.DataFrame(index=prices.index)
+"""
+    res = _check_ast(code)
+    assert res.passed
+
+
+def test_check_undefined_name_params_pass():
+    """Function parameters must NOT be flagged."""
+    code = """
+def generate_signals(prices, config):
+    return prices
+"""
+    res = _check_ast(code)
+    assert res.passed
+
+
+def test_check_undefined_name_local_vars_pass():
+    """Locally assigned variables must NOT be flagged."""
+    code = """
+def generate_signals(prices, config):
+    w = prices * 0.5
+    return w
+"""
+    res = _check_ast(code)
+    assert res.passed
+
+
+def test_check_undefined_name_ret_missing():
+    """Undefined name 'ret' in return is caught."""
+    code = """
+import pandas as pd
+
+def generate_signals(prices: pd.DataFrame, config: dict) -> pd.DataFrame:
+    return ret
+"""
+    res = _check_ast(code)
+    assert not res.passed
+    assert res.error_code == ValidationError.UNDEFINED_NAME
+    assert "ret" in res.detail
+
+
+def test_check_undefined_nested_function_def_name_pass():
+    """Inner function def'd inside outer function must NOT be flagged."""
+    code = """
+def generate_signals(prices, config):
+    def helper():
+        return prices
+    return helper()
+"""
+    res = _check_ast(code)
+    assert res.passed
+
+
+def test_check_undefined_nested_function_local_not_leaking():
+    """Local var inside inner function must NOT leak into outer scope."""
+    code = """
+def generate_signals(prices, config):
+    def inner():
+        x = 1
+    return x
+"""
+    res = _check_ast(code)
+    assert not res.passed
+    assert res.error_code == ValidationError.UNDEFINED_NAME
+    assert "x" in res.detail
+
+
+def test_check_undefined_nested_function_local_var_not_flagged():
+    """Local var inside nested helper must NOT cause false-positive in outer function."""
+    code = """
+def generate_signals(prices, config):
+    def helper():
+        local_val = prices * 0.5
+        return local_val
+    return helper()
+"""
+    res = _check_ast(code)
+    assert res.passed
+
+
+def test_check_undefined_aug_assign():
+    """Augmented assignment (x += 1) defines x."""
+    code = """
+def generate_signals(prices, config):
+    x = 0
+    x += 1
+    return prices
+"""
+    res = _check_ast(code)
+    assert res.passed
+
+
+def test_check_undefined_with_as():
+    """with ... as x: defines x (tested via direct _build_function_scope call)."""
+    tree = ast.parse("""
+def generate_signals(prices, config):
+    from contextlib import nullcontext
+    with nullcontext() as x:
+        pass
+    return x
+""")
+    func = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "generate_signals":
+            func = node
+            break
+    assert func is not None
+    scope = _build_function_scope(func)
+    assert "x" in scope
+
+
+def test_check_undefined_except_as():
+    """except ... as e: defines e (tested via direct _build_function_scope call)."""
+    tree = ast.parse("""
+def generate_signals(prices, config):
+    try:
+        x = 1
+    except Exception as e:
+        pass
+    return prices
+""")
+    func = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "generate_signals":
+            func = node
+            break
+    assert func is not None
+    scope = _build_function_scope(func)
+    assert "e" in scope
+    assert "x" in scope
+
+
+def test_check_undefined_tuple_unpacking_pass():
+    """Tuple unpacking (a, b = prices.shape) must NOT be flagged."""
+    code = """
+def generate_signals(prices, config):
+    rows, cols = prices.shape
+    return prices
+"""
+    res = _check_ast(code)
+    assert res.passed
+
+
+def test_check_undefined_for_enumerate_unpacking_pass():
+    """For-loop tuple unpacking (for i, col in enumerate(...)) must NOT be flagged."""
+    code = """
+import pandas as pd
+
+def generate_signals(prices: pd.DataFrame, config: dict) -> pd.DataFrame:
+    for i, col in enumerate(prices.columns):
+        pass
+    return prices
+"""
+    res = _check_ast(code)
+    assert res.passed
+
+
+def test_check_undefined_for_list_unpacking_pass():
+    """List unpacking in for (for a, b in [(1,2)]) must NOT be flagged."""
+    code = """
+def generate_signals(prices, config):
+    pairs = [(1, 2), (3, 4)]
+    for x, y in pairs:
+        pass
+    return prices
+"""
+    res = _check_ast(code)
+    assert res.passed
+
+
+def test_check_undefined_top_level_constants_pass():
+    """Top-level constants referenced inside functions must NOT be flagged."""
+    code = """
+DEFAULT_LAG = 21
+MAX_WEIGHT = 0.5
+
+def generate_signals(prices, config):
+    lag = DEFAULT_LAG
+    cap = MAX_WEIGHT
+    return prices
+"""
+    res = _check_ast(code)
+    assert res.passed
+
+
+def test_check_undefined_list_comprehension_pass():
+    """List comprehension variables must NOT be flagged."""
+    code = """
+def generate_signals(prices, config):
+    y = [1, 2, 3]
+    return [x for x in y]
+"""
+    res = _check_ast(code)
+    assert res.passed
+
+
+def test_check_undefined_dict_comprehension_pass():
+    """Dict comprehension variables must NOT be flagged."""
+    code = """
+def generate_signals(prices, config):
+    y = {'a': 1, 'b': 2}
+    return {k: v for k, v in y.items()}
+"""
+    res = _check_ast(code)
+    assert res.passed
+
+
+def test_check_undefined_set_comprehension_pass():
+    """Set comprehension variables must NOT be flagged."""
+    code = """
+def generate_signals(prices, config):
+    y = [1, 2, 3, 3]
+    return {x for x in y}
+"""
+    res = _check_ast(code)
+    assert res.passed
+
+
+def test_check_undefined_generator_expression_pass():
+    """Generator expression variables must NOT be flagged."""
+    code = """
+def generate_signals(prices, config):
+    y = [1, 2, 3]
+    return list(x for x in y)
+"""
+    res = _check_ast(code)
+    assert res.passed
+
+
+def test_check_undefined_nested_comprehension_pass():
+    """Nested comprehension and multi-generator comprehension variables must NOT be flagged."""
+    code = """
+def generate_signals(prices, config):
+    matrix = [[1, 2], [3, 4]]
+    flat = [y for x in matrix for y in x]
+    return flat
+"""
+    res = _check_ast(code)
+    assert res.passed
+
+
+def test_check_undefined_lambda_arguments_pass():
+    """Lambda argument references inside the lambda body must NOT be flagged."""
+    code = """
+def generate_signals(prices, config):
+    f = lambda col: col.mean()
+    return prices
+"""
+    res = _check_ast(code)
+    assert res.passed
+
+
+def test_check_undefined_comprehension_fail():
+    """Referencing an undefined variable inside a comprehension must fail."""
+    code = """
+def generate_signals(prices, config):
+    return [x for x in z]
+"""
+    res = _check_ast(code)
+    assert not res.passed
+    assert res.error_code == ValidationError.UNDEFINED_NAME
+    assert "z" in res.detail
+
+
+def test_check_undefined_lambda_fail():
+    """Referencing an undefined variable inside a lambda must fail."""
+    code = """
+def generate_signals(prices, config):
+    f = lambda col: col.mean() + z
+    return prices
+"""
+    res = _check_ast(code)
+    assert not res.passed
+    assert res.error_code == ValidationError.UNDEFINED_NAME
+    assert "z" in res.detail
+
+
+# ---------------------------------------------------------------------------
+# End of undefined-name tests
+# ---------------------------------------------------------------------------
 
 
 def _run_with_code(code: str) -> ValidationResult | None:

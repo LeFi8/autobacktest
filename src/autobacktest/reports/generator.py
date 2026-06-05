@@ -4,6 +4,7 @@ from typing import Any
 
 import matplotlib
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 
 matplotlib.use("Agg")
@@ -25,8 +26,16 @@ def plot_equity_curves(
 
     has_benchmark = benchmark_returns is not None and not benchmark_returns.empty
     if has_benchmark:
-        assert benchmark_returns is not None
+        assert benchmark_returns is not None  # narrow type inside guard
         bench_cum = (1 + benchmark_returns).cumprod()
+        fig, (ax_top, ax_mid, ax_bot) = plt.subplots(
+            3,
+            1,
+            figsize=(12, 10),
+            gridspec_kw={"height_ratios": [2, 1, 1]},
+            sharex=True,
+        )
+    else:
         fig, (ax_top, ax_bot) = plt.subplots(
             2,
             1,
@@ -34,9 +43,7 @@ def plot_equity_curves(
             gridspec_kw={"height_ratios": [2, 1]},
             sharex=True,
         )
-    else:
-        fig, ax_top = plt.subplots(figsize=(12, 6))
-        ax_bot = None
+        ax_mid = None
 
     ax_top.plot(
         baseline_cum.index,
@@ -66,7 +73,7 @@ def plot_equity_curves(
     ax_top.legend(loc="upper left")
     ax_top.grid(True, alpha=0.3)
 
-    if has_benchmark and ax_bot is not None:
+    if has_benchmark and ax_mid is not None:
         aligned = pd.concat([baseline_cum, final_cum, bench_cum], axis=1, join="inner")
         if aligned.empty:
             baseline_active = pd.Series(dtype=float)
@@ -74,7 +81,7 @@ def plot_equity_curves(
         else:
             baseline_active = aligned.iloc[:, 0] - aligned.iloc[:, 2]
             final_active = aligned.iloc[:, 1] - aligned.iloc[:, 2]
-        ax_bot.plot(
+        ax_mid.plot(
             baseline_active.index,
             baseline_active.values,
             label="Pre-Optimization",
@@ -82,23 +89,113 @@ def plot_equity_curves(
             linestyle="--",
             color="#1f77b4",
         )
-        ax_bot.plot(
+        ax_mid.plot(
             final_active.index,
             final_active.values,
             label="Optimized",
             linewidth=1.5,
         )
-        ax_bot.axhline(y=0, color="gray", linestyle=":", linewidth=1)
-        ax_bot.set_title("Active Return vs Benchmark")
-        ax_bot.set_xlabel("Date")
-        ax_bot.set_ylabel("Cumulative Active Return")
-        ax_bot.legend(loc="upper left")
-        ax_bot.grid(True, alpha=0.3)
-    else:
-        ax_top.set_xlabel("Date")
+        ax_mid.axhline(y=0, color="gray", linestyle=":", linewidth=1)
+        ax_mid.set_title("Active Return vs Benchmark")
+        ax_mid.set_ylabel("Cumulative Active Return")
+        ax_mid.legend(loc="upper left")
+        ax_mid.grid(True, alpha=0.3)
+
+    # Drawdown subplot (always last)
+    def _drawdown(returns: pd.Series) -> pd.Series:
+        cum = (1 + returns).cumprod()
+        running_max = cum.cummax()
+        return (cum - running_max) / running_max
+
+    final_dd = _drawdown(final_returns)
+    baseline_dd = _drawdown(baseline_returns)
+    ax_bot.fill_between(final_dd.index, 0, final_dd.values * 100, label="Optimized", alpha=0.4, color="#ff7f0e")
+    ax_bot.plot(
+        baseline_dd.index,
+        baseline_dd.values * 100,
+        label="Pre-Optimization",
+        linewidth=1.0,
+        linestyle="--",
+        color="#1f77b4",
+    )
+    ax_bot.set_title("Drawdown")
+    ax_bot.set_xlabel("Date")
+    ax_bot.set_ylabel("Drawdown %")
+    ax_bot.legend(loc="lower left")
+    ax_bot.grid(True, alpha=0.3)
 
     fig.tight_layout()
     out_path = output_dir / "equity_curves.png"
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    return out_path
+
+
+def plot_mc_histogram(
+    mc_sharpes: np.ndarray | None,
+    observed_sharpe: float,
+    mc_sharpe_5th: float,
+    mc_sharpe_50th: float,
+    mc_sharpe_95th: float,
+    run_id: str,
+    output_dir: Path,
+) -> Path | None:
+    if mc_sharpes is None or mc_sharpes.size == 0:
+        return None
+    fig, ax = plt.subplots(figsize=(10, 6))
+    neg_prob = float((mc_sharpes < 0).mean()) * 100
+    ax.hist(mc_sharpes, bins=50, alpha=0.7, color="#1f77b4", edgecolor="white", linewidth=0.5)
+    ax.axvline(mc_sharpe_5th, color="red", linestyle="--", linewidth=1.2, label=f"p5: {mc_sharpe_5th:.3f}")
+    ax.axvline(mc_sharpe_50th, color="green", linestyle="--", linewidth=1.2, label=f"p50: {mc_sharpe_50th:.3f}")
+    ax.axvline(mc_sharpe_95th, color="purple", linestyle="--", linewidth=1.2, label=f"p95: {mc_sharpe_95th:.3f}")
+    ax.axvline(observed_sharpe, color="black", linestyle="-", linewidth=1.5, label=f"Observed: {observed_sharpe:.3f}")
+    ax.set_title(f"Monte Carlo Distribution of Sharpe Ratios — {run_id}")
+    ax.set_xlabel("Sharpe Ratio")
+    ax.set_ylabel("Frequency")
+    ax.legend(loc="upper right")
+    ax.annotate(
+        f"P(Sharpe < 0) = {neg_prob:.1f}%",
+        xy=(0.02, 0.95),
+        xycoords="axes fraction",
+        fontsize=10,
+        va="top",
+        bbox={"boxstyle": "round", "facecolor": "wheat", "alpha": 0.8},
+    )
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    out_path = output_dir / "mc_histogram.png"
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    return out_path
+
+
+def plot_walk_forward_bars(
+    walk_forward_metrics: list[WindowReport],
+    run_id: str,
+    output_dir: Path,
+) -> Path | None:
+    if not walk_forward_metrics:
+        return None
+    labels = [f"WF-{i + 1}" for i in range(len(walk_forward_metrics))]
+    sharpes = [w.sharpe_ratio for w in walk_forward_metrics]
+    max_dds = [w.max_drawdown * 10 for w in walk_forward_metrics]
+    turnovers = [w.turnover for w in walk_forward_metrics]
+
+    x = np.arange(len(labels))
+    width = 0.25
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.bar(x - width, sharpes, width, label="Sharpe", color="#1f77b4")
+    ax.bar(x, max_dds, width, label="Max DD x 10", color="#ff7f0e")
+    ax.bar(x + width, turnovers, width, label="Turnover", color="#2ca02c")
+    ax.set_title(f"Walk-Forward Window Metrics — {run_id}")
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels)
+    ax.axhline(y=0, color="gray", linestyle=":", linewidth=0.8)
+    ax.legend(loc="upper right")
+    ax.grid(True, alpha=0.3, axis="y")
+    fig.tight_layout()
+    out_path = output_dir / "walk_forward_bars.png"
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
     return out_path
@@ -130,35 +227,60 @@ def compile_failure_summary(run_dir: Path) -> dict[str, Any]:
             if not isinstance(event, dict):
                 continue
 
-            val = event.get("validation")
-            if isinstance(val, dict) and val.get("passed") is False:
-                code = val.get("error_code", "unknown")
-                bucket = summary["Validation"]
-                bucket[code] = bucket.get(code, 0) + 1
+            # Parse per-candidate failures from the candidates array.
+            # These cover all failure modes: preflight validation, gate,
+            # diversity, eval errors, and LLM errors.
+            candidates = event.get("candidates")
+            if not isinstance(candidates, list):
+                # Legacy fallback: parse top-level failure keys for events
+                # produced before the candidates array schema was introduced.
+                val = event.get("validation")
+                if isinstance(val, dict) and val.get("passed") is False:
+                    code = val.get("error_code", "unknown")
+                    summary["Validation"][code] = summary["Validation"].get(code, 0) + 1
+                    continue
+                gate = event.get("gate")
+                if isinstance(gate, dict) and gate.get("accepted") is False:
+                    fg = gate.get("failed_gate", "unknown")
+                    summary["Gate"][fg] = summary["Gate"].get(fg, 0) + 1
+                    continue
+                div = event.get("diversity")
+                if isinstance(div, dict) and div.get("passed") is False:
+                    tier = div.get("tier", "unknown")
+                    summary["Diversity"][tier] = summary["Diversity"].get(tier, 0) + 1
+                    continue
+                if event.get("llm_error") is not None:
+                    summary["LLM Error"] += 1
+                    continue
+                eval_err = event.get("evaluation")
+                if isinstance(eval_err, dict) and eval_err.get("error") is not None:
+                    summary["Eval Error"] += 1
                 continue
 
-            gate = event.get("gate")
-            if isinstance(gate, dict) and gate.get("accepted") is False:
-                fg = gate.get("failed_gate", "unknown")
-                bucket = summary["Gate"]
-                bucket[fg] = bucket.get(fg, 0) + 1
-                continue
+            for c in candidates:
+                if not isinstance(c, dict):
+                    continue
+                if c.get("passed") is True:
+                    continue
+                if c.get("llm_error"):
+                    summary["LLM Error"] += 1
+                    continue
 
-            div = event.get("diversity")
-            if isinstance(div, dict) and div.get("passed") is False:
-                tier = div.get("tier", "unknown")
-                bucket = summary["Diversity"]
-                bucket[tier] = bucket.get(tier, 0) + 1
-                continue
-
-            if event.get("llm_error") is not None:
-                summary["LLM Error"] += 1
-                continue
-
-            eval_err = event.get("evaluation")
-            if isinstance(eval_err, dict) and eval_err.get("error") is not None:
-                summary["Eval Error"] += 1
-                continue
+                stage = c.get("stage", "")
+                if stage == "validation":
+                    code = c.get("detail", "unknown")
+                    bucket = summary["Validation"]
+                    bucket[code] = bucket.get(code, 0) + 1
+                elif stage == "gate":
+                    fg = c.get("failed_gate") or "unknown"
+                    bucket = summary["Gate"]
+                    bucket[fg] = bucket.get(fg, 0) + 1
+                elif stage in ("diversity_config", "diversity_returns"):
+                    tier = stage.removeprefix("diversity_")
+                    bucket = summary["Diversity"]
+                    bucket[tier] = bucket.get(tier, 0) + 1
+                elif stage == "eval_error":
+                    summary["Eval Error"] += 1
 
     return summary
 
@@ -229,6 +351,34 @@ def compile_strategy_report(
                 f"| {w.turnover:.2f}x |"
             )
 
+    _h2(lines, "Benchmark Comparison")
+    bench_is = final_report.benchmark_in_sample_metrics
+    bench_ho = final_report.benchmark_holdout_metrics
+    if bench_is is not None and bench_ho is not None:
+        ticker = final_report.benchmark_ticker
+        lines.append("")
+        _window_table(lines, final_report.in_sample_metrics, "Strategy (IS)")
+        _window_table(lines, bench_is, f"{ticker} (IS)")
+        lines.append("")
+        _window_table(lines, final_report.holdout_metrics, "Strategy (HO)")
+        _window_table(lines, bench_ho, f"{ticker} (HO)")
+        strat_ho_ret = final_report.holdout_metrics.annualized_return
+        bench_ho_ret = bench_ho.annualized_return
+        excess = strat_ho_ret - bench_ho_ret
+        lines.append("")
+        _kv(lines, f"Active Return ({ticker})", f"{excess * 100:+.2f}%")
+        excess_vol = (final_report.holdout_metrics.annualized_volatility - bench_ho.annualized_volatility) * 100
+        _kv(lines, "Excess Volatility", f"{excess_vol:+.2f}%")
+        ho_ir = final_report.holdout_metrics.information_ratio
+        ho_ir_str = f"{ho_ir:+.4f}" if ho_ir is not None else "N/A"
+        _kv(lines, "Information Ratio (HO)", ho_ir_str)
+        if bench_is.information_ratio is None:
+            lines.append("- *Benchmark IR shown as 0.0 — computed against itself, not meaningful.*")
+    else:
+        lines.append("")
+        lines.append("*(Benchmark performance data not available — re-run evaluation with benchmark price data.)*")
+        lines.append("")
+
     _h2(lines, "Failure Summary")
     if failure_summary:
         lines.append("")
@@ -244,6 +394,24 @@ def compile_strategy_report(
         lines.append("![equity_curves](equity_curves.png)")
     else:
         lines.append("*(Chart not generated)*")
+    lines.append("")
+
+    _h2(lines, "Monte Carlo Distribution")
+    lines.append("")
+    mc_path = output_dir / "mc_histogram.png"
+    if mc_path.exists():
+        lines.append("![mc_histogram](mc_histogram.png)")
+    else:
+        lines.append("*(MC histogram not available)*")
+    lines.append("")
+
+    _h2(lines, "Walk-Forward Metrics")
+    lines.append("")
+    wf_path = output_dir / "walk_forward_bars.png"
+    if wf_path.exists():
+        lines.append("![walk_forward_bars](walk_forward_bars.png)")
+    else:
+        lines.append("*(Walk-forward bar chart not available)*")
     lines.append("")
 
     _h2(lines, "Final Source Code")

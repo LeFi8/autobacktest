@@ -4,6 +4,7 @@ import json
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 
@@ -19,7 +20,7 @@ class WindowReport:
     sortino_ratio: float
     max_drawdown: float
     turnover: float
-    information_ratio: float = 0.0
+    information_ratio: float | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "WindowReport":
@@ -76,12 +77,18 @@ class EvaluationReport:
     # to_dict()).  Will be None after from_json() round-trip.
     benchmark_returns: pd.Series | None = field(default=None, repr=False, compare=False)
     benchmark_ticker: str = "SPY"
+    # Full Monte Carlo Sharpe array for histogram — excluded from serialization
+    mc_sharpes: np.ndarray | None = field(default=None, repr=False, compare=False)
+    # Benchmark performance metrics (survives JSON round-trip)
+    benchmark_in_sample_metrics: WindowReport | None = None
+    benchmark_holdout_metrics: WindowReport | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert the report to a dictionary representation."""
         d = asdict(self)
         d.pop("holdout_net_returns", None)
         d.pop("benchmark_returns", None)
+        d.pop("mc_sharpes", None)
         return d
 
     def to_json(self, indent: int = 4) -> str:
@@ -102,6 +109,10 @@ class EvaluationReport:
             d["benchmark_returns"] = None
         if "benchmark_ticker" not in d:
             d["benchmark_ticker"] = "SPY"
+        if "benchmark_in_sample_metrics" in d and d["benchmark_in_sample_metrics"] is not None:
+            d["benchmark_in_sample_metrics"] = WindowReport.from_dict(d["benchmark_in_sample_metrics"])
+        if "benchmark_holdout_metrics" in d and d["benchmark_holdout_metrics"] is not None:
+            d["benchmark_holdout_metrics"] = WindowReport.from_dict(d["benchmark_holdout_metrics"])
         return cls(**d)
 
     @classmethod

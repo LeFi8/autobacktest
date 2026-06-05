@@ -92,6 +92,79 @@ FORBIDDEN_NAMES = {
 }
 
 
+# Names available as Python builtins (never cause NameError).
+_BUILTIN_NAMES: frozenset[str] = frozenset(
+    {
+        "abs",
+        "all",
+        "any",
+        "ascii",
+        "bin",
+        "bool",
+        "bytearray",
+        "bytes",
+        "callable",
+        "chr",
+        "classmethod",
+        "compile",
+        "complex",
+        "delattr",
+        "dict",
+        "dir",
+        "divmod",
+        "enumerate",
+        "eval",
+        "exec",
+        "filter",
+        "float",
+        "format",
+        "frozenset",
+        "getattr",
+        "globals",
+        "hasattr",
+        "hash",
+        "hex",
+        "id",
+        "input",
+        "int",
+        "isinstance",
+        "issubclass",
+        "iter",
+        "len",
+        "list",
+        "locals",
+        "map",
+        "max",
+        "memoryview",
+        "min",
+        "next",
+        "object",
+        "oct",
+        "open",
+        "ord",
+        "pow",
+        "print",
+        "property",
+        "range",
+        "repr",
+        "reversed",
+        "round",
+        "set",
+        "setattr",
+        "slice",
+        "sorted",
+        "staticmethod",
+        "str",
+        "sum",
+        "super",
+        "tuple",
+        "type",
+        "vars",
+        "zip",
+    }
+)
+
+
 # API key patterns to redact from error output
 _SANITIZE_PATTERNS = [
     (re.compile(r"(sk-[a-zA-Z0-9]{20,})"), r"sk-***REDACTED***"),
@@ -119,6 +192,7 @@ class ValidationError(StrEnum):
     SIGNATURE_MISMATCH = "signature_mismatch"
     SMOKE_TEST_FAILED = "smoke_test_failed"
     LOOKAHEAD_DETECTED = "lookahead_detected"
+    UNDEFINED_NAME = "undefined_name"
 
 
 @dataclass
@@ -704,6 +778,11 @@ def _check_ast(content: str) -> ValidationResult:
                     ),
                 )
 
+    # Undefined-name pre-check
+    undefined_res = _check_undefined_names(tree)
+    if undefined_res is not None:
+        return undefined_res
+
     return ValidationResult(passed=True)
 
 
@@ -730,6 +809,216 @@ def _check_config(path: Path) -> ValidationResult:
             error_code=ValidationError.CONFIG_SCHEMA_INVALID,
             detail=f"Config load error: {e}",
         )
+
+
+def _extract_names(node: ast.AST | None, scope: set[str]) -> None:
+    """Recursively extract variable names from *node* into *scope*.
+
+    Handles simple ``ast.Name`` targets, tuple/list unpacking, and ``None``.
+    """
+    if node is None:
+        return
+    if isinstance(node, ast.Name):
+        scope.add(node.id)
+    elif isinstance(node, (ast.Tuple, ast.List)):
+        for elt in node.elts:
+            _extract_names(elt, scope)
+
+
+def _walk_body(body: list[ast.stmt], scope: set[str]) -> None:
+    """Recursively collect locally-defined names from *body*.
+
+    Traverses compound-statement bodies (``if``, ``for``, ``while``,
+    ``try``, ``with``) but stops at ``FunctionDef`` / ``AsyncFunctionDef``
+    boundaries — nested function bodies are not walked.
+
+    Uses :func:`_extract_names` to handle both simple names and
+    tuple/list unpacking targets (``a, b = ...``, ``for i, col in ...``).
+    """
+    for stmt in body:
+        if isinstance(stmt, ast.Assign):
+            for target in stmt.targets:
+                _extract_names(target, scope)
+        elif isinstance(stmt, (ast.AnnAssign, ast.AugAssign)) and isinstance(stmt.target, ast.Name):
+            scope.add(stmt.target.id)
+        elif isinstance(stmt, ast.For):
+            _extract_names(stmt.target, scope)
+            _walk_body(stmt.body, scope)
+            _walk_body(stmt.orelse, scope)
+        elif isinstance(stmt, (ast.While, ast.If)):
+            _walk_body(stmt.body, scope)
+            _walk_body(stmt.orelse, scope)
+        elif isinstance(stmt, ast.Try):
+            _walk_body(stmt.body, scope)
+            for handler in stmt.handlers:
+                if isinstance(handler.name, str):
+                    scope.add(handler.name)
+                _walk_body(handler.body, scope)
+            _walk_body(stmt.orelse, scope)
+            _walk_body(stmt.finalbody, scope)
+        elif isinstance(stmt, (ast.With, ast.AsyncWith)):
+            for item in stmt.items:
+                _extract_names(item.optional_vars, scope)
+            _walk_body(stmt.body, scope)
+        elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            scope.add(stmt.name)
+        elif (
+            isinstance(stmt, ast.Expr)
+            and isinstance(stmt.value, ast.NamedExpr)
+            and isinstance(stmt.value.target, ast.Name)
+        ):
+            scope.add(stmt.value.target.id)
+
+
+def _build_function_scope(func_node: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+    """Build a ``set`` of locally defined names within *func_node*'s body.
+
+    Includes parameters, assignment targets, ``for``-loop variables,
+    nested defs, and augmented-assignment targets.
+    """
+    scope: set[str] = set()
+
+    for arg in func_node.args.args:
+        scope.add(arg.arg)
+    if func_node.args.vararg:
+        scope.add(func_node.args.vararg.arg)
+    if func_node.args.kwarg:
+        scope.add(func_node.args.kwarg.arg)
+    for arg in func_node.args.kwonlyargs:
+        scope.add(arg.arg)
+    for arg in func_node.args.posonlyargs:
+        scope.add(arg.arg)
+
+    _walk_body(func_node.body, scope)
+    return scope
+
+
+def _is_descendant(child: ast.AST, ancestor: ast.AST, parent_map: dict[int, ast.AST]) -> bool:
+    """Return True if child is a descendant of ancestor node in the AST."""
+    curr: ast.AST | None = child
+    while curr is not None:
+        if curr == ancestor:
+            return True
+        curr = parent_map.get(id(curr))
+    return False
+
+
+def _check_undefined_names(tree: ast.Module) -> ValidationResult | None:
+    """Return a failed :class:`ValidationResult` if any function references a
+    name that is not defined in the function body, the module scope, or among
+    builtins.  Catches LLM hallucinations such as ``_canary_sign``,
+    out-of-scope ``prices`` references, and similar simple mistakes.
+
+    Respects closure-scope chains: names defined in an enclosing function
+    (parameters, locals) are considered defined for nested functions.
+
+    Returns ``None`` (pass) or a ``ValidationResult`` with
+    ``error_code=UNDEFINED_NAME``.
+    """
+    # Build module-level scope (imports + top-level defs + top-level assignments)
+    module_scope: set[str] = set()
+    for child in tree.body:
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            module_scope.add(child.name)
+        elif isinstance(child, ast.Import):
+            for alias in child.names:
+                name = alias.asname or alias.name.split(".")[0]
+                module_scope.add(name)
+        elif isinstance(child, ast.ImportFrom):
+            for alias in child.names:
+                name = alias.asname or alias.name
+                module_scope.add(name)
+        elif isinstance(child, ast.Assign):
+            for target in child.targets:
+                _extract_names(target, module_scope)
+        elif isinstance(child, (ast.AnnAssign, ast.AugAssign)) and isinstance(child.target, ast.Name):
+            module_scope.add(child.target.id)
+
+    # Build parent map for closure-scope resolution
+    parent_map: dict[int, ast.AST] = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):  # type: ignore[assignment]
+            parent_map[id(child)] = node
+
+    for func_node in ast.walk(tree):
+        if not isinstance(func_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+
+        func_scope = _build_function_scope(func_node)
+
+        # Build closure scope: names from all enclosing function defs
+        closure_scope: set[str] = set()
+        curr = parent_map.get(id(func_node))
+        while curr is not None:
+            if isinstance(curr, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                closure_scope |= _build_function_scope(curr)
+            curr = parent_map.get(id(curr))
+
+        for ref_node in ast.walk(func_node):
+            if not isinstance(ref_node, ast.Name) or not isinstance(ref_node.ctx, ast.Load):
+                continue
+            # Only validate names whose immediate enclosing function is func_node
+            enclosing = None
+            cur = parent_map.get(id(ref_node))
+            while cur is not None:
+                if isinstance(cur, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    enclosing = cur
+                    break
+                cur = parent_map.get(id(cur))
+            if enclosing != func_node:
+                continue
+            name = ref_node.id
+            if name in closure_scope:
+                continue
+
+            # Check enclosing comprehension or lambda scopes
+            defined_in_comp_or_lambda = False
+            curr_parent = parent_map.get(id(ref_node))
+            while curr_parent is not func_node and curr_parent is not None:
+                if isinstance(curr_parent, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+                    for gen_idx, gen in enumerate(curr_parent.generators):
+                        is_in_iter = False
+                        for p_idx in range(gen_idx + 1):
+                            if _is_descendant(ref_node, curr_parent.generators[p_idx].iter, parent_map):
+                                is_in_iter = True
+                                break
+                        if not is_in_iter:
+                            comp_targets: set[str] = set()
+                            _extract_names(gen.target, comp_targets)
+                            if name in comp_targets:
+                                defined_in_comp_or_lambda = True
+                                break
+                    if defined_in_comp_or_lambda:
+                        break
+                elif isinstance(curr_parent, ast.Lambda):
+                    if _is_descendant(ref_node, curr_parent.body, parent_map):
+                        lambda_args: set[str] = set()
+                        for arg in curr_parent.args.args:
+                            lambda_args.add(arg.arg)
+                        if curr_parent.args.vararg:
+                            lambda_args.add(curr_parent.args.vararg.arg)
+                        if curr_parent.args.kwarg:
+                            lambda_args.add(curr_parent.args.kwarg.arg)
+                        for arg in curr_parent.args.kwonlyargs:
+                            lambda_args.add(arg.arg)
+                        for arg in curr_parent.args.posonlyargs:
+                            lambda_args.add(arg.arg)
+                        if name in lambda_args:
+                            defined_in_comp_or_lambda = True
+                            break
+                curr_parent = parent_map.get(id(curr_parent))
+
+            if defined_in_comp_or_lambda:
+                continue
+
+            if name not in func_scope and name not in module_scope and name not in _BUILTIN_NAMES:
+                return ValidationResult(
+                    passed=False,
+                    error_code=ValidationError.UNDEFINED_NAME,
+                    detail=(f"Name '{name}' is not defined in function '{func_node.name}' or any enclosing scope."),
+                )
+
+    return None
 
 
 def _generate_synthetic_prices(tickers: list[str], n_days: int, seed: int = 42) -> pd.DataFrame:

@@ -128,3 +128,28 @@ def test_confirmed_empty_no_expires_at_treated_expired() -> None:
         df = cached_provider.get_prices(["SPY"], "2023-01-01", "2023-01-05")
         assert raw_provider.fetch_count == 1
         assert len(df) == 5
+
+
+def test_last_trading_day_suffix_fetched() -> None:
+    """Verify suffix fetch runs when next_day == end_dt and is a valid trading day.
+
+    Regression: ``if next_day >= end_dt`` incorrectly skipped fetching when the
+    last trading day of the requested suffix exactly matched ``end_dt``.
+    """
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        raw_provider = DummyDataProvider()
+        cached_provider = CachedDataProvider(raw_provider, cache_dir=tmp_dir)
+
+        # 1. Cache Mon 2023-01-02 through Fri 2023-01-06.
+        df1 = cached_provider.get_prices(["SPY"], "2023-01-02", "2023-01-06")
+        assert raw_provider.fetch_count == 1
+        assert len(df1) == 5
+
+        # 2. Request extending through the weekend to Mon 2023-01-09.
+        #    next_day advances from Sat -> Sun -> Mon (valid trading day == end_dt).
+        #    The fix ensures this suffix is fetched, not skipped.
+        df2 = cached_provider.get_prices(["SPY"], "2023-01-02", "2023-01-09")
+        assert raw_provider.fetch_count == 2, "Should fetch the Mon suffix"
+        # Original 5 (Mon-Fri) + 1 newly fetched (Mon 9th) = 6
+        assert len(df2) == 6
+        assert "SPY" in df2.columns

@@ -156,6 +156,7 @@ def run_optimization(
     holdout_peek_limit: int = 20,
     early_stop_patience: int = settings.early_stop_patience,
     resume: str | None = None,
+    quiet: bool = False,
 ) -> OrchestratorResult:
     """Run the LLM-driven strategy optimization loop.
 
@@ -185,6 +186,8 @@ def run_optimization(
         resume: Run ID to resume a previously interrupted optimization.
             When provided the loop recovers the incumbent state from the
             ledger and continues from the next unprocessed iteration.
+        quiet: Suppress non-critical warnings and reduce terminal noise
+            during the optimization loop. Defaults to False.
 
     Returns:
         OrchestratorResult: Summary of the final optimization run outcomes.
@@ -434,6 +437,7 @@ def run_optimization(
             BarColumn(),
             TaskProgressColumn(),
             MofNCompleteColumn(),
+            disable=quiet,
         ) as progress:
             task = progress.add_task(
                 f"[cyan]Optimizing {strategy_name}... (Incumbent Sharpe: {incumbent.observed_sharpe:.3f})",
@@ -528,9 +532,9 @@ def run_optimization(
 
                             # Apply deterministic pandas codemod (repairs deprecated API calls)
                             if settings.enable_codemod_repair:
-                                from autobacktest.strategy.codemod import repair_pandas_code
+                                from autobacktest.strategy.codemod import repair_strategy_code
 
-                                repaired_code, applied_fixes = repair_pandas_code(edit.strategy_code)
+                                repaired_code, applied_fixes = repair_strategy_code(edit.strategy_code)
                                 if applied_fixes:
                                     import dataclasses as _dc
 
@@ -880,6 +884,7 @@ def run_optimization(
                                 "passed": False,
                                 "stage": ev.get("validation_stage"),
                                 "detail": ev.get("detail"),
+                                "failed_gate": ev.get("_failed_gate"),
                             }
                             candidates_summary.append(fail_item)
                         else:
@@ -968,9 +973,10 @@ def run_optimization(
                             f"→  FAIL  {reasons_str}  "
                             f"${_iter_cost:.4f}"
                         )
-                    progress.console.print(summary)
+                    if not quiet:
+                        progress.console.print(summary)
 
-                    if consecutive_no_backtest >= 5:
+                    if consecutive_no_backtest >= 5 and not quiet:
                         progress.console.print(
                             f"[yellow]⚠ Iter {k}/{iterations}: {consecutive_no_backtest} consecutive "
                             f"iterations with zero candidates reaching backtest. "
@@ -1240,7 +1246,7 @@ def _get_metric_value(report: EvaluationReport, metric: TargetMetric) -> float:
     elif metric == TargetMetric.SORTINO:
         return report.in_sample_metrics.sortino_ratio
     else:  # INFORMATION_RATIO
-        return report.in_sample_metrics.information_ratio
+        return report.in_sample_metrics.information_ratio or 0.0
 
 
 def _extract_best_failure(candidate_results: list[dict[str, Any]]) -> dict[str, Any]:

@@ -1,6 +1,6 @@
 """Tests for the pandas codemod repair module."""
 
-from autobacktest.strategy.codemod import repair_pandas_code
+from autobacktest.strategy.codemod import repair_pandas_code, repair_strategy_code
 
 
 # ---------------------------------------------------------------------------
@@ -187,3 +187,220 @@ def test_asfreq_not_touched():
     result, fixes = repair_pandas_code(code)
     assert result == code
     assert fixes == []
+
+
+# ---------------------------------------------------------------------------
+# MissingImportInjector tests
+# ---------------------------------------------------------------------------
+
+
+def test_inject_missing_any_import():
+    """dict[str, Any] in signature without typing import → import injected."""
+    code = """
+def generate_signals(prices: 'pd.DataFrame', config: 'dict[str, Any]') -> 'pd.DataFrame':
+    return pd.DataFrame()
+"""
+    result, fixes = repair_strategy_code(code)
+    assert "from typing import Any" in result
+    assert fixes
+
+
+def test_inject_missing_any_import_annotation():
+    """Any used in a type annotation without typing import → injected."""
+    code = """
+import pandas as pd
+
+def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFrame:
+    return pd.DataFrame()
+"""
+    result, fixes = repair_strategy_code(code)
+    assert "from typing import Any" in result
+    assert fixes
+
+
+def test_skip_if_any_imported():
+    """from typing import Any already present → no injection."""
+    code = """
+from typing import Any
+import pandas as pd
+
+def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFrame:
+    return pd.DataFrame()
+"""
+    _, fixes = repair_strategy_code(code)
+    assert fixes == []  # import already present, no pandas issues either
+
+
+def test_skip_if_typing_module_imported():
+    """import typing (module-level) → no injection needed."""
+    code = """
+import typing
+
+def generate_signals(prices: pd.DataFrame, config: dict[str, typing.Any]) -> pd.DataFrame:
+    return pd.DataFrame()
+"""
+    _, fixes = repair_strategy_code(code)
+    assert fixes == []
+
+
+def test_skip_if_no_type_hints():
+    """Bare annotations without Any → no injection."""
+    code = """
+def generate_signals(prices, config):
+    return pd.DataFrame()
+"""
+    _, fixes = repair_strategy_code(code)
+    assert fixes == []
+
+
+def test_no_false_positive_any_in_docstring():
+    """Docstring containing 'Return True if any asset meets condition' → no Any import."""
+    code = '''
+def generate_signals(prices, config):
+    """Return True if any asset meets the condition."""
+    return prices
+'''
+    result, _ = repair_strategy_code(code)
+    assert "from typing import Any" not in result
+
+
+def test_inject_any_word_boundary_annotation():
+    """String annotation 'dict[str, Any]' still triggers injection (regression)."""
+    code = """
+def generate_signals(prices: 'pd.DataFrame', config: 'dict[str, Any]') -> 'pd.DataFrame':
+    return prices
+"""
+    result, fixes = repair_strategy_code(code)
+    assert "from typing import Any" in result
+    assert fixes
+
+
+def test_skip_if_any_via_module_qualified():
+    """typing.Any via module attribute → no injection needed."""
+    code = """
+import typing
+
+def generate_signals(prices, config):
+    x: typing.Any = prices
+    return prices
+"""
+    result, _ = repair_strategy_code(code)
+    assert "from typing import Any" not in result  # no extra import (already has import typing)
+
+
+# ---------------------------------------------------------------------------
+# WeightRenormalizer tests
+# ---------------------------------------------------------------------------
+
+
+def test_inject_weight_renormalization():
+    """return w without renormalization → clip + div injected."""
+    code = """
+import pandas as pd
+
+def generate_signals(prices: pd.DataFrame, config: dict) -> pd.DataFrame:
+    w = prices * 0.5
+    return w
+"""
+    result, fixes = repair_strategy_code(code)
+    assert "clip(lower=0.0)" in result
+    assert ".div(" in result
+    assert ".fillna(0.0)" in result
+    assert any("weight renormalization" in f for f in fixes)
+
+
+def test_skip_if_already_renormalized():
+    """Code that already clips(lower=0.0) → no injection."""
+    code = """
+import pandas as pd
+
+def generate_signals(prices: pd.DataFrame, config: dict) -> pd.DataFrame:
+    w = prices * 0.5
+    w = w.clip(lower=0.0)
+    return w
+"""
+    _, fixes = repair_strategy_code(code)
+    assert fixes == []  # renormalization already in place, no pandas issues
+
+
+def test_skip_if_already_renormalized_positional():
+    """clip(0.0) positional → no injection."""
+    code = """
+import pandas as pd
+
+def generate_signals(prices: pd.DataFrame, config: dict) -> pd.DataFrame:
+    w = prices * 0.5
+    w = w.clip(0.0)
+    return w
+"""
+    _, fixes = repair_strategy_code(code)
+    assert fixes == []
+
+
+def test_skip_if_already_renormalized_positional_int():
+    """clip(0) positional int → no injection."""
+    code = """
+import pandas as pd
+
+def generate_signals(prices: pd.DataFrame, config: dict) -> pd.DataFrame:
+    w = prices * 0.5
+    w = w.clip(0)
+    return w
+"""
+    _, fixes = repair_strategy_code(code)
+    assert fixes == []
+
+
+def test_skip_complex_return():
+    """Complex return expression → no injection."""
+    code = """
+import pandas as pd
+
+def generate_signals(prices: pd.DataFrame, config: dict) -> pd.DataFrame:
+    return pd.DataFrame(0.0, index=prices.index, columns=prices.columns)
+"""
+    _, fixes = repair_strategy_code(code)
+    assert fixes == []
+
+
+def test_skip_not_generate_signals():
+    """Renormalizer only applies to generate_signals, not other functions."""
+    code = """
+def helper():
+    x = 42
+    return x
+
+def generate_signals(prices, config):
+    return prices
+"""
+    result, _ = repair_strategy_code(code)
+    assert "clip(lower=0.0)" in result
+
+
+def test_repair_strategy_code_runs_all_passes():
+    """repair_strategy_code with multiple issues fixes all of them."""
+    code = """
+def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFrame:
+    w = prices * 0.5
+    return w
+"""
+    result, fixes = repair_strategy_code(code)
+    assert "from typing import Any" in result  # missing import fixed
+    assert "clip(lower=0.0)" in result  # renormalization added
+    assert len(fixes) >= 2
+
+
+def test_inject_any_import_after_docstring():
+    """Module docstring must be preserved when injecting from typing import Any."""
+    code = '''
+"""Strategy module for the HAA approach with canary triggers."""
+
+import pandas as pd
+
+def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFrame:
+    return pd.DataFrame()
+'''
+    result, fixes = repair_strategy_code(code)
+    assert result.startswith('"""Strategy module') or '"""Strategy module' in result[:200]
+    assert "from typing import Any" in result
+    assert fixes

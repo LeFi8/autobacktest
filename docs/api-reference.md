@@ -226,14 +226,14 @@ def evaluate_strategy_detailed(
 ## 3. Strategy Registry & Pre-flight Validation (`autobacktest.strategy`)
 
 ### `preflight`
-Runs all six pre-flight validations on a target strategy and configuration.
+Runs all pre-flight validations on a target strategy and configuration.
 ```python
 def preflight(
     strategy_name: str,
     strategies_dir: Path,
     configs_dir: Path,
 ) -> ValidationResult:
-    """Run all six pre-flight validations on a target strategy and config.
+    """Run all pre-flight validations on a target strategy and config.
 
     Validations include:
     1. Path traversal security check
@@ -242,6 +242,9 @@ def preflight(
     4. Dynamic compilation and import using isolated compilation blocks
     5. Smoke testing with synthetic prices to verify execution correctness
     6. Sub-window rebalance stability validation for lookahead bias sniffing
+    7. Cyclomatic complexity and function size bounds
+    8. Undefined-name AST scan — catches LLM hallucinations referencing
+       out-of-scope variables or misspelled identifiers
 
     Args:
         strategy_name: Name of the strategy to validate.
@@ -675,6 +678,20 @@ Also repairs:
 def repair_pandas_code(code: str) -> tuple[str, list[str]]:
     """Parse code, apply pandas deprecation fixes. Returns (repaired_code, fix_descriptions).
     If no fixes apply, returns the exact original string."""
+```
+
+### `repair_strategy_code`
+Chains all AST-based repair passes into a single operation, called by the orchestrator after LLM code generation. Runs in order:
+
+1. `_PandasDeprecationTransformer` — pandas 3.x API migration
+2. `_MissingImportInjector` — injects ``from typing import Any`` when ``Any`` is used in type annotations but not imported. Places the import after the module docstring to preserve ``__doc__``.
+3. `_WeightRenormalizer` — injects ``.clip(lower=0.0).div(…).fillna(0.0)`` before the final ``return`` in ``generate_signals`` to prevent float-accumulation drift above the ``1.0 + 1e-5`` tolerance.
+
+```python
+def repair_strategy_code(code: str) -> tuple[str, list[str]]:
+    """Run all AST-based repair passes and return the fixed source.
+    Returns (repaired_code, list_of_fix_descriptions).
+    If no fixes apply or input has SyntaxError, returns (code, [])."""
 ```
 
 ---

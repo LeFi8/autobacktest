@@ -52,7 +52,7 @@ def _get_in_sample_metric_val(report: EvaluationReport, target_metric: TargetMet
     elif target_metric == TargetMetric.SORTINO:
         val = report.in_sample_metrics.sortino_ratio
     elif target_metric == TargetMetric.INFORMATION_RATIO:
-        val = report.in_sample_metrics.information_ratio
+        val = report.in_sample_metrics.information_ratio or 0.0
     else:
         raise ValueError(f"Unsupported target metric choice: {target_metric}")
 

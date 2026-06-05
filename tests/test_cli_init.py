@@ -241,3 +241,56 @@ def test_init_strategy_reserved_key_rejected(tmp_path: Path) -> None:
 
     assert "universe" not in cfg["params"]
     assert cfg["params"]["vol_span"] == 21
+
+
+def test_init_strategy_tz_aware_prices(tmp_path: Path) -> None:
+    """Generated boilerplate handles tz-aware price indices."""
+    (tmp_path / "strategies").mkdir()
+    (tmp_path / "configs").mkdir()
+
+    inputs = (
+        "\n".join(
+            [
+                "SPY, QQQ, BIL",
+                "SPY",
+                "0.20",
+                "2.0",
+                "12",
+                "n",
+            ]
+        )
+        + "\n"
+    )
+
+    result = runner.invoke(
+        app,
+        ["init-strategy", "--name", "tz_aware_test"],
+        input=inputs,
+    )
+    assert result.exit_code == 0
+    assert "Success" in result.output
+
+    strategy_path = tmp_path / "strategies" / "tz_aware_test.py"
+    assert strategy_path.exists()
+
+    import importlib.util
+
+    import numpy as np
+    import pandas as pd
+
+    spec = importlib.util.spec_from_file_location("tz_aware_test", strategy_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    dates = pd.date_range("2023-01-01", periods=500, freq="B", tz="US/Eastern")
+    rng = np.random.default_rng(42)
+    prices = pd.DataFrame(
+        {t: 100.0 * np.exp(np.cumsum(rng.normal(0.0002, 0.01, 500))) for t in ["SPY", "QQQ", "BIL"]},
+        index=dates,
+    )
+
+    config = {"universe": ["SPY", "QQQ", "BIL"], "params": {"cash_asset": "BIL"}}
+    weights = module.generate_signals(prices, config)
+    assert not weights.empty
+    assert weights.shape[1] == len(["SPY", "QQQ", "BIL"])
