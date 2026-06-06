@@ -242,7 +242,13 @@ def run_optimization(
     event_log = EventLog(run_dir / run_id / "events.jsonl")
     incumbent_returns = pd.Series(dtype=float)  # set before try so finally can read it
     incumbent_attempt_id: int | None = None
-    incumbent: EvaluationReport  # assigned during baseline below
+    incumbent: EvaluationReport | None = None
+    baseline_at_start: EvaluationReport | None = None
+    start_temp = None
+    total_prompt_tokens = 0
+    total_completion_tokens = 0
+    total_cost = 0.0
+    _early_stop_iteration = 0
     try:
         # 5. Load baseline config
         start_temp = getattr(provider, "temperature", None)
@@ -420,9 +426,6 @@ def run_optimization(
 
         # 8. Optimization loop
         baseline_at_start = incumbent
-        total_prompt_tokens = 0
-        total_completion_tokens = 0
-        total_cost = 0.0
         start_k = 1
         if resume:
             rows = ledger._conn().execute("SELECT iteration FROM attempts WHERE run_id = ?", (run_id,)).fetchall()
@@ -437,7 +440,7 @@ def run_optimization(
         consecutive_no_backtest: int = 0
         rolling_history: list[bool] = []
         _early_stop = False
-        _early_stop_iteration: int = 0
+        _early_stop_iteration = 0
         mode: str = "explore"
         exploit_stall: int = 0
         with Progress(
@@ -1141,26 +1144,38 @@ def run_optimization(
 
         if n_llm_ok == 0:
             raise RuntimeError("Zero successful LLM calls during optimization run. All iterations failed.")
+    except KeyboardInterrupt:
+        if incumbent is None:
+            raise
+        if not quiet:
+            from rich.console import Console
 
+            Console().print(
+                "\n[bold yellow]⚠ Optimization loop interrupted by user. Performing graceful shutdown...[/]"
+            )
     finally:
         if start_temp is not None:
             provider.temperature = start_temp
         # Refresh final report's selection DSR using complete session history.
-        try:
-            hist_matrix, hist_sharpes = ledger.fetch_historical_returns(incumbent.dataset_hash)
-            if not hist_matrix.empty and len(hist_sharpes) > 1:
-                n = max(1, calculate_effective_trials(hist_matrix))
-                incumbent.effective_trials = n
-                incumbent.deflated_sharpe = calculate_psr_dsr(incumbent_returns, hist_sharpes, n)
-        except Exception as exc:
-            logger.warning("Failed to refresh final report DSR: %s", exc)
-        # Also re-deflate the holdout DSR.
-        with contextlib.suppress(Exception):
-            _deflate_holdout(incumbent, ledger, exclude_id=incumbent_attempt_id)
+        if incumbent is not None:
+            try:
+                hist_matrix, hist_sharpes = ledger.fetch_historical_returns(incumbent.dataset_hash)
+                if not hist_matrix.empty and len(hist_sharpes) > 1:
+                    n = max(1, calculate_effective_trials(hist_matrix))
+                    incumbent.effective_trials = n
+                    incumbent.deflated_sharpe = calculate_psr_dsr(incumbent_returns, hist_sharpes, n)
+            except Exception as exc:
+                logger.warning("Failed to refresh final report DSR: %s", exc)
+            # Also re-deflate the holdout DSR.
+            with contextlib.suppress(Exception):
+                _deflate_holdout(incumbent, ledger, exclude_id=incumbent_attempt_id)
         # 9. Cleanup
-        event_log.close()
-        lesson_store.close()
-        ledger.close()
+        with contextlib.suppress(Exception):
+            event_log.close()
+        with contextlib.suppress(Exception):
+            lesson_store.close()
+        with contextlib.suppress(Exception):
+            ledger.close()
 
     return OrchestratorResult(
         run_id=run_id,
