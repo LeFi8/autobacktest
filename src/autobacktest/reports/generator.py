@@ -58,6 +58,7 @@ def plot_equity_curves(
         final_cum.values,
         label="Optimized",
         linewidth=1.5,
+        color="#ff7f0e",
     )
     if has_benchmark:
         ax_top.plot(
@@ -66,7 +67,7 @@ def plot_equity_curves(
             label=benchmark_ticker,
             linewidth=1.5,
             linestyle="--",
-            color="#ff7f0e",
+            color="#7f8c8d",
         )
     ax_top.set_title(f"Holdout Period Equity Curves — {run_id}")
     ax_top.set_ylabel("Cumulative Return")
@@ -94,8 +95,15 @@ def plot_equity_curves(
             final_active.values,
             label="Optimized",
             linewidth=1.5,
+            color="#ff7f0e",
         )
-        ax_mid.axhline(y=0, color="gray", linestyle=":", linewidth=1)
+        ax_mid.axhline(
+            y=0,
+            color="#7f8c8d",
+            linestyle=":",
+            linewidth=1.2,
+            label=benchmark_ticker,
+        )
         ax_mid.set_title("Active Return vs Benchmark")
         ax_mid.set_ylabel("Cumulative Active Return")
         ax_mid.legend(loc="upper left")
@@ -118,6 +126,16 @@ def plot_equity_curves(
         linestyle="--",
         color="#1f77b4",
     )
+    if has_benchmark:
+        bench_dd = _drawdown(benchmark_returns)
+        ax_bot.plot(
+            bench_dd.index,
+            bench_dd.values * 100,
+            label=benchmark_ticker,
+            linewidth=1.0,
+            linestyle="--",
+            color="#7f8c8d",
+        )
     ax_bot.set_title("Drawdown")
     ax_bot.set_xlabel("Date")
     ax_bot.set_ylabel("Drawdown %")
