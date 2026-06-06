@@ -51,7 +51,9 @@ from autobacktest.program import parse_program
 from autobacktest.strategy.config_schema import StrategyConfig
 from autobacktest.strategy.diversity import (
     check_returns_correlation,
+    extract_config_fingerprint,
     max_config_similarity,
+    summarize_explored_space,
 )
 from autobacktest.strategy.parameter_importance import (
     compute_parameter_importance,
@@ -67,6 +69,12 @@ STUCK_THRESHOLD = 5
 STUCK_ESCALATION_FACTOR = 0.8
 MAX_DIVERSITY_RETRIES = 2
 EXPLOIT_PATIENCE = 3  # consecutive non-improvements in EXPLOIT before returning to EXPLORE
+
+CANDIDATE_DIRECTIVES = [
+    "structurally change the signal-generation logic",
+    "explore an untried parameter region far from explored values",
+    "change the risk-management/leverage mechanism",
+]
 
 
 class _LRUCache:
@@ -424,6 +432,7 @@ def run_optimization(
         n_committed = 0
         n_llm_ok = 0
         last_attempt: dict[str, Any] | None = None
+        last_iteration_failures: list[dict[str, Any]] | None = None
         consecutive_no_accept: int = 0
         consecutive_no_backtest: int = 0
         rolling_history: list[bool] = []
@@ -484,6 +493,14 @@ def run_optimization(
                     current_yaml = cfg_path.read_text(encoding="utf-8")
                     historical_configs = ledger.fetch_configs(dataset_hash)
                     attempt_summaries = ledger.fetch_attempt_summaries(dataset_hash)
+
+                    explored_config_summary = ""
+                    if settings.enable_explored_config_injection and historical_configs:
+                        explored_config_summary = summarize_explored_space(
+                            historical_configs,
+                            max_configs=settings.explored_config_max_configs,
+                        )
+
                     ctx = AgentContext(
                         strategy_name=strategy_name,
                         strategy_code=current_code,
@@ -494,6 +511,8 @@ def run_optimization(
                         lessons_text=lessons_text,
                         n_historical_configs=len(historical_configs),
                         last_attempt=last_attempt,
+                        last_iteration_failures=last_iteration_failures,
+                        explored_config_summary=explored_config_summary,
                         attempt_history=attempt_summaries,
                         mode=mode,
                         dd_limit=config_obj.max_drawdown_limit,
@@ -515,8 +534,13 @@ def run_optimization(
 
                     # Filter out None (LLM failures) and process each candidate
                     candidate_results: list[dict[str, Any]] = []
-                    for edit in raw_edits:
-                        ev: dict[str, Any] = {"edit": edit}
+                    for i, edit in enumerate(raw_edits):
+                        directive = (
+                            CANDIDATE_DIRECTIVES[i % len(CANDIDATE_DIRECTIVES)]
+                            if settings.enable_candidate_directives and ctx.mode == "explore"
+                            else ""
+                        )
+                        ev: dict[str, Any] = {"edit": edit, "directive": directive}
                         if edit is None:
                             ev["llm_error"] = True
                         else:
@@ -542,9 +566,71 @@ def run_optimization(
                                     logger.info("codemod repaired candidate in iter %s: %s", k, applied_fixes)
 
                             # Validate
-                            ok, err_code, err_detail = _validate_candidate(
+                            orig_ok, orig_err_code, orig_err_detail = _validate_candidate(
                                 strategy_name, edit, strategies_dir, configs_dir
                             )
+
+                            ok, err_code, err_detail = orig_ok, orig_err_code, orig_err_detail
+                            repair_applied = False
+
+                            if not ok and settings.enable_llm_repair:
+                                import dataclasses as _dc
+
+                                current_edit = edit
+                                for _attempt_idx in range(settings.max_repair_attempts):
+                                    repair_request = {
+                                        "failed_code": current_edit.strategy_code,
+                                        "failed_config_yaml": current_edit.config_yaml,
+                                        "error_code": err_code,
+                                        "error_detail": err_detail,
+                                    }
+                                    repair_ctx = _dc.replace(
+                                        ctx,
+                                        strategy_code=current_edit.strategy_code,
+                                        config_yaml=current_edit.config_yaml,
+                                        repair_request=repair_request,
+                                        directive=ev.get("directive", ""),
+                                    )
+                                    try:
+                                        repair_edit = provider.generate_edit(repair_ctx)
+                                    except LLMError as e:
+                                        if not e.retryable:
+                                            raise
+                                        break
+
+                                    if repair_edit is not None:
+                                        total_prompt_tokens += repair_edit.prompt_tokens
+                                        total_completion_tokens += repair_edit.completion_tokens
+                                        total_cost += repair_edit.cost
+
+                                        edit = _dc.replace(
+                                            repair_edit,
+                                            prompt_tokens=edit.prompt_tokens + repair_edit.prompt_tokens,
+                                            completion_tokens=edit.completion_tokens + repair_edit.completion_tokens,
+                                            total_tokens=edit.total_tokens + repair_edit.total_tokens,
+                                            cost=edit.cost + repair_edit.cost,
+                                        )
+
+                                        if settings.enable_codemod_repair:
+                                            repaired_code, applied_fixes = repair_strategy_code(edit.strategy_code)
+                                            if applied_fixes:
+                                                edit = _dc.replace(edit, strategy_code=repaired_code)
+
+                                        rep_ok, rep_err_code, rep_err_detail = _validate_candidate(
+                                            strategy_name, edit, strategies_dir, configs_dir
+                                        )
+                                        if rep_ok:
+                                            ok, err_code, err_detail = rep_ok, rep_err_code, rep_err_detail
+                                            repair_applied = True
+                                            break
+                                        else:
+                                            current_edit = edit
+                                            err_code, err_detail = rep_err_code, rep_err_detail
+
+                                if not repair_applied:
+                                    ok, err_code, err_detail = orig_ok, orig_err_code, orig_err_detail
+
+                            ev["repair_applied"] = repair_applied
                             if ok:
                                 ev["valid"] = True
                                 ev["strategy_code"] = edit.strategy_code
@@ -553,6 +639,7 @@ def run_optimization(
                                 ev["completion_tokens"] = edit.completion_tokens
                                 ev["total_tokens"] = edit.total_tokens
                                 ev["cost"] = edit.cost
+                                ev["edit"] = edit
                             else:
                                 ev["valid"] = False
                                 ev["validation_stage"] = "validation"
@@ -589,6 +676,30 @@ def run_optimization(
                                     "Exploit candidate is identical to the incumbent config; no change to evaluate."
                                 )
                         valid_candidates.append(ev)
+
+                    # Pre-backtest identical-behavior guard
+                    if settings.enable_identical_behavior_guard and mode == "explore" and current_code:
+                        from autobacktest.strategy.validator import compare_signals_to_incumbent
+
+                        for ev in valid_candidates:
+                            if not ev.get("valid"):
+                                continue
+                            is_identical, diff = compare_signals_to_incumbent(
+                                strategy_name,
+                                ev["strategy_code"],
+                                ev["config_yaml"],
+                                current_code,
+                                strategies_dir,
+                                configs_dir,
+                                epsilon=settings.identical_behavior_epsilon,
+                            )
+                            if is_identical:
+                                ev["valid"] = False
+                                ev["validation_stage"] = "identical_behavior"
+                                ev["detail"] = (
+                                    f"Candidate weights are identical to incumbent (max abs weight diff {diff:.2e} "
+                                    f"< epsilon {settings.identical_behavior_epsilon:.2e})."
+                                )
 
                     # Collect valid candidates for backtest evaluation
                     to_eval = [ev for ev in valid_candidates if ev.get("valid")]
@@ -775,6 +886,7 @@ def run_optimization(
                             incumbent_attempt_id = attempt_id
                             n_committed += 1
                             last_attempt = None
+                            last_iteration_failures = None
                             consecutive_no_accept = 0
                             mode = "exploit"
                             exploit_stall = 0
@@ -891,6 +1003,12 @@ def run_optimization(
                                 "stage": ev.get("validation_stage"),
                                 "detail": ev.get("detail"),
                                 "failed_gate": ev.get("_failed_gate"),
+                                "repair_applied": ev.get("repair_applied", False),
+                                "directive": ev.get("directive", ""),
+                                "prompt_tokens": ev["edit"].prompt_tokens if ev.get("edit") else 0,
+                                "completion_tokens": ev["edit"].completion_tokens if ev.get("edit") else 0,
+                                "total_tokens": ev["edit"].total_tokens if ev.get("edit") else 0,
+                                "cost": ev["edit"].cost if ev.get("edit") else 0.0,
                             }
                             candidates_summary.append(fail_item)
                         else:
@@ -899,6 +1017,12 @@ def run_optimization(
                                 "passed": True,
                                 "accepted": ev is winner,
                                 "observed_sharpe": rp.observed_sharpe if rp else None,
+                                "repair_applied": ev.get("repair_applied", False),
+                                "directive": ev.get("directive", ""),
+                                "prompt_tokens": ev["edit"].prompt_tokens if ev.get("edit") else 0,
+                                "completion_tokens": ev["edit"].completion_tokens if ev.get("edit") else 0,
+                                "total_tokens": ev["edit"].total_tokens if ev.get("edit") else 0,
+                                "cost": ev["edit"].cost if ev.get("edit") else 0.0,
                             }
                             candidates_summary.append(pass_item)
                     event["candidates"] = candidates_summary
@@ -922,6 +1046,7 @@ def run_optimization(
                                 mode = "explore"
                                 exploit_stall = 0
                         last_attempt = _extract_best_failure(candidate_results)
+                        last_iteration_failures = _summarize_all_failures(candidate_results)
 
                     # --- Preflight stagnation counter ---
                     n_reached_backtest = sum(
@@ -1130,17 +1255,25 @@ def _generate_candidates(
 
     Non-retryable errors (e.g. auth failures) are raised immediately.
     """
+    import dataclasses
 
-    def _try() -> AgentEdit | None:
+    def _try(c: AgentContext) -> AgentEdit | None:
         try:
-            return provider.generate_edit(ctx)
+            return provider.generate_edit(c)
         except LLMError as e:
             if not e.retryable:
                 raise
             return None
 
     with ThreadPoolExecutor(max_workers=n) as pool:
-        futures = [pool.submit(_try) for _ in range(n)]
+        futures = []
+        for i in range(n):
+            if settings.enable_candidate_directives and ctx.mode == "explore":
+                dir_str = CANDIDATE_DIRECTIVES[i % len(CANDIDATE_DIRECTIVES)]
+                c = dataclasses.replace(ctx, directive=dir_str)
+            else:
+                c = ctx
+            futures.append(pool.submit(_try, c))
         return [f.result() for f in futures]
 
 
@@ -1282,6 +1415,7 @@ def _extract_best_failure(candidate_results: list[dict[str, Any]]) -> dict[str, 
     stages_priority = [
         "validation",
         "eval_error",
+        "identical_behavior",
         "gate",
         "diversity_returns",
         "diversity_config",
@@ -1318,7 +1452,7 @@ def _extract_best_failure(candidate_results: list[dict[str, Any]]) -> dict[str, 
                             "Max Drawdown": rp.in_sample_metrics.max_drawdown,
                             "Turnover": rp.in_sample_metrics.turnover,
                         }
-                elif stage in ("diversity_returns", "diversity_config", "holdout_peek_limit"):
+                elif stage in ("diversity_returns", "diversity_config", "holdout_peek_limit", "identical_behavior"):
                     failure["detail"] = ev.get("detail")
 
                 return failure
@@ -1334,3 +1468,36 @@ def _extract_best_failure(candidate_results: list[dict[str, Any]]) -> dict[str, 
         "stage": "all_candidates_failed",
         "detail": "No candidate passed all gates.",
     }
+
+
+def _summarize_all_failures(candidate_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Summarize all failures observed across parallel candidates in an iteration."""
+    failures = []
+    for ev in candidate_results:
+        if not ev.get("valid") or ev.get("llm_error"):
+            stage = ev.get("validation_stage") or ("llm_error" if ev.get("llm_error") else "unknown")
+            error_code = ev.get("error_code")
+            detail = ev.get("detail") or ""
+            if len(detail) > 120:
+                detail = detail[:117] + "..."
+
+            params = {}
+            config_yaml = ev.get("config_yaml")
+            if not config_yaml and ev.get("edit"):
+                config_yaml = ev["edit"].config_yaml
+            if config_yaml:
+                try:
+                    fp = extract_config_fingerprint(config_yaml)
+                    params = fp.numeric_params
+                except Exception:
+                    pass
+
+            failures.append(
+                {
+                    "stage": stage,
+                    "error_code": error_code,
+                    "detail": detail,
+                    "params": params,
+                }
+            )
+    return failures

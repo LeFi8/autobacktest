@@ -394,9 +394,14 @@ class TestDiversityGateIntegration:
         )
         mock_provider = MockProvider(response=same_returns_edit)
 
-        with patch(
-            "autobacktest.evaluator.evaluate.CachedDataProvider",
-            return_value=fake_instance,
+        from autobacktest.config import settings
+
+        with (
+            patch.object(settings, "enable_identical_behavior_guard", False),
+            patch(
+                "autobacktest.evaluator.evaluate.CachedDataProvider",
+                return_value=fake_instance,
+            ),
         ):
             result = run_optimization(
                 program_path=project_root / "program.md",
@@ -496,3 +501,38 @@ class TestDiversityGateIntegration:
 
         # Provider was called exactly 1 time (3 candidates generated in parallel)
         assert len(provider.calls) == 3
+
+
+class TestSummarizeExploredSpace:
+    """Unit tests for summarize_explored_space."""
+
+    def test_empty_historical_configs(self) -> None:
+        """Empty list → empty string."""
+        from autobacktest.strategy.diversity import summarize_explored_space
+
+        assert summarize_explored_space([]) == ""
+        assert summarize_explored_space(None) == ""
+
+    def test_summarize_valid_configs(self) -> None:
+        """Correct summary with formatting and sorting."""
+        from autobacktest.strategy.diversity import summarize_explored_space
+
+        configs = [
+            "universe: [SPY, TLT]\nmomentum_lookback: 10\nparams:\n  top_x: 2\n  canary_smoothing_window: 15.5",
+            "universe: [SPY, IEF, GLD]\nmomentum_lookback: 12\nparams:\n  top_x: 3\n  canary_smoothing_window: 20",
+        ]
+        summary = summarize_explored_space(configs)
+        assert "Tried parameters in past configurations:" in summary
+        assert "- **canary_smoothing_window**: [15.5, 20]" in summary
+        assert "- **momentum_lookback**: [10, 12]" in summary
+        assert "- **top_x**: [2, 3]" in summary
+        assert "- **universe**: {GLD, IEF, SPY, TLT}" in summary
+
+    def test_truncation(self) -> None:
+        """Truncates value lists to first 8 + ellipsis."""
+        from autobacktest.strategy.diversity import summarize_explored_space
+
+        # Generate 10 configs with different momentum_lookback values
+        configs = [f"universe: [SPY]\nmomentum_lookback: {i}" for i in range(10)]
+        summary = summarize_explored_space(configs)
+        assert "0, 1, 2, 3, 4, 5, 6, 7, …" in summary

@@ -86,6 +86,25 @@ class Settings(BaseModel):
     enable_config_diversity_gate: bool = Field(
         default_factory=lambda: os.getenv("AUTOBACKTEST_ENABLE_CONFIG_DIVERSITY_GATE", "true").lower() == "true"
     )
+    enable_llm_repair: bool = Field(
+        default_factory=lambda: os.getenv("AUTOBACKTEST_ENABLE_LLM_REPAIR", "true").lower() == "true"
+    )
+    max_repair_attempts: int = Field(default_factory=lambda: int(os.getenv("AUTOBACKTEST_MAX_REPAIR_ATTEMPTS", "1")))
+    enable_candidate_directives: bool = Field(
+        default_factory=lambda: os.getenv("AUTOBACKTEST_ENABLE_CANDIDATE_DIRECTIVES", "true").lower() == "true"
+    )
+    enable_explored_config_injection: bool = Field(
+        default_factory=lambda: os.getenv("AUTOBACKTEST_ENABLE_EXPLORED_CONFIG_INJECTION", "true").lower() == "true"
+    )
+    explored_config_max_configs: int = Field(
+        default_factory=lambda: int(os.getenv("AUTOBACKTEST_EXPLORED_CONFIG_MAX_CONFIGS", "30"))
+    )
+    enable_identical_behavior_guard: bool = Field(
+        default_factory=lambda: os.getenv("AUTOBACKTEST_ENABLE_IDENTICAL_BEHAVIOR_GUARD", "true").lower() == "true"
+    )
+    identical_behavior_epsilon: float = Field(
+        default_factory=lambda: float(os.getenv("AUTOBACKTEST_IDENTICAL_BEHAVIOR_EPSILON", "1e-6"))
+    )
     diversity_config_threshold: float = Field(
         default_factory=lambda: float(os.getenv("AUTOBACKTEST_DIVERSITY_CONFIG_THRESHOLD", "0.95"))
     )

@@ -47,6 +47,10 @@ class AgentContext:
     dd_limit: float = 0.20
     turnover_limit: float = 2.0
     min_return_ratio: float = 0.5
+    last_iteration_failures: list[dict[str, Any]] | None = None
+    explored_config_summary: str = ""
+    directive: str = ""
+    repair_request: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)

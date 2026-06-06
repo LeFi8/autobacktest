@@ -246,7 +246,7 @@ def test_e2e_full_run_commits_improved_strategy(project_root: Path) -> None:
     # Verify the committed file actually contains the IMPROVED (HIGH) strategy code.
     repo = git.Repo(project_root)
     committed_code = repo.git.show(f"{result.branch}:strategies/toy.py")
-    assert 'weights["HIGH"] = 1.0' in committed_code, (
+    assert 'weights["HIGH"] = 1.0' in committed_code or "weights['HIGH'] = 1.0" in committed_code, (
         f"Expected HIGH allocation in committed strategy, got:\n{committed_code}"
     )
 
@@ -304,9 +304,14 @@ def test_e2e_validation_failure_continues(project_root: Path) -> None:
     )
     mock_provider = MockProvider(response=scripted_edit)
 
-    with patch(
-        "autobacktest.evaluator.evaluate.CachedDataProvider",
-        return_value=fake_instance,
+    from autobacktest.config import settings
+
+    with (
+        patch(
+            "autobacktest.evaluator.evaluate.CachedDataProvider",
+            return_value=fake_instance,
+        ),
+        patch.object(settings, "enable_llm_repair", False),
     ):
         result = run_optimization(
             program_path=project_root / "program.md",
@@ -540,3 +545,98 @@ def test_mode_logged_in_events(project_root: Path) -> None:
         event = json.loads(line)
         assert "mode" in event, f"Missing 'mode' key in event: {event}"
         assert event["mode"] in ("explore", "exploit"), f"Invalid mode value: {event['mode']}"
+
+
+def test_orchestrator_llm_repair_and_identical_behavior_guard(project_root: Path) -> None:
+    """Tests the orchestrator's LLM repair loop, token accumulation, and identical behavior guard."""
+    from autobacktest.config import settings
+
+    synthetic_prices = _make_synthetic_prices()
+    fake_instance = _make_fake_provider(synthetic_prices)
+
+    class CustomFlakyProvider(MockProvider):
+        def __init__(self) -> None:
+            super().__init__()
+            self.call_idx = 0
+
+        def generate_edit(self, context: AgentContext) -> AgentEdit:
+            self.calls.append(context)
+            self.call_idx += 1
+            if context.repair_request:
+                # This is a repair request! Return the corrected code.
+                return AgentEdit(
+                    strategy_code=IMPROVED_STRATEGY,
+                    config_yaml=IMPROVED_CONFIG,
+                    reasoning="Repaired strategy",
+                    raw_response="{}",
+                    prompt_tokens=100,
+                    completion_tokens=50,
+                    cost=0.01,
+                )
+            else:
+                # First candidate: invalid
+                if self.call_idx == 1:
+                    return AgentEdit(
+                        strategy_code=INVALID_STRATEGY,
+                        config_yaml=STRATEGY_CONFIG,
+                        reasoning="Invalid strategy first",
+                        raw_response="{}",
+                        prompt_tokens=10,
+                        completion_tokens=20,
+                        cost=0.002,
+                    )
+                # Second candidate: identical to baseline
+                else:
+                    return AgentEdit(
+                        strategy_code=BASELINE_STRATEGY,
+                        config_yaml=IMPROVED_CONFIG,
+                        reasoning="Identical to baseline",
+                        raw_response="{}",
+                        prompt_tokens=5,
+                        completion_tokens=5,
+                        cost=0.001,
+                    )
+
+    mock_provider = CustomFlakyProvider()
+
+    with (
+        patch.object(settings, "enable_llm_repair", True),
+        patch.object(settings, "max_repair_attempts", 2),
+        patch.object(settings, "enable_identical_behavior_guard", True),
+        patch.object(settings, "n_candidates", 2),
+        patch("autobacktest.evaluator.evaluate.CachedDataProvider", return_value=fake_instance),
+    ):
+        result = run_optimization(
+            program_path=project_root / "program.md",
+            strategy_name="toy",
+            iterations=1,
+            provider=mock_provider,
+            run_dir=project_root / "runs",
+            strategies_dir=project_root / "strategies",
+            configs_dir=project_root / "configs",
+            target_metric=TargetMetric.SHARPE,
+            repo_path=project_root,
+            start_date="2013-01-01",
+            end_date="2025-01-01",
+        )
+
+    # Let's inspect events.jsonl
+    events_path = project_root / "runs" / result.run_id / "events.jsonl"
+    raw = events_path.read_text(encoding="utf-8").strip()
+    lines = [ln for ln in raw.split("\n") if ln]
+    event = json.loads(lines[0])
+
+    candidates = event["candidates"]
+    # Candidate 1 should have been repaired and passed!
+    cand1 = candidates[0]
+    assert cand1["passed"] is True
+    assert cand1["repair_applied"] is True
+    # Verify token accumulation
+    assert cand1["prompt_tokens"] == 110  # 10 + 100
+    assert cand1["completion_tokens"] == 70  # 20 + 50
+    assert abs(cand1["cost"] - 0.012) < 1e-6
+
+    # Candidate 2 should have failed validation or identical behavior check (since it generates baseline behavior)
+    cand2 = candidates[1]
+    assert cand2["passed"] is False
+    assert cand2["stage"] == "identical_behavior"
