@@ -1196,8 +1196,18 @@ def _deflate(
 ) -> None:
     """Deflate the in-sample selection DSR using the ledger's multi-trial history.
 
-    The null distribution is grounded entirely on all historical trials including
-    the candidate's own returns and Sharpe.
+    The candidate is deliberately included in both the returns matrix and
+    the historical Sharpe list.  This is intentionally conservative:
+
+    * Including the candidate in ``hist_matrix`` increases the effective-
+      trials count, raising the multiple-testing bar.
+    * Including its Sharpe in the list inflates ``sigma_sr``, which
+      increases the expected-maximum Sharpe (``sr0``), making the DSR
+      harder to pass.
+
+    Excluding the candidate would give it an artificial advantage (no
+    self-penalty), which is inappropriate for a selection procedure where
+    every trial must be treated symmetrically.
     """
     hist_matrix, hist_sharpes = ledger.fetch_historical_returns(report.dataset_hash, exclude_id=exclude_id)
 
@@ -1231,8 +1241,9 @@ def _deflate_holdout(
 ) -> None:
     """Deflate ``report.holdout_deflated_sharpe`` by the holdout-peek count.
 
-    The null distribution uses all prior holdout peeks including the current
-    candidate's returns and Sharpe.
+    Same conservative self-inclusion rationale as ``_deflate``: the candidate
+    is included in the returns matrix and Sharpe list to avoid giving it an
+    artificial advantage over prior holdout peeks.
     """
     hist_matrix, hist_sharpes = ledger.fetch_holdout_history(report.dataset_hash, exclude_id=exclude_id)
 

@@ -575,10 +575,17 @@ def evaluate_strategy_detailed(
     # Calculate launch regime haircut and apply to strategy returns
     haircut = calculate_regime_haircut(prices[regime_bench_ticker], holdout_start)
     if haircut > 0.0:
-        in_sample_metrics.annualized_return *= 1.0 - haircut
-        holdout_report.annualized_return *= 1.0 - haircut
+        factor = 1.0 - haircut
+        in_sample_metrics.annualized_return *= factor
+        in_sample_metrics.sharpe_ratio *= factor
+        in_sample_metrics.sortino_ratio *= factor
+        holdout_report.annualized_return *= factor
+        holdout_report.sharpe_ratio *= factor
+        holdout_report.sortino_ratio *= factor
         for r in wf_reports:
-            r.annualized_return *= 1.0 - haircut
+            r.annualized_return *= factor
+            r.sharpe_ratio *= factor
+            r.sortino_ratio *= factor
 
     # Generate complete stable dataset hash including date parameters
     dataset_hash = compute_dataset_hash(

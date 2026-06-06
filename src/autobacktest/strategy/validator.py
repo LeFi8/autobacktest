@@ -599,7 +599,7 @@ def run_checks():
 
                 common_shift_idx = w_base_shifted.index.intersection(w_shifted_clean.index)
                 if not common_shift_idx.empty and len(common_shift_idx) > 260:
-                    warmup_idx = common_shift_idx[260:]
+                    warmup_idx = common_shift_idx.tolist()[260:]
                     w_b_s = w_base_shifted.loc[warmup_idx]
                     w_s_c = w_shifted_clean.loc[warmup_idx]
 

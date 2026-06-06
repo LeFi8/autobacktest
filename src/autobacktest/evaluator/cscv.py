@@ -27,14 +27,9 @@ def calculate_pbo(returns_matrix: pd.DataFrame, n_blocks: int = 10) -> float:
     # Convert to numpy array for performance
     returns_arr = returns_matrix.values
 
-    # 1. Partition rows into n_blocks contiguous blocks
-    block_size = n_days // n_blocks
-    blocks = []
-    for i in range(n_blocks):
-        start_idx = i * block_size
-        # The last block gets the remainder rows
-        end_idx = (i + 1) * block_size if i < n_blocks - 1 else n_days
-        blocks.append(returns_arr[start_idx:end_idx])
+    # 1. Partition rows into n_blocks contiguous blocks using array_split
+    #    to distribute remainder rows evenly (no single block absorbs all excess).
+    blocks = np.array_split(returns_arr, n_blocks, axis=0)
 
     # 2. Generate all C(S, S/2) combinations of block splits
     is_size = n_blocks // 2
