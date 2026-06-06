@@ -560,6 +560,27 @@ def build_messages(
                     "or passed in config/prices."
                 )
             return f'\nError detail: "{detail}"\nAllowed alternative: {alt}'
+        elif error_code == "smoke_test_failed":
+            return (
+                "\nSmoke test execution failed. This usually means your code raised an exception at runtime "
+                "(e.g., KeyError, IndexError, ValueError), or it returned invalid weight outputs "
+                "(e.g. weights exceeding the sum <= 1.0 limit, incorrect shapes, or containing NaN values). "
+                "Ensure all operations handle missing or NaN data gracefully, avoid dividing by zero, "
+                "check shape consistency, and verify that portfolio weights sum to at most 1.0 at every step."
+            )
+        elif error_code == "import_failed":
+            return (
+                "\nImport failed. The Python interpreter failed to load your strategy file. "
+                "This is typically caused by syntax errors, invalid syntax in type annotations, or "
+                "code crashing at import time. Double-check your syntax and ensure the code compiles "
+                "without any side effects during import."
+            )
+        elif error_code == "signature_mismatch":
+            return (
+                "\nSignature mismatch. Your strategy must define a function with the exact signature:\n"
+                "  `def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFrame:`\n"
+                "Ensure the function is exported, name is spelled correctly, and parameters match."
+            )
         return ""
 
     repair_request_section = ""

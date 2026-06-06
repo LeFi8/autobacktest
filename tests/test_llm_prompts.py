@@ -571,6 +571,46 @@ def test_build_messages_repair_hints() -> None:
     user_msg = messages[1]["content"]
     assert "Strategy-specific parameters must go under the 'params' dictionary" in user_msg
 
+    # 4. Test smoke_test_failed hint
+    context = _make_context(
+        repair_request={
+            "failed_code": "def signals(): pass",
+            "failed_config_yaml": "universe: [SPY]",
+            "error_code": "smoke_test_failed",
+            "error_detail": "Exception raised",
+        }
+    )
+    messages = build_messages(context)
+    user_msg = messages[1]["content"]
+    assert "Smoke test execution failed" in user_msg
+    assert "KeyError, IndexError, ValueError" in user_msg
+
+    # 5. Test import_failed hint
+    context = _make_context(
+        repair_request={
+            "failed_code": "def signals(): pass",
+            "failed_config_yaml": "universe: [SPY]",
+            "error_code": "import_failed",
+            "error_detail": "SyntaxError",
+        }
+    )
+    messages = build_messages(context)
+    user_msg = messages[1]["content"]
+    assert "Import failed. The Python interpreter failed to load" in user_msg
+
+    # 6. Test signature_mismatch hint
+    context = _make_context(
+        repair_request={
+            "failed_code": "def signals(): pass",
+            "failed_config_yaml": "universe: [SPY]",
+            "error_code": "signature_mismatch",
+            "error_detail": "signature error",
+        }
+    )
+    messages = build_messages(context)
+    user_msg = messages[1]["content"]
+    assert "Signature mismatch. Your strategy must define" in user_msg
+
 
 def test_build_messages_explored_config_instructions() -> None:
     context = _make_context(explored_config_summary="- **top_x**: [2, 3]")

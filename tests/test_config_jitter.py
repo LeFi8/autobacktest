@@ -89,3 +89,39 @@ def test_jitter_unreachable_threshold():
     assert res is None
     assert meta["jitter_applied"] is False
     assert meta["attempts"] == 5
+
+
+def test_jitter_nested_lists():
+    yaml_with_nested = """
+universe: [SPY]
+benchmark: SPY
+max_drawdown_limit: 0.20
+turnover_limit: 2.0
+params:
+  weights: [0.1, 0.2, 0.3]
+  scalar_param: 1.5
+"""
+    tried = [yaml_with_nested]
+    # scalar_param is mutated, weights list should be completely untouched
+    jittered, _ = jitter_config(yaml_with_nested, tried, 0.95, seed=42)
+    assert jittered is not None
+    dict_val = yaml.safe_load(jittered)
+    assert dict_val["params"]["weights"] == [0.1, 0.2, 0.3]
+    assert dict_val["params"]["scalar_param"] != 1.5
+
+
+def test_jitter_boundary_force_adjustment():
+    # Test momentum_lookback pinned at its lower bound (1)
+    yaml_at_bound = """
+universe: [SPY]
+benchmark: SPY
+momentum_lookback: 1
+max_drawdown_limit: 0.20
+turnover_limit: 2.0
+"""
+    tried = [yaml_at_bound]
+    jittered, _meta = jitter_config(yaml_at_bound, tried, 0.95, seed=42)
+    assert jittered is not None
+    dict_val = yaml.safe_load(jittered)
+    # Since momentum_lookback is ge=1, it must be forced to move inward (i.e. to 2 or more)
+    assert dict_val["momentum_lookback"] >= 2

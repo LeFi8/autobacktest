@@ -11,23 +11,46 @@ import logging
 import random
 from typing import Any
 
+import numpy as np
 import yaml
 
 from autobacktest.strategy.config_schema import StrategyConfig
-from autobacktest.strategy.diversity import KNOWN_RANGES, max_config_similarity
+from autobacktest.strategy.diversity import (
+    KNOWN_RANGES,
+    ConfigFingerprint,
+    _align_numeric_vectors,
+    _cosine_similarity,
+    _jaccard,
+    _parse_config_to_flat,
+    extract_config_fingerprint,
+)
 
 logger = logging.getLogger(__name__)
 
-# Bounded root parameters constraints (from StrategyConfig validation)
-ROOT_CONSTRAINTS: dict[str, tuple[float | None, float | None]] = {
-    "momentum_lookback": (1.0, None),
-    "max_drawdown_limit": (0.0, 1.0),
-    "turnover_limit": (0.0001, 10.0),  # gt=0.0 represented as >0.0001 lower bound
-    "borrow_cost_bps": (0.0, None),
-    "cscv_blocks": (4.0, None),
-    "min_improvement": (0.0, None),
-    "select_min_return_ratio": (0.0, 1.0),
-}
+# Bounded root parameters constraints dynamically derived from StrategyConfig pydantic model
+ROOT_CONSTRAINTS: dict[str, tuple[float | None, float | None]] = {}
+
+for name, field in StrategyConfig.model_fields.items():
+    if name == "params":
+        continue
+    min_val, max_val = None, None
+    for m in getattr(field, "metadata", []):
+        ge = getattr(m, "ge", None)
+        gt = getattr(m, "gt", None)
+        le = getattr(m, "le", None)
+        lt = getattr(m, "lt", None)
+        if ge is not None:
+            min_val = float(ge)
+        elif gt is not None:
+            # gt represented as slightly greater than gt value
+            min_val = float(gt) + 0.0001
+        if le is not None:
+            max_val = float(le)
+        elif lt is not None:
+            # lt represented as slightly less than lt value
+            max_val = float(lt) - 0.0001
+    if min_val is not None or max_val is not None:
+        ROOT_CONSTRAINTS[name] = (min_val, max_val)
 
 
 def get_param_name(path: tuple[Any, ...]) -> str:
@@ -38,34 +61,59 @@ def get_param_name(path: tuple[Any, ...]) -> str:
     return ""
 
 
-def find_numeric_leaves(data: Any, path: tuple[Any, ...] = ()) -> list[tuple[tuple[Any, ...], int | float]]:
-    """Traverse nested structure and retrieve paths to numeric leaves (excl. bools)."""
-    leaves: list[tuple[tuple[Any, ...], int | float]] = []
-    if isinstance(data, dict):
-        for k, v in data.items():
-            if isinstance(v, bool):
-                continue
-            if isinstance(v, (int, float)):
-                leaves.append(((*path, k), v))
-            elif isinstance(v, (dict, list)):
-                leaves.extend(find_numeric_leaves(v, (*path, k)))
-    elif isinstance(data, list):
-        for idx, v in enumerate(data):
-            if isinstance(v, bool):
-                continue
-            if isinstance(v, (int, float)):
-                leaves.append(((*path, idx), v))
-            elif isinstance(v, (dict, list)):
-                leaves.extend(find_numeric_leaves(v, (*path, idx)))
-    return leaves
-
-
 def set_at_path(data: dict[str, Any], path: tuple[Any, ...], val: Any) -> None:
     """Set value in deep config dictionary using path tuple."""
     curr: Any = data
     for p in path[:-1]:
         curr = curr[p]
     curr[path[-1]] = val
+
+
+def compute_max_similarity(
+    cf_candidate: ConfigFingerprint,
+    cf_history: list[ConfigFingerprint],
+) -> float:
+    """Compute maximum similarity against pre-parsed historical config fingerprints."""
+    if not cf_history:
+        return 0.0
+
+    all_fingerprints = [cf_candidate, *cf_history]
+    global_min: dict[str, float] = {}
+    global_max: dict[str, float] = {}
+    for fp in all_fingerprints:
+        for k, v in fp.numeric_params.items():
+            if k in KNOWN_RANGES:
+                continue
+            if k not in global_min or v < global_min[k]:
+                global_min[k] = v
+            if k not in global_max or v > global_max[k]:
+                global_max[k] = v
+
+    max_sim = 0.0
+    for cf_h in cf_history:
+        va, vb = _align_numeric_vectors(
+            cf_candidate.numeric_params,
+            cf_h.numeric_params,
+            global_min=global_min,
+            global_max=global_max,
+        )
+        num_sim = _cosine_similarity(va, vb)
+
+        all_set_keys = sorted(set(cf_candidate.set_fields) | set(cf_h.set_fields))
+        jaccards = [
+            _jaccard(
+                cf_candidate.set_fields.get(k, set()),
+                cf_h.set_fields.get(k, set()),
+            )
+            for k in all_set_keys
+        ]
+        set_sim = float(np.mean(jaccards)) if jaccards else 0.5
+
+        sim = 0.7 * num_sim + 0.3 * set_sim
+        if sim > max_sim:
+            max_sim = sim
+
+    return max_sim
 
 
 def jitter_config(
@@ -103,20 +151,19 @@ def jitter_config(
     if not isinstance(orig_dict, dict):
         return None, {"jitter_applied": False, "attempts": 0, "final_similarity": 1.0, "changed_params": {}}
 
-    # Collect mutable paths:
-    # 1. Bounded root numeric fields
-    root_paths: list[tuple[tuple[Any, ...], int | float]] = []
-    for k in ROOT_CONSTRAINTS:
-        if k in orig_dict and isinstance(orig_dict[k], (int, float)) and not isinstance(orig_dict[k], bool):
-            root_paths.append(((k,), orig_dict[k]))
+    # Pre-parse historical config fingerprints once to optimize performance
+    historical_fps = [extract_config_fingerprint(h) for h in tried_configs]
 
-    # 2. Leaves under "params" key
-    params_dict = orig_dict.get("params", {})
-    params_paths: list[tuple[tuple[Any, ...], int | float]] = []
-    if isinstance(params_dict, dict):
-        params_paths = find_numeric_leaves(params_dict, ("params",))
+    # Map flat parameters to original paths
+    flat = _parse_config_to_flat(config_yaml)
+    all_paths: list[tuple[tuple[Any, ...], int | float]] = []
+    for k, v in flat.items():
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            if k in orig_dict:
+                all_paths.append(((k,), v))
+            elif "params" in orig_dict and isinstance(orig_dict["params"], dict) and k in orig_dict["params"]:
+                all_paths.append((("params", k), v))
 
-    all_paths = root_paths + params_paths
     if not all_paths:
         return None, {"jitter_applied": False, "attempts": 0, "final_similarity": 1.0, "changed_params": {}}
 
@@ -135,8 +182,6 @@ def jitter_config(
                 rho = importance[name].get("rho", 0.0)
                 param_rel_step *= 1.0 + abs(rho)
 
-            # Perturbation scale: sign-preserving relative perturbation for unknown,
-            # floor at param_rel_step so zeroes move
             scale = max(abs(v) * param_rel_step, param_rel_step)
             change = rng.uniform(-scale, scale)
             v_new = v + change
@@ -144,12 +189,6 @@ def jitter_config(
             is_int = isinstance(v, int)
             if is_int:
                 v_new = round(v_new)
-
-            # Sign-preservation
-            if v > 0:
-                v_new = max(1 if is_int else 1e-6, v_new)
-            elif v < 0:
-                v_new = min(-1 if is_int else -1e-6, v_new)
 
             # Retrieve bounds from KNOWN_RANGES or ROOT_CONSTRAINTS
             min_val: float | None = None
@@ -163,6 +202,12 @@ def jitter_config(
                 if rmax is not None:
                     max_val = rmax if max_val is None else min(max_val, rmax)
 
+            # Sign-preservation
+            if v > 0:
+                v_new = max(1 if is_int else 1e-6, v_new)
+            elif v < 0:
+                v_new = min(-1 if is_int else -1e-6, v_new)
+
             if min_val is not None:
                 v_new = max(min_val, v_new)
             if max_val is not None:
@@ -171,10 +216,15 @@ def jitter_config(
             if is_int:
                 v_new = round(v_new)
 
-            # Force adjustment if no change occurred
+            # Force adjustment if no change occurred, respecting direction and bounds
             if v_new == v:
                 direction = rng.choice([1, -1])
-                v_new = v + (1 if is_int else (scale * direction))
+                if min_val is not None and v <= min_val:
+                    direction = 1
+                elif max_val is not None and v >= max_val:
+                    direction = -1
+
+                v_new = v + (direction if is_int else (scale * direction))
 
                 # Re-apply sign-preservation & bounds
                 if v > 0:
@@ -201,7 +251,8 @@ def jitter_config(
             continue
 
         mutated_yaml = yaml.safe_dump(mutated_dict, sort_keys=False)
-        sim = max_config_similarity(mutated_yaml, tried_configs)
+        cf_candidate = extract_config_fingerprint(mutated_yaml)
+        sim = compute_max_similarity(cf_candidate, historical_fps)
         last_similarity = sim
 
         if sim < threshold:

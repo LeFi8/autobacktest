@@ -147,37 +147,7 @@ class LiteLLMProvider(LLMProvider):
                     clean_content = clean_content[start_idx : end_idx + 1]
 
             # Parse using Pydantic validation
-            try:
-                parsed_response = AgentEditResponse.model_validate_json(clean_content)
-            except Exception as parse_err:
-                if settings.enable_json_salvage:
-                    try:
-                        salvaged = clean_content
-                        # 1. Single unbalanced brace/bracket
-                        open_braces = salvaged.count("{")
-                        close_braces = salvaged.count("}")
-                        if open_braces == close_braces + 1:
-                            salvaged = salvaged + "}"
-                        elif open_braces == close_braces - 1 and salvaged.endswith("}"):
-                            salvaged = salvaged[:-1]
-
-                        open_brackets = salvaged.count("[")
-                        close_brackets = salvaged.count("]")
-                        if open_brackets == close_brackets + 1:
-                            salvaged = salvaged + "]"
-                        elif open_brackets == close_brackets - 1 and salvaged.endswith("]"):
-                            salvaged = salvaged[:-1]
-
-                        # 2. Trailing commas (after balancing braces/brackets)
-                        import re
-
-                        salvaged = re.sub(r",\s*([}\]])", r"\1", salvaged)
-
-                        parsed_response = AgentEditResponse.model_validate_json(salvaged)
-                    except Exception:
-                        raise parse_err from None
-                else:
-                    raise parse_err
+            parsed_response = AgentEditResponse.model_validate_json(clean_content)
 
             usage = getattr(response, "usage", None)
             prompt_tokens = usage.prompt_tokens if usage else 0

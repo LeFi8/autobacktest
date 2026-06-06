@@ -672,7 +672,7 @@ def run_optimization(
                                 if settings.enable_config_jitter:
                                     import hashlib
 
-                                    seed_bytes = f"{run_id}_{k}_{i}".encode()
+                                    seed_bytes = f"{e_config_yaml}_{k}_{i}".encode()
                                     seed = int(hashlib.sha256(seed_bytes).hexdigest()[:8], 16) & 0xFFFFFFFF
 
                                     from autobacktest.strategy.config_jitter import jitter_config
@@ -689,12 +689,25 @@ def run_optimization(
                                     if new_yaml is not None:
                                         import dataclasses as _dc
 
-                                        ev["config_yaml"] = new_yaml
-                                        ev["edit"] = _dc.replace(ev["edit"], config_yaml=new_yaml)
-                                        ev["jitter_applied"] = True
-                                        ev["jitter_meta"] = jitter_meta
-                                        ev["config_similarity"] = jitter_meta["final_similarity"]
-                                        # Candidate status remains valid and proceeds
+                                        edit_jittered = _dc.replace(ev["edit"], config_yaml=new_yaml)
+                                        # Re-run validation on the salvaged configuration
+                                        rep_ok, rep_err_code, rep_err_detail = _validate_candidate(
+                                            strategy_name, edit_jittered, strategies_dir, configs_dir
+                                        )
+                                        if rep_ok:
+                                            ev["config_yaml"] = new_yaml
+                                            ev["edit"] = edit_jittered
+                                            ev["jitter_applied"] = True
+                                            ev["jitter_meta"] = jitter_meta
+                                            ev["config_similarity"] = jitter_meta["final_similarity"]
+                                        else:
+                                            ev["valid"] = False
+                                            ev["validation_stage"] = "validation"
+                                            ev["error_code"] = rep_err_code
+                                            ev["detail"] = rep_err_detail
+                                            ev["jitter_applied"] = False
+                                            ev["jitter_meta"] = jitter_meta
+                                            ev["jitter_attempted"] = True
                                     else:
                                         ev["valid"] = False
                                         ev["validation_stage"] = "diversity_config"
@@ -1061,6 +1074,12 @@ def run_optimization(
                                 fail_item["candidate_config_yaml"] = ev["config_yaml"]
                             elif ev.get("edit"):
                                 fail_item["candidate_config_yaml"] = ev["edit"].config_yaml
+                            if "jitter_applied" in ev:
+                                fail_item["jitter_applied"] = ev["jitter_applied"]
+                            if "jitter_meta" in ev:
+                                fail_item["jitter_meta"] = ev["jitter_meta"]
+                            if "jitter_attempted" in ev:
+                                fail_item["jitter_attempted"] = ev["jitter_attempted"]
                             candidates_summary.append(fail_item)
                         else:
                             rp = ev.get("_report")
@@ -1075,6 +1094,14 @@ def run_optimization(
                                 "total_tokens": ev["edit"].total_tokens if ev.get("edit") else 0,
                                 "cost": ev["edit"].cost if ev.get("edit") else 0.0,
                             }
+                            if "config_yaml" in ev:
+                                pass_item["candidate_config_yaml"] = ev["config_yaml"]
+                            elif ev.get("edit"):
+                                pass_item["candidate_config_yaml"] = ev["edit"].config_yaml
+                            if "jitter_applied" in ev:
+                                pass_item["jitter_applied"] = ev["jitter_applied"]
+                            if "jitter_meta" in ev:
+                                pass_item["jitter_meta"] = ev["jitter_meta"]
                             candidates_summary.append(pass_item)
                     event["candidates"] = candidates_summary
                     if winner is not None:
