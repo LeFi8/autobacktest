@@ -42,3 +42,15 @@ tmp/
 
 # Intellij
 .idea/
+
+# IDE / agent configuration (local — not for distribution)
+.antigravity/
+.opencode/
+.claude/
+.codegraph/
+
+# SQLite databases generated during runs
+lessons.db
+
+# Custom user programs (copy program.md → program-<name>.md to keep custom specs)
+program-*.md

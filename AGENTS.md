@@ -41,7 +41,7 @@ No `.pre-commit-config.yaml` exists — skip `pre-commit install`.
 | `lessons.md` | LLM-curated memory (4096 token cap ~16k chars) |
 | `strategies/<name>.py` | Strategy signal code |
 | `configs/<name>.yaml` | Strategy parameters (Pydantic-validated) |
-| `.antigravity/` | Pre-existing agent instruction files (AGENT_GUIDELINES.md, TECH_STACK.md, etc.) |
+| `.antigravity/` | Removed from repo — local IDE/agent config (git-ignored) |
 | `docs/` | Comprehensive docs: architecture, API reference, setup, ADRs |
 
 ## Env var quirks

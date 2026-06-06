@@ -1,12 +1,98 @@
-# 🚀 AutoBacktest
+# AutoBacktest
 
-AutoBacktest is a state-of-the-art, **autonomous, AI-driven quantitative trading strategy optimization system**. It links large language model (LLM) agents with deterministic backtesting and statistical evaluation pipelines to iteratively refine and validate quantitative trading strategies completely unattended.
+[![CI](https://github.com/<ORG>/autobacktest/actions/workflows/ci.yml/badge.svg)](https://github.com/<ORG>/autobacktest/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Python >=3.12](https://img.shields.io/badge/python-≥3.12-blue?logo=python)](pyproject.toml)
+[![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 
-By combining an LLM optimizer, a vectorized backtester, a sacred Out-Of-Sample (OOS) holdout gate, and a git-backed ledger, AutoBacktest ensures that every strategy modification is statistically valid, robust against regime shifts, and protected from backtest overfitting via Deflated Sharpe Ratio (DSR) metrics.
+**Autonomous, AI-driven quantitative trading strategy optimization.** AutoBacktest
+links LLM agents with deterministic backtesting and statistical validation to
+iteratively refine trading strategies — completely unattended.
+
+LLM → code edit → preflight check → backtest → gate → commit or rollback
 
 ---
 
-## 📖 Architecture Overview
+## Quickstart
+
+### 1. Prerequisites
+
+- **Python 3.12+**
+- **uv** — install: `curl -LsSf https://astral.sh/uv/install.sh | sh`
+- **Git** — `git config --global user.name "Your Name"`
+- **API key** — for an LLM provider (OpenAI, Anthropic, Google Gemini, etc.)
+
+### 2. Setup
+
+```bash
+git clone <repo-url> autobacktest
+cd autobacktest
+uv sync
+cp .env.dist .env
+```
+
+Edit `.env` to set your API key and any backtest date windows.
+
+### 3. Run the optimization loop
+
+```bash
+uv run autobacktest run \
+  --program program.md \
+  --strategy haa \
+  --iterations 5
+```
+
+This evaluates the baseline strategy, generates candidate mutations via an LLM,
+validates them through a multi-stage gate (preflight, backtest, diversity, drawdown,
+DSR), and commits improvements to git.
+
+### 4. View results
+
+```bash
+uv run autobacktest report
+```
+
+Full visual reports, equity curves, and strategy summaries land in `runs/<run_id>/`.
+
+---
+
+## Creating your own strategy
+
+Each strategy has two files matching by name stem:
+
+| File | Purpose |
+|---|---|
+| `strategies/<name>.py` | Signal generation — exports `generate_signals(prices, config)` |
+| `configs/<name>.yaml` | Parameters — universe, limits, Pydantic-validated fields |
+
+**Scaffold a new strategy:**
+
+```bash
+uv run autobacktest init-strategy --name my_strategy
+```
+
+This generates boilerplate code and a validated YAML config with guided prompts.
+
+**Write your program:**
+
+Edit `program.md` (the LLM's objective + constraints). See `program.md` for the
+template — fill in your goal, constraints, and any strategy background.
+
+To keep multiple program specs without tracking them in git, copy `program.md`
+to `program-<name>.md` — files matching `program-*.md` are git-ignored by default.
+
+**Run it:**
+
+```bash
+uv run autobacktest run --program program.md --strategy my_strategy --iterations 10
+```
+
+See `strategies/haa.py` and `configs/haa.yaml` for a complete reference strategy
+(Hybrid Asset Allocation by Keller & Keuning).
+
+---
+
+## How it works
 
 ```mermaid
 sequenceDiagram
@@ -18,9 +104,9 @@ sequenceDiagram
     O->>LS: Read lessons
     O->>LLM: AgentContext (+ lessons_text)
     LLM-->>O: AgentEdit (+ lessons_text)
-    
+
     O->>LS: Ingest updated lessons
-    
+
     alt Edit passes gate (select + confirm)
         O->>Git: Commit (strategy + config)
     else Edit rejected
@@ -28,169 +114,70 @@ sequenceDiagram
     end
 ```
 
+1. Read the program spec (objective + constraints) and past lessons.
+2. The LLM generates **N candidate mutations** in parallel — code edits, YAML changes, refined lessons.
+3. Each candidate runs **preflight validation**: import whitelist, AST checks, Pydantic config, smoke test.
+4. **Config similarity gate** filters duplicate parameter proposals (Tier 1).
+5. **Backtesting**: walk-forward (in-sample) + holdout (out-of-sample) evaluation.
+6. **Returns correlation gate** filters functionally identical variants (Tier 2).
+7. **Two-phase gate**: `select` (in-sample metrics, DSR non-degradation) → `confirm` (holdout confirmation).
+8. Passed candidates are **committed to git**; failures are rolled back with structured feedback.
+
 ---
 
-## ⚡ 15-Minute Quickstart
+## CLI Reference
 
-Follow these simple steps to go from a clean clone to your first autonomous LLM-driven strategy improvement in under 15 minutes.
+| Command | Description |
+|---|---|
+| `run` | Autonomous optimization loop |
+| `report` | Print leaderboard from SQLite ledger |
+| `reset` | Reset strategy to baseline, wipe caches |
+| `evaluate` | Run walk-forward + holdout on a single strategy |
+| `init-strategy` | Scaffold a new strategy with validated config |
+| `llm-test` | Test an LLM edit against preflight checks |
 
-### 1. Prerequisites
-- **Python**: version `3.12` or `3.13`
-- **uv**: high-performance dependency manager (Install via `curl -LsSf https://astral.sh/uv/install.sh | sh`)
-- **Git**: installed and configured locally (`git config --global user.name "Your Name"`)
-- **API Key**: an API key for your chosen LLM provider (e.g., OpenAI, Anthropic, or Google Gemini)
+Use `uv run autobacktest --help` for full flag details.
 
-### 2. Setup
-Clone the repository and sync the virtual environment using `uv`:
+---
+
+## Testing & quality
+
 ```bash
-git clone <repository_url> autobacktest
-cd autobacktest
-uv sync
-```
-
-### 3. Environment Configuration
-Copy the environment variables template and configure your API keys and custom configuration settings:
-```bash
-cp .env.dist .env
-```
-Open `.env` in a text editor to set your `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or custom models and backtesting dates. Fallbacks and defaults are fully managed via the centralized configuration system in `.env`.
-
-### 4. Run the Optimization Loop
-Trigger the optimization loop on the reference **HAA (Hybrid Asset Allocation)** strategy for `5` iterations:
-```bash
-uv run autobacktest run \
-  --program program.md \
-  --strategy haa \
-  --iterations 5 \
-  --provider openai \
-  --model gpt-4o
-```
-*What happens now?*
-1. AutoBacktest sets up a git branch `autobacktest/haa-<timestamp>`.
-2. It evaluates the baseline HAA strategy on walk-forward and holdout datasets.
-3. The orchestrator generates **3 candidate mutations in parallel** via the LLM, each with structured code edits, YAML config changes, and refined lessons.
-4. Each candidate passes through **preflight validation** (AST whitelist, Pydantic config, smoke test, lookahead sniffing).
-5. In **explore mode**, candidates pass a **config similarity gate** (Tier 1) preventing duplicate parameter proposals (threshold 0.95), then a **returns correlation gate** (Tier 2, threshold 0.95) after backtesting to ensure functional diversity.
-6. A **two-phase gate system** evaluates survivors: `select` (in-sample walk-forward metrics, DSR non-degradation) then `confirm` (holdout confirmation, budgeted peeks).
-7. If a candidate passes all gates, it is committed to git with the incumbent updated. Otherwise, it is rolled back and the LLM receives structured failure feedback.
-
-### 5. View Leaderboard Report
-Print a gorgeous performance table summarizing the best accepted strategy variants directly from the SQLite ledger:
-```bash
-uv run autobacktest report
-```
-
-### 6. Reset strategy back to baseline
-Reset the workspace back to `main` and wipe local optimization caches when you want to start fresh:
-```bash
-uv run autobacktest reset --strategy haa
+uv run pytest          # 395+ tests
+uv run ruff check .    # linting (line-length 120, target py312)
+uv run mypy src/       # strict type checking
 ```
 
 ---
 
-## 🛠️ CLI Subcommand Details
+## Project structure
 
-AutoBacktest provides a simple, structured CLI interface via `typer`:
-
-### `run`
-Starts the autonomous optimization loop.
-- `--program` / `-p`: Path to the markdown program objective file (e.g. `program.md`). [Required]
-- `--strategy` / `-s`: The name of the target strategy in `strategies/`. [Required]
-- `--iterations` / `-i`: Total optimization runs (default: `5`).
-- `--provider`: LiteLLM provider name (e.g. `openai`, `anthropic`, `google`).
-- `--model`: LLM model identifier (e.g. `gpt-4o`, `claude-3-5-sonnet-20241022`).
-- `--run-dir`: Output run directory (default: `runs/`).
-- `--target-metric`: Target metric for optimization: `sharpe` (default), `sortino`, or `information_ratio`.
-- `--resume`: Run ID to resume a previously interrupted optimization run.
-- `--holdout-peek-limit`: Maximum number of holdout peeks before early termination (default: `20`).
-- `--early-stop-patience`: Consecutive rejections allowed before early stopping (default: `10`).
-- `--quiet` / `-q`: Suppress non-critical warnings and reduce terminal noise (default: based on `AUTOBACKTEST_QUIET` env var).
-- `--json`: Output raw JSON to stdout instead of the Rich terminal summary dashboard.
-
-### `report`
-Pretty-prints the run leaderboard sorted by observed Sharpe ratio.
-- `--run-dir`: Path to the runs directory containing `ledger.db` (default: `runs/`).
-- `--run-id`: Filter to a specific run ID (defaults to the latest run).
-- `--strategy` / `-s`: Filter the leaderboard to a single strategy name.
-- `--compare-all`: Show all strategies registered in the ledger side-by-side.
-
-### `reset`
-Cleans the working directories and baseline files.
-- `--strategy` / `-s`: Scope the reset to one strategy (default: resets all).
-- `--run-dir`: Path to the run directory to be completely deleted (default: `runs/`).
-- *Restores `lessons.md` to its empty template and resets target strategy files back to `main` HEAD.*
-
-### `evaluate`
-Runs walk-forward and holdout evaluation on a single strategy file standalone.
-- `--strategy` / `-s`: Path to the target strategy file (e.g. `strategies/haa.py`).
-- `--start-date` / `--end-date`: Configure custom historical backtest backdrops.
-- `--quiet` / `-q`: Suppress non-critical warnings (default: based on `AUTOBACKTEST_QUIET` env var).
-
-### `init-strategy`
-Interactively scaffolds a new backtesting strategy with validated configuration and boilerplate signal code.
-- `--name` / `-n`: Strategy name in `snake_case`. Omit for interactive prompt.
-- `--overwrite`: Overwrite existing strategy/config files without prompting.
-- Guides the user through prompts for universe tickers, benchmark, drawdown/turnover limits, lookback window, and optional custom parameters with dynamic type inference.
-- Runs full Pydantic validation via `StrategyConfig` before writing files.
-
-### `llm-test`
-Generates LLM-driven strategy edits and tests them against preflight validation checks without running the full optimization loop.
-- `prompt`: The instruction prompt for strategy modification. [Required, positional argument]
-- `--strategy` / `-s`: Strategy name in the registry (default: `haa`).
-- `--model` / `-m`: LLM model name.
-- `--provider` / `-p`: LLM provider (`litellm` or `mock`).
-- `--quiet` / `-q`: Suppress non-critical warnings (default: based on `AUTOBACKTEST_QUIET` env var).
-
----
-
-## 📊 Institutional Reports & Visual Summaries
-
-On optimization completion, AutoBacktest generates high-fidelity visual outputs inside `runs/{run_id}/`:
-- **Rich Terminal Dashboard**: A structured console dashboard showing Baseline vs. Optimized metrics side-by-side, color-coded gates, failure breakdowns, and run costs.
-- **Compiled Strategy Report (`strategy_report.md`)**: A self-contained, publication-grade Markdown report containing the executive summary, configuration yaml, objectives, robustness checks, and finalized strategy code.
-- **Performance Curves (`equity_curves.png`)**: A Matplotlib-generated chart comparing cumulative returns of the baseline and optimized portfolios.
-
----
-
-## 🧠 Lessons Memory System (`LessonStore`)
-
-AutoBacktest implements an **autonomous, self-curating memory system** for LLMs backed by a SQLite database (`lessons.db`).
-
-- The LLM updates the `lessons_text` field in every iteration to record what modifications worked, what failed, and key market insights discovered.
-- **Token Budget**: The orchestrator tracks a `4096` token limit (~16,000 characters).
-- If lessons exceed the cap, a warning triggers in the prompt, prompting the agent to **compress, consolidate, and prune** older findings.
-- The `LessonStore` deduplicates entries by `(strategy, type, body_hash)`, preventing redundant storage across runs.
-- On first use, the system migrates any existing `lessons.md` file into the structured database.
-- This creates a tight, self-curated, semantic memory loop that improves strategy results across hundreds of iterations.
-
----
-
-## 🧪 Testing & Verification
-
-Contributors can run the local quality and correctness verification suite to ensure all gates, validators, and evaluators are operating as specified:
-
-```bash
-uv run pytest
-uv run ruff check .
-uv run mypy --strict src/
+```
+autobacktest/
+├── strategies/         # Signal code (<name>.py + <name>.yaml)
+├── configs/            # Parameters per strategy
+├── src/autobacktest/   # Core engine
+│   ├── cli.py          # Typer entrypoint
+│   ├── orchestrator.py # Optimization loop
+│   ├── gate.py         # Two-phase (select + confirm)
+│   ├── evaluator/      # Backtest, CSCV/PBO, DSR, regime tests
+│   ├── strategy/       # Validator, codemod, diversity, config jitter
+│   └── data/           # Price data, caching
+├── docs/               # Architecture, API reference, setup guides
+├── runs/               # Run artifacts (git-ignored)
+├── program.md          # LLM objective + constraints template
+├── lessons.md          # Auto-curated LLM memory
+└── .env.dist           # Environment template
 ```
 
-Detailed developer guides, API specifications, and architectural deep-dives can be found in the [docs/](docs) directory:
-- 🏗️ [Architecture & Design Details](docs/architecture.md)
-- 🔌 [API Reference Guide](docs/api-reference.md)
-- 💻 [Developer Setup Instructions](docs/developer-setup.md)
-- 🎯 [About Project & Methodology](docs/about-project.md)
-
-
-
 ---
 
-## ⚠️ Caveats & Constraints
+## Caveats
 
-AutoBacktest is a powerful R&D tool, but quantitative research carries fundamental risks. Please review the following caveats carefully:
-
-1. **yfinance Data Quality**: AutoBacktest uses Yahoo Finance data for quick bootstrapping. Yahoo Finance data is subject to corporate action adjustments, dividend timing variations, survivorship bias (delisted stocks are omitted from past universes), and occasional missing/noisy bars. Do not deploy strategies live without verifying returns against professional data feeds.
-2. **Backtest Overfitting**: Generating thousands of strategy variations naturally leads to selection bias. While AutoBacktest uses walk-forward testing and Deflated Sharpe Ratio (DSR) to account for multiple testing, extreme iteration counts on small datasets will eventually overfit.
-3. **No Live Trading Support**: The output of AutoBacktest is a git-tracked code file and a performance report. It does **NOT** place trades, generate live brokerage API signals, or support real-time execution. It is purely a backtesting research platform.
-4. **LLM API Costs**: The optimization loop performs structured completions on large strategy code files. A 50-iteration run on high-end models (such as GPT-4o or Claude 3.5 Sonnet) can cost $2.00 to $5.00 in API tokens. Set your iterations carefully.
-5. **Time Horizon**: AutoBacktest is tailored for daily/monthly portfolio rebalancing strategies (e.g., Tactical Asset Allocation). Vectorized execution under monthly constraints is robust, but high-frequency or intraday execution is completely unsupported in v1.
+- **yfinance data quality**: corporate actions, dividend timing, survivorship bias.
+  Verify against professional data feeds before deploying live.
+- **Backtest overfitting**: walk-forward + DSR mitigate this, but extreme iteration
+  counts on small datasets will overfit.
+- **No live trading**: this is a research platform — no brokerage connectivity.
+- **LLM costs**: ~$2–$5 per 50 iterations on GPT-4o / Claude 3.5 Sonnet.
+- **Monthly rebalancing only**: intraday / HFT is unsupported.
