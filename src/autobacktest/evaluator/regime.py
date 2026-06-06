@@ -142,3 +142,42 @@ def evaluate_stress_regimes(
         passed = False
 
     return drawdowns, passed
+
+
+def calculate_regime_haircut(
+    benchmark_prices: pd.Series,
+    launch_date: pd.Timestamp,
+) -> float:
+    """Calculate the Liu timing haircut based on benchmark z-score at launch_date.
+
+    Args:
+        benchmark_prices: Historical daily prices of the benchmark (e.g. SPY).
+        launch_date: The date at which the strategy is launched (start of holdout).
+
+    Returns:
+        float: The haircut percentage to apply (e.g., 0.05 * z_score).
+    """
+    if benchmark_prices.empty or len(benchmark_prices) < 252:
+        return 0.0
+
+    # Calculate rolling 252-day returns (price_t / price_{t-252} - 1)
+    rolling_returns = benchmark_prices.pct_change(252).dropna()
+    if rolling_returns.empty:
+        return 0.0
+
+    # Find the rolling return at or closest prior to the launch_date
+    historical_returns = rolling_returns.loc[:launch_date]
+    if historical_returns.empty:
+        return 0.0
+
+    launch_val = historical_returns.iloc[-1]
+
+    # Compute z-score relative to the historical rolling distribution up to launch_date
+    mean_val = historical_returns.mean()
+    std_val = historical_returns.std(ddof=1)
+
+    z_score = 0.0 if std_val == 0.0 or np.isnan(std_val) else (launch_val - mean_val) / std_val
+
+    if z_score > 0.0:
+        return float(0.05 * z_score)
+    return 0.0

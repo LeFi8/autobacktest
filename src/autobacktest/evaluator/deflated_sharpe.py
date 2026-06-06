@@ -71,14 +71,52 @@ def _ledoit_wolf_correlation(returns_matrix: pd.DataFrame) -> pd.DataFrame:
         return returns_matrix.corr().fillna(0.0).clip(-1.0, 1.0)
 
 
+def _silhouette_score_from_distance_matrix(dist_matrix: np.ndarray, labels: np.ndarray) -> float:
+    """Calculate the average silhouette score from a precomputed distance matrix and cluster labels."""
+    n = len(labels)
+    unique_labels = np.unique(labels)
+    if len(unique_labels) <= 1 or len(unique_labels) >= n:
+        return 0.0
+
+    s_scores = np.zeros(n)
+    for i in range(n):
+        label_i = labels[i]
+
+        # Calculate a(i)
+        same_cluster_mask = labels == label_i
+        same_cluster_indices = np.where(same_cluster_mask)[0]
+        # Remove i itself
+        same_cluster_indices = same_cluster_indices[same_cluster_indices != i]
+
+        a_i = dist_matrix[i, same_cluster_indices].mean() if len(same_cluster_indices) > 0 else 0.0
+
+        # Calculate b(i)
+        b_i = float("inf")
+        for label_j in unique_labels:
+            if label_j == label_i:
+                continue
+            other_cluster_indices = np.where(labels == label_j)[0]
+            mean_dist = dist_matrix[i, other_cluster_indices].mean()
+            if mean_dist < b_i:
+                b_i = mean_dist
+
+        if max(a_i, b_i) > 0.0:
+            s_scores[i] = (b_i - a_i) / max(a_i, b_i)
+        else:
+            s_scores[i] = 0.0
+
+    return float(np.mean(s_scores))
+
+
 def calculate_effective_trials(returns_matrix: pd.DataFrame, threshold: float = 0.5) -> int:
     """Determine the number of independent strategy trials.
 
-    Uses hierarchical clustering to group correlated returns.
+    Uses hierarchical clustering to group correlated returns, optimizing the
+    distance threshold via the ONC (Optimal Number of Clusters) Silhouette score.
 
     Args:
         returns_matrix: DataFrame of historical daily net returns.
-        threshold: Distance cophenetic threshold to merge clusters.
+        threshold: Default distance cophenetic threshold if optimization fails or is not applicable.
 
     Returns:
         int: Number of independent clusters (effective trials N).
@@ -97,12 +135,24 @@ def calculate_effective_trials(returns_matrix: pd.DataFrame, threshold: float = 
     np.fill_diagonal(dist_val, 0.0)
     dist_val = (dist_val + dist_val.T) / 2.0
 
-    # Condense distance matrix for scipy
     try:
         condensed = squareform(dist_val, checks=False)
         z_linkage = linkage(condensed, method="complete")
-        clusters = fcluster(z_linkage, t=threshold, criterion="distance")
-        return len(np.unique(clusters))
+
+        # Test threshold values from 0.1 to 0.9 (step 0.05) to optimize Silhouette score
+        best_threshold = threshold
+        best_silhouette = -1.0
+
+        thresholds = np.arange(0.1, 0.95, 0.05)
+        for t in thresholds:
+            labels = fcluster(z_linkage, t=t, criterion="distance")
+            score = _silhouette_score_from_distance_matrix(dist_val, labels)
+            if score > best_silhouette:
+                best_silhouette = score
+                best_threshold = t
+
+        final_clusters = fcluster(z_linkage, t=best_threshold, criterion="distance")
+        return len(np.unique(final_clusters))
     except Exception:
         # Fallback to absolute trials count on cluster failure
         return int(returns_matrix.shape[1])

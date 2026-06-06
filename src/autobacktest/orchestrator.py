@@ -294,7 +294,7 @@ def run_optimization(
                 _eval_cache=_eval_cache,
                 _strategy_code=_baseline_code,
             )
-            _deflate(baseline_report, baseline_returns, ledger)
+            _deflate(baseline_report, baseline_returns, ledger, cscv_blocks=config.get("cscv_blocks", 10))
             _deflate_holdout(baseline_report, ledger)
             incumbent = baseline_report
             incumbent_returns = baseline_returns
@@ -661,9 +661,15 @@ def run_optimization(
                                     continue
 
                         # DSR deflation (in-sample)
-                        _deflate(report_k, returns_k, ledger)
+                        _deflate(report_k, returns_k, ledger, cscv_blocks=new_config.get("cscv_blocks", 10))
                         if incumbent is not None and not incumbent_returns.empty:
-                            _deflate(incumbent, incumbent_returns, ledger, exclude_id=incumbent_attempt_id)
+                            _deflate(
+                                incumbent,
+                                incumbent_returns,
+                                ledger,
+                                exclude_id=incumbent_attempt_id,
+                                cscv_blocks=new_config.get("cscv_blocks", 10),
+                            )
 
                         # Selection gate
                         sel = select(report_k, baseline=incumbent, target_metric=target_metric, config=new_config)
@@ -1186,24 +1192,46 @@ def _deflate(
     selection_returns: pd.Series[Any],
     ledger: LedgerStore,
     exclude_id: int | None = None,
+    cscv_blocks: int = 10,
 ) -> None:
     """Deflate the in-sample selection DSR using the ledger's multi-trial history.
 
-    The null distribution is grounded entirely on **independent** historical
-    trials — the candidate's own returns and Sharpe are excluded from the
-    correlation matrix and Sharpe list to prevent self-contamination.
+    The candidate is deliberately included in both the returns matrix and
+    the historical Sharpe list.  This is intentionally conservative:
+
+    * Including the candidate in ``hist_matrix`` increases the effective-
+      trials count, raising the multiple-testing bar.
+    * Including its Sharpe in the list inflates ``sigma_sr``, which
+      increases the expected-maximum Sharpe (``sr0``), making the DSR
+      harder to pass.
+
+    Excluding the candidate would give it an artificial advantage (no
+    self-penalty), which is inappropriate for a selection procedure where
+    every trial must be treated symmetrically.
     """
     hist_matrix, hist_sharpes = ledger.fetch_historical_returns(report.dataset_hash, exclude_id=exclude_id)
 
     if hist_matrix.empty:
-        return
+        hist_matrix = pd.DataFrame({"candidate": selection_returns})
+    else:
+        hist_matrix = hist_matrix.copy()
+        hist_matrix["candidate"] = selection_returns
 
-    # Use only historical trials — do NOT append the current candidate
+    sharpes = list(hist_sharpes) if hist_sharpes is not None else []
+    sharpes.append(report.observed_sharpe)
+
     n = max(1, calculate_effective_trials(hist_matrix))
-    sharpes = hist_sharpes  # candidate's Sharpe intentionally excluded
 
     report.effective_trials = n
     report.deflated_sharpe = calculate_psr_dsr(selection_returns, sharpes, n)
+
+    # Compute and store PBO (Probability of Backtest Overfitting)
+    from autobacktest.evaluator.cscv import calculate_pbo
+
+    if len(hist_matrix) >= 2 * cscv_blocks:
+        report.pbo = calculate_pbo(hist_matrix, n_blocks=cscv_blocks)
+    else:
+        report.pbo = 0.0
 
 
 def _deflate_holdout(
@@ -1213,8 +1241,9 @@ def _deflate_holdout(
 ) -> None:
     """Deflate ``report.holdout_deflated_sharpe`` by the holdout-peek count.
 
-    The null distribution uses only prior holdout peeks — the current
-    candidate's returns and Sharpe are excluded to avoid self-contamination.
+    Same conservative self-inclusion rationale as ``_deflate``: the candidate
+    is included in the returns matrix and Sharpe list to avoid giving it an
+    artificial advantage over prior holdout peeks.
     """
     hist_matrix, hist_sharpes = ledger.fetch_holdout_history(report.dataset_hash, exclude_id=exclude_id)
 
@@ -1222,15 +1251,15 @@ def _deflate_holdout(
         return
 
     if hist_matrix.empty:
-        report.holdout_deflated_sharpe = calculate_psr_dsr(
-            report.holdout_net_returns,
-            effective_trials=1,
-        )
-        return
+        hist_matrix = pd.DataFrame({"candidate": report.holdout_net_returns})
+    else:
+        hist_matrix = hist_matrix.copy()
+        hist_matrix["candidate"] = report.holdout_net_returns
 
-    # Use only historical holdout peeks — exclude the current candidate
+    sharpes = list(hist_sharpes) if hist_sharpes is not None else []
+    sharpes.append(report.holdout_metrics.sharpe_ratio)
+
     n = max(1, calculate_effective_trials(hist_matrix))
-    sharpes = hist_sharpes  # candidate's holdout Sharpe intentionally excluded
 
     report.holdout_deflated_sharpe = calculate_psr_dsr(
         report.holdout_net_returns,

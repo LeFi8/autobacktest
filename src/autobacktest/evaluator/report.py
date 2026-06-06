@@ -71,6 +71,7 @@ class EvaluationReport:
 
     # Holdout DSR (confirmation basis, deflated by peek count)
     holdout_deflated_sharpe: float = 0.0
+    pbo: float = 0.0
     # Raw holdout returns — excluded from serialization; used by _deflate_holdout
     holdout_net_returns: pd.Series | None = field(default=None, repr=False, compare=False)
     # Benchmark returns for charting — excluded from serialization (pop'd in
@@ -109,6 +110,8 @@ class EvaluationReport:
             d["benchmark_returns"] = None
         if "benchmark_ticker" not in d:
             d["benchmark_ticker"] = "SPY"
+        if "pbo" not in d:
+            d["pbo"] = 0.0
         if "benchmark_in_sample_metrics" in d and d["benchmark_in_sample_metrics"] is not None:
             d["benchmark_in_sample_metrics"] = WindowReport.from_dict(d["benchmark_in_sample_metrics"])
         if "benchmark_holdout_metrics" in d and d["benchmark_holdout_metrics"] is not None:

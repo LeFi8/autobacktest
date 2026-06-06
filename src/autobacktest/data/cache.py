@@ -325,5 +325,42 @@ class CachedDataProvider(DataProvider):
             if not ticker_df.empty:
                 merged = ticker_df if merged.empty else merged.join(ticker_df[[ticker]], how="outer")
 
+        if not merged.empty:
+            merged = self._detect_and_clean_outliers(merged)
+
         # Return aligned columns matching requested order and universe
         return merged.reindex(columns=tickers)
+
+    def _detect_and_clean_outliers(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Detect tick errors (daily price change > 50% followed by > 40% reversal).
+
+        Replaces outliers with the forward-filled price of the previous day.
+        """
+        if df.empty or len(df) < 3:
+            return df
+
+        cleaned_df = df.copy()
+        for col in cleaned_df.columns:
+            series = cleaned_df[col]
+            # Calculate daily ratios: p_t / p_{t-1}
+            ratios = series / series.shift(1)
+            # Next day ratios: p_{t+1} / p_t
+            next_ratios = series.shift(-1) / series
+
+            # Upward spike: ratio > 1.5 and next_ratio < 0.6
+            up_spike = (ratios > 1.5) & (next_ratios < 0.6)
+            # Downward spike: ratio < 0.5 and next_ratio > 1.4
+            down_spike = (ratios < 0.5) & (next_ratios > 1.4)
+
+            outliers = up_spike | down_spike
+            outlier_idxs = [i for i, x in enumerate(outliers) if x]
+            if outlier_idxs:
+                col_idx = cleaned_df.columns.get_loc(col)
+                for idx in outlier_idxs:
+                    if idx > 0:
+                        date = series.index[idx]
+                        logger.warning(
+                            "Outlier detected and cleaned for ticker %s on %s: %s", col, date, series.iloc[idx]
+                        )
+                        cleaned_df.iloc[idx, col_idx] = cleaned_df.iloc[idx - 1, col_idx]
+        return cleaned_df

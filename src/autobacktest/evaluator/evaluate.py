@@ -20,7 +20,7 @@ from autobacktest.evaluator.costs import calculate_turnover_and_costs
 from autobacktest.evaluator.deflated_sharpe import calculate_psr_dsr
 from autobacktest.evaluator.holdout import partition_holdout_data
 from autobacktest.evaluator.monte_carlo import run_block_bootstrap
-from autobacktest.evaluator.regime import evaluate_stress_regimes
+from autobacktest.evaluator.regime import calculate_regime_haircut, evaluate_stress_regimes
 from autobacktest.evaluator.report import EvaluationReport, WindowReport
 from autobacktest.evaluator.walk_forward import generate_walk_forward_windows
 from autobacktest.strategy.config_schema import StrategyConfig
@@ -158,6 +158,7 @@ def generate_window_report(
     benchmark_returns: pd.Series | None = None,
     *,
     asset_returns: pd.DataFrame | None = None,
+    borrow_cost_bps: float = 100.0,
 ) -> WindowReport:
     """Run backtest and cost assessment for a specific date window."""
     window_prices = prices.loc[start:end]
@@ -175,6 +176,7 @@ def generate_window_report(
         daily_weights,
         window_prices,
         asset_returns=asset_returns,
+        borrow_cost_bps=borrow_cost_bps,
     )
 
     # Standard performance metrics
@@ -260,6 +262,7 @@ def _run_walk_forward_windows(
     bench_returns: pd.Series | None = None,
     *,
     asset_returns: pd.DataFrame | None = None,
+    borrow_cost_bps: float = 100.0,
 ) -> list[WindowReport]:
     """Run walk-forward window evaluations in parallel via thread pool.
 
@@ -285,6 +288,7 @@ def _run_walk_forward_windows(
                 test_end,
                 bench_returns,
                 asset_returns=asset_returns,
+                borrow_cost_bps=borrow_cost_bps,
             )
             future_map[future] = i
 
@@ -355,6 +359,7 @@ def evaluate_strategy_detailed(
 
     tickers = flat_config.get("universe", [])
     benchmark_ticker = flat_config.get("benchmark", "SPY")
+    regime_bench_ticker = flat_config.get("regime_benchmark") or benchmark_ticker
 
     if _prices is not None and _bench_returns is not None:
         missing_assets = [t for t in tickers if t not in _prices.columns]
@@ -362,6 +367,8 @@ def evaluate_strategy_detailed(
             raise ValueError(f"Cached prices missing tickers: {missing_assets}")
         if benchmark_ticker not in _prices.columns:
             raise ValueError(f"Cached prices missing benchmark ticker: {benchmark_ticker}")
+        if regime_bench_ticker not in _prices.columns:
+            raise ValueError(f"Cached prices missing regime benchmark ticker: {regime_bench_ticker}")
         prices = _prices
         bench_returns = _bench_returns
     else:
@@ -374,6 +381,21 @@ def evaluate_strategy_detailed(
         if benchmark_prices.empty or benchmark_ticker not in benchmark_prices.columns:
             raise ValueError(f"No price history returned for benchmark ticker: {benchmark_ticker}")
         bench_returns = benchmark_prices[benchmark_ticker].pct_change().fillna(0.0)
+
+        # Join benchmark to prices if not already present
+        if benchmark_ticker not in prices.columns:
+            prices = prices.join(benchmark_prices[[benchmark_ticker]], how="outer")
+
+        # Ensure we have the regime benchmark prices loaded
+        if regime_bench_ticker == benchmark_ticker:
+            regime_bench_prices = benchmark_prices
+        else:
+            regime_bench_prices = provider.get_prices([regime_bench_ticker], start_date, end_date)
+            if regime_bench_prices.empty or regime_bench_ticker not in regime_bench_prices.columns:
+                raise ValueError(f"No price history returned for regime benchmark ticker: {regime_bench_ticker}")
+
+        if regime_bench_ticker not in prices.columns:
+            prices = prices.join(regime_bench_prices[[regime_bench_ticker]], how="outer")
 
     # Pre-compute asset returns once — reused across all window evaluations (Opt 2)
     _asset_returns = prices.pct_change().fillna(0.0)
@@ -420,6 +442,7 @@ def evaluate_strategy_detailed(
         wf_daily_weights,
         prices,
         asset_returns=_asset_returns,
+        borrow_cost_bps=flat_config.get("borrow_cost_bps", 100.0),
     )
 
     # Slice pooled returns to the contiguous walk-forward test-window span
@@ -464,6 +487,7 @@ def evaluate_strategy_detailed(
         wf_windows,
         bench_returns,
         asset_returns=_asset_returns,
+        borrow_cost_bps=flat_config.get("borrow_cost_bps", 100.0),
     )
 
     # ------------------------------------------------------------------
@@ -485,6 +509,7 @@ def evaluate_strategy_detailed(
         holdout_end,
         bench_returns,
         asset_returns=_asset_returns,
+        borrow_cost_bps=flat_config.get("borrow_cost_bps", 100.0),
     )
 
     holdout_prices = prices.loc[holdout_start:holdout_end]
@@ -499,6 +524,7 @@ def evaluate_strategy_detailed(
         h_daily_weights,
         holdout_prices,
         asset_returns=_asset_returns,
+        borrow_cost_bps=flat_config.get("borrow_cost_bps", 100.0),
     )
 
     # Full period evaluation for Monte Carlo and Regime tests
@@ -512,6 +538,7 @@ def evaluate_strategy_detailed(
         daily_weights,
         prices,
         asset_returns=_asset_returns,
+        borrow_cost_bps=flat_config.get("borrow_cost_bps", 100.0),
     )
 
     regime_drawdowns, regime_passed = evaluate_stress_regimes(
@@ -544,6 +571,21 @@ def evaluate_strategy_detailed(
     # Compute benchmark metrics for both periods
     benchmark_in_sample = _compute_returns_metrics(bench_returns, wf_start, wf_end)
     benchmark_holdout_m = _compute_returns_metrics(bench_returns, holdout_start, holdout_end)
+
+    # Calculate launch regime haircut and apply to strategy returns
+    haircut = calculate_regime_haircut(prices[regime_bench_ticker], holdout_start)
+    if haircut > 0.0:
+        factor = 1.0 - haircut
+        in_sample_metrics.annualized_return *= factor
+        in_sample_metrics.sharpe_ratio *= factor
+        in_sample_metrics.sortino_ratio *= factor
+        holdout_report.annualized_return *= factor
+        holdout_report.sharpe_ratio *= factor
+        holdout_report.sortino_ratio *= factor
+        for r in wf_reports:
+            r.annualized_return *= factor
+            r.sharpe_ratio *= factor
+            r.sortino_ratio *= factor
 
     # Generate complete stable dataset hash including date parameters
     dataset_hash = compute_dataset_hash(

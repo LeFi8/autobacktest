@@ -839,3 +839,50 @@ def _run_with_code(code: str) -> ValidationResult | None:
         (conf_dir / "x.yaml").write_text("universe: [SPY]\n", encoding="utf-8")
         return preflight("x", strat_dir, conf_dir)
     return None
+
+
+def test_value_error_whitelisted_pass():
+    """ValueError and other exceptions are whitelisted and should pass undefined name check."""
+    code = """
+def generate_signals(prices, config):
+    if len(prices) < 10:
+        raise ValueError("Prices too short")
+    return prices
+"""
+    res = _check_ast(code)
+    assert res.passed
+
+
+def test_validator_calendar_bypass_shift_test(mock_dirs: tuple[Path, Path]) -> None:
+    """Verifies calendar-rebalanced strategies bypass Shift Test and pass preflight."""
+    strat_dir, conf_dir = mock_dirs
+
+    strat_file = strat_dir / "calendar_strat.py"
+    # Write a strategy that rebalances monthly (BME)
+    strat_file.write_text(
+        """
+import pandas as pd
+
+def generate_signals(prices: pd.DataFrame, config: dict) -> pd.DataFrame:
+    # rebalance monthly
+    start = prices.index.min()
+    end = prices.index.max()
+    tz = prices.index.tz
+    rebalance_dates = pd.date_range(start=start, end=end, freq="BME", tz=tz).intersection(prices.index)
+    
+    weights = pd.DataFrame(0.0, index=rebalance_dates, columns=prices.columns)
+    if "SPY" in weights.columns:
+        weights["SPY"] = 1.0
+        
+    weights = weights.reindex(prices.index).ffill().fillna(0.0)
+    return weights
+""",
+        encoding="utf-8",
+    )
+
+    conf_file = conf_dir / "calendar_strat.yaml"
+    conf_file.write_text("universe: [SPY]\n", encoding="utf-8")
+
+    res = preflight("calendar_strat", strat_dir, conf_dir)
+    assert res.passed
+    assert res.error_code is None
