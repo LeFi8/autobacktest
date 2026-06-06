@@ -219,7 +219,11 @@ def jitter_config(
             # Force adjustment if no change occurred, respecting direction and bounds
             if v_new == v:
                 direction = rng.choice([1, -1])
-                if min_val is not None and v <= min_val:
+                if is_int and v == 1:
+                    direction = 1
+                elif is_int and v == -1:
+                    direction = -1
+                elif min_val is not None and v <= min_val:
                     direction = 1
                 elif max_val is not None and v >= max_val:
                     direction = -1

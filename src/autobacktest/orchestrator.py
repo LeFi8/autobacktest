@@ -694,8 +694,8 @@ def run_optimization(
                                         rep_ok, rep_err_code, rep_err_detail = _validate_candidate(
                                             strategy_name, edit_jittered, strategies_dir, configs_dir
                                         )
+                                        ev["config_yaml"] = new_yaml
                                         if rep_ok:
-                                            ev["config_yaml"] = new_yaml
                                             ev["edit"] = edit_jittered
                                             ev["jitter_applied"] = True
                                             ev["jitter_meta"] = jitter_meta
@@ -1048,7 +1048,8 @@ def run_optimization(
                                 lesson_store.ingest_markdown(imp_text, strategy_name)
                                 lessons_text = lesson_store.get_filtered_markdown(strategy_name)
                             event["parameter_importance"] = importance
-                            last_importance = importance
+                            last_importance.clear()
+                            last_importance.update(importance)
                     except Exception:
                         logger.warning("Parameter importance computation failed", exc_info=True)
 
