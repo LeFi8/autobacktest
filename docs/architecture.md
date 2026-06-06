@@ -14,6 +14,7 @@ graph TD
         ORCH[orchestrator.py]
         GATE[gate.py]
         PROG[program.py]
+        CONFIG[config.py]
     end
 
     subgraph Strategy & Config Validation
@@ -24,10 +25,14 @@ graph TD
         NORM[strategy/normalization.py]
         PI[strategy/parameter_importance.py]
         CODEMOD[strategy/codemod.py]
+        CJITTER[strategy/config_jitter.py]
+        CNST[strategy/constants.py]
     end
 
     subgraph Evaluation Pipeline
         EVAL[evaluator/evaluate.py]
+        RPRT[evaluator/report.py]
+        CSCV[evaluator/cscv.py]
         BACK[evaluator/backtest.py]
         COST[evaluator/costs.py]
         DSR[evaluator/deflated_sharpe.py]
@@ -43,8 +48,7 @@ graph TD
 
     subgraph Data Layer
         DBASE[data/base.py]
-        CACHE[data/cache.py]
-        YF[data/yfinance_provider.py]
+        CACHE[data/cache.py] & YF[data/yfinance_provider.py] -.->|implement| DBASE
     end
 
     subgraph Lessons Layer
@@ -79,8 +83,11 @@ graph TD
     ORCH --> LESS
     ORCH --> LLM_B
     ORCH --> PI
+    ORCH --> CJITTER
+    ORCH --> CONFIG
     VAL --> CONT
     VAL --> CODEMOD
+    VAL --> CNST
     ORCH --> CODEMOD
     EVAL --> BACK
     EVAL --> COST
@@ -91,9 +98,9 @@ graph TD
     EVAL --> WF
     EVAL --> CACHE
     EVAL --> NORM
+    EVAL --> CSCV
+    EVAL --> RPRT
     CACHE --> YF
-    DBASE --> CACHE
-    DBASE --> YF
     STRAT --> EVAL
     LLM_L --> LLM_B
     LLM_M --> LLM_B
@@ -129,7 +136,8 @@ Provides market data abstraction with Parquet caching.
 ### 5. Backtest Evaluator (`evaluator/`)
 Consumes prices and strategy signals to compute detailed performance metrics.
 - `backtest.py`: Vectorized daily return computation (`run_vectorized_backtest`) with 1-day weight lag for lookahead-bias protection.
-- `costs.py`: Turnover and transaction cost calculation (`calculate_turnover_and_costs`), including commissions, bid-ask spreads, and market impact.
+- `costs.py`: Turnover and transaction cost calculation (`calculate_turnover_and_costs`), including commissions, bid-ask spreads, market impact, and short borrowing costs.
+- `cscv.py`: `calculate_pbo` — Combinatorially Symmetric Cross-Validation (CSCV) for Probability of Backtest Overfitting (PBO) using Bailey et al.'s methodology.
 - `deflated_sharpe.py`: `calculate_psr_dsr` — Probabilistic and Deflated Sharpe Ratio computation to account for multiple testing.
 - `evaluate.py`: Coordinates the full walk-forward / holdout evaluation lifecycle (`evaluate_strategy`, `evaluate_strategy_detailed`).
 - `holdout.py`: `partition_holdout_data` — splits the price date index into in-sample and out-of-sample holdout segments.
@@ -144,7 +152,10 @@ Consumes prices and strategy signals to compute detailed performance metrics.
 - `event_log.py`: `EventLog` — structured JSON events logging history for iteration-level audit trails.
 
 ### 7. Reporting Module (`reports/`)
-- `generator.py`: Produces equity curve plots (`plot_equity_curves`), failure summaries (`compile_failure_summary`), and institutional-grade strategy reports (`compile_strategy_report`).
+- `generator.py`: Produces equity curve plots (`plot_equity_curves`), Monte Carlo histogram (`plot_mc_histogram`), walk-forward bar charts (`plot_walk_forward_bars`), failure summaries (`compile_failure_summary`), and institutional-grade strategy reports (`compile_strategy_report`).
+
+### 8. Configuration Module (`config.py`)
+Centralized configuration via a global `Settings` singleton (Pydantic ``BaseModel``). Loads all ``AUTOBACKTEST_*`` environment variables from ``.env`` via ``python-dotenv``. Manages LLM provider settings, backtest date windows, system directory paths, optimization loop parameters, safety gate limits (file size, cyclomatic complexity, import whitelist), diversity gate thresholds, jittering parameters, and SQLite database timeouts.
 
 ### 9. Strategy Validation & Registry (`strategy/`)
 Enforces code correctness, type-safety, and logic uniqueness constraints on candidate mutations.
@@ -157,6 +168,8 @@ Enforces code correctness, type-safety, and logic uniqueness constraints on cand
 - `codemod.py`: AST-based repair module with two entry points:
   - `repair_pandas_code`: Fixes deprecated pandas API calls (frequency aliases, fillna, groupby, level-based aggregation) for pandas 3.x compatibility.
   - `repair_strategy_code`: Chains all repair passes — pandas deprecation transformer, missing `typing.Any` import injection (placed after module docstring), and weight renormalization before `return` in `generate_signals`.
+- `config_jitter.py`: Deterministic config parameter mutation system. When a candidate fails the Tier 1 config diversity gate, `jitter_config()` perturbs numeric parameters within bounded ranges and revalidates against the schema, salvaging candidates by reducing config similarity below threshold.
+- `constants.py`: Security-critical constants including `FORBIDDEN_NAMES` — a list of ~70 blocked identifiers (dangerous builtins, dunder methods, I/O functions) that the AST scanner uses to reject unsafe code patterns.
 
 ### 10. Program Parser (`program.py`)
 Parses and validates the markdown program file (`program.md`), extracting `# Objective` and `# Constraints` sections. Returns a `ProgramSpec` dataclass with structured objectives, constraints, and raw text (passed to the LLM as-is).

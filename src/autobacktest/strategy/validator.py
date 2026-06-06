@@ -1,3 +1,12 @@
+"""Strategy pre-flight validation and sandboxed execution safety checks.
+
+Provides the ``preflight()`` function which runs eight validation layers:
+path traversal security, AST whitelist scan, Pydantic config validation,
+dynamic import, signature verification, smoke testing with synthetic prices,
+lookahead bias sniffing, and undefined-name AST scanning.  Validation runs
+inside a sandboxed subprocess with memory limits and timeout protection.
+"""
+
 import ast
 import json
 import os

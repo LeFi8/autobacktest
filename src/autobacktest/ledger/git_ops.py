@@ -1,3 +1,10 @@
+"""Git integration for strategy version control and rollback.
+
+Provides a dedicated git branch per optimization run, atomic two-file
+commits for accepted strategies, and clean rollback to HEAD for
+rejected candidates.  Uses ``gitpython`` for all operations.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -6,7 +13,18 @@ import git
 
 
 class GitLedger:
+    """Manages git operations for strategy optimization lifecycle.
+
+    Creates an isolated branch per run, stages only the strategy code
+    and config YAML files, and supports clean rollback on rejection.
+    """
+
     def __init__(self, repo_path: Path) -> None:
+        """Open the git repository and configure strategy/config paths.
+
+        Args:
+            repo_path: Path inside the git repository (searches parent dirs).
+        """
         self._repo = git.Repo(repo_path, search_parent_directories=True)
         self._strategies_dir = "strategies"
         self._configs_dir = "configs"

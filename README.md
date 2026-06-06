@@ -104,6 +104,7 @@ Starts the autonomous optimization loop.
 - `--resume`: Run ID to resume a previously interrupted optimization run.
 - `--holdout-peek-limit`: Maximum number of holdout peeks before early termination (default: `20`).
 - `--early-stop-patience`: Consecutive rejections allowed before early stopping (default: `10`).
+- `--quiet` / `-q`: Suppress non-critical warnings and reduce terminal noise (default: based on `AUTOBACKTEST_QUIET` env var).
 - `--json`: Output raw JSON to stdout instead of the Rich terminal summary dashboard.
 
 ### `report`
@@ -123,6 +124,7 @@ Cleans the working directories and baseline files.
 Runs walk-forward and holdout evaluation on a single strategy file standalone.
 - `--strategy` / `-s`: Path to the target strategy file (e.g. `strategies/haa.py`).
 - `--start-date` / `--end-date`: Configure custom historical backtest backdrops.
+- `--quiet` / `-q`: Suppress non-critical warnings (default: based on `AUTOBACKTEST_QUIET` env var).
 
 ### `init-strategy`
 Interactively scaffolds a new backtesting strategy with validated configuration and boilerplate signal code.
@@ -137,6 +139,7 @@ Generates LLM-driven strategy edits and tests them against preflight validation 
 - `--strategy` / `-s`: Strategy name in the registry (default: `haa`).
 - `--model` / `-m`: LLM model name.
 - `--provider` / `-p`: LLM provider (`litellm` or `mock`).
+- `--quiet` / `-q`: Suppress non-critical warnings (default: based on `AUTOBACKTEST_QUIET` env var).
 
 ---
 

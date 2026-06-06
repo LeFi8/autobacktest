@@ -1,3 +1,14 @@
+"""AutoBacktest CLI — Typer-based command-line interface.
+
+Provides seven subcommands:
+- ``run``          — full optimization loop
+- ``report``       — leaderboard from SQLite ledger
+- ``reset``        — restore baseline files and wipe run data
+- ``evaluate``     — standalone walk-forward/holdout evaluation
+- ``llm-test``     — test an LLM edit against preflight validation
+- ``init-strategy``— interactive strategy scaffolding wizard
+"""
+
 import importlib.util
 import logging
 import re
@@ -107,7 +118,13 @@ def run(
         help="Suppress non-critical warnings and reduce terminal noise.",
     ),
 ) -> None:
-    """Run the optimization loop on a strategy."""
+    """Start the autonomous LLM-driven strategy optimization loop.
+
+    Generates parallel candidate edits, runs them through preflight validation,
+    diversity gates, walk-forward evaluation, and a two-phase select/confirm
+    gate system.  Commits accepted improvements to git.  Generates Rich dashboard
+    summary, equity curve plots, failure analysis, and a Markdown strategy report.
+    """
     configure_verbosity(quiet=quiet)
     if not quiet:
         console = Console()
@@ -1039,7 +1056,7 @@ def _render_rich_summary(
 
 
 def main() -> None:
-    """Entry point for the console script."""
+    """Entry point for the ``autobacktest`` console script registered in ``pyproject.toml``."""
     app()
 
 

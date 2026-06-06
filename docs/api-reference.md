@@ -81,6 +81,7 @@ def calculate_turnover_and_costs(
     impact_coef: float = 0.0,
     *,
     asset_returns: pd.DataFrame | None = None,
+    borrow_cost_bps: float = 100.0,
 ) -> tuple[pd.Series, pd.Series, float]:
     """Calculate portfolio turnover and returns adjusted for transaction costs.
 
@@ -92,6 +93,7 @@ def calculate_turnover_and_costs(
         spread_bps: Bid-ask spread in basis points.
         impact_coef: Market impact parameter (quadratic/linear cost).
         asset_returns: Pre-computed daily asset returns.
+        borrow_cost_bps: Short borrowing cost in basis points annualized (default: 100.0).
 
     Returns:
         tuple containing:
@@ -105,18 +107,16 @@ def calculate_turnover_and_costs(
 Computes Probabilistic Sharpe Ratio (PSR) and Deflated Sharpe Ratio (DSR) to account for data-snooping and multiple testing.
 ```python
 def calculate_psr_dsr(
-    net_returns: pd.Series,
+    observed_daily_returns: pd.Series,
     historical_sharpes: list[float] | None = None,
     effective_trials: int = 1,
-    benchmark_sharpe: float = 0.0,
 ) -> float:
     """Calculate the Deflated Sharpe Ratio (DSR) for a strategy's returns.
 
     Args:
-        net_returns: Daily net returns series.
+        observed_daily_returns: Daily net returns series.
         historical_sharpes: Collection of Sharpe ratios from previous trial runs.
         effective_trials: Estimated independent trials (derived if historical_sharpes omitted).
-        benchmark_sharpe: Threshold target Sharpe ratio (default: 0.0).
 
     Returns:
         float: Deflated Sharpe Ratio (representing confidence level [0.0, 1.0]).
@@ -128,14 +128,16 @@ Performs stationary block bootstrapping to determine Sharpe ratio significance t
 ```python
 def run_block_bootstrap(
     returns: pd.Series,
-    n_paths: int = 1000,
+    n_paths: int = 10000,
+    block_size: int = 21,
     seed: int | None = None,
-) -> tuple[float, float, float]:
+) -> tuple[float, float, float, np.ndarray]:
     """Execute block bootstrap to calculate Sharpe ratio percentiles.
 
     Args:
         returns: Daily net returns series.
-        n_paths: Number of simulation iterations.
+        n_paths: Number of simulation iterations (default: 10000).
+        block_size: Block size for stationary bootstrap (default: 21 trading days).
         seed: Random state seed.
 
     Returns:
@@ -143,6 +145,7 @@ def run_block_bootstrap(
             - 5th percentile Sharpe ratio (float)
             - 50th percentile Sharpe ratio (float)
             - 95th percentile Sharpe ratio (float)
+            - Array of bootstrapped Sharpe ratios (np.ndarray)
     """
 ```
 
@@ -220,6 +223,14 @@ def evaluate_strategy_detailed(
     * ``_strategy_code`` — source text required for the eval cache key.
     """
 ```
+
+### `EvaluationReport` / `WindowReport` (defined in `report.py`)
+Key dataclasses for structured performance output. `EvaluationReport` carries all aggregated metrics, holdout/shadowe returns, benchmark comparisons, and robustness diagnostics including:
+- `pbo`: Probability of Backtest Overfitting (float, default `0.0`), computed by `calculate_pbo` via Combinatorially Symmetric Cross-Validation. See Section 15.
+- `mc_sharpes`: Array of bootstrapped Sharpe ratios from Monte Carlo simulation.
+- `holdout_net_returns`: Out-of-sample daily returns for holdout gate confirmation.
+- `deflated_sharpe` / `holdout_deflated_sharpe`: In-sample and holdout DSR values.
+- `in_sample_metrics` / `holdout_metrics`: `WindowReport` instances with Sharpe, Sortino, max drawdown, turnover, annualized return/volatility.
 
 ---
 
@@ -299,14 +310,14 @@ Analyzes whether a strategy candidate produces returns that are functionally ide
 def check_returns_correlation(
     candidate_returns: pd.Series,
     historical_returns_matrix: pd.DataFrame,
-    threshold: float = 0.95,
-} -> tuple[bool, float]:
+    threshold: float = 0.90,
+) -> tuple[bool, float]:
     """Check returns correlation against historical backtests.
 
     Args:
         candidate_returns: Daily net returns of the active strategy candidate.
         historical_returns_matrix: DataFrame containing daily return columns of past attempts.
-        threshold: Maximum permitted Pearson correlation coefficient (default: 0.95).
+        threshold: Maximum permitted Pearson correlation coefficient (default: 0.90).
         min_overlap_days: Minimum overlapping trading days required to compute correlation.
 
     Returns:
@@ -460,6 +471,10 @@ class AgentContext:
     dd_limit: float = 0.20  # max drawdown limit for selection gate
     turnover_limit: float = 2.0  # max turnover limit for selection gate
     min_return_ratio: float = 0.5  # min fraction of baseline return for selection gate
+    last_iteration_failures: list[dict[str, Any]] | None = None  # failure details from previous iteration
+    explored_config_summary: str = ""  # summary of parameter values already explored
+    directive: str = ""  # optional high-level instruction passed to the LLM
+    repair_request: dict[str, Any] | None = None  # details about a code repair attempt
 ```
 
 ### `AgentEdit`
@@ -620,14 +635,26 @@ Manages system configuration settings loaded from environment variables with saf
 - `importance_p_threshold`: P-value threshold for significance in parameter importance (default: `0.20`).
 - `early_stop_patience`: Consecutive iteration rejections allowed before early-stop terminates the run (default: `10`). Set `AUTOBACKTEST_EARLY_STOP_PATIENCE=0` to disable.
 - `max_file_size_kb`: Maximum allowed candidate code file length (default: `100`).
-- `max_cyclomatic_complexity`: Maximum cyclomatic complexity allowed for functions (default: `20`).
+- `max_cyclomatic_complexity`: Maximum cyclomatic complexity allowed for functions (default: `25`).
 - `max_function_lines`: Maximum physical lines allowed for functions (default: `100`).
 - `safe_imports_whitelist`: Comma-separated allowed module imports.
 - `sandbox_timeout`: Strategy signal execution limit integer (default: `15`).
 - `enable_codemod_repair`: Boolean flag to enable automatic pandas deprecated API repair (default: `True`).
+- `enable_llm_repair`: Boolean flag to enable multi-attempt LLM code repair on failed preflight (default: `True`).
+- `max_repair_attempts`: Maximum LLM repair attempts per candidate (default: `2`).
 - `enable_config_diversity_gate`: Boolean flag to enable the config similarity gate in explore mode (default: `True`).
+- `enable_config_jitter`: Boolean flag to enable config jittering as diversity gate salvage (default: `True`).
+- `config_jitter_max_attempts`: Maximum mutation attempts per jitter cycle (default: `12`).
+- `config_jitter_rel_step`: Relative perturbation step size for jittering (default: `0.15`).
+- `enable_json_salvage`: Boolean flag to enable JSON salvage from malformed LLM responses (default: `True`).
+- `enable_candidate_directives`: Boolean flag to pass high-level directives to the LLM (default: `True`).
+- `enable_explored_config_injection`: Boolean flag to inject explored config summaries into LLM context (default: `True`).
+- `explored_config_max_configs`: Max configs included in explored config summary (default: `30`).
+- `enable_identical_behavior_guard`: Boolean flag to guard against functionally identical signal outputs (default: `True`).
+- `identical_behavior_epsilon`: Maximum absolute weight difference below which signals are considered identical (default: `1e-6`).
 - `diversity_config_threshold`: Config similarity threshold for Tier 1 diversity gate (default: `0.95`).
 - `diversity_returns_threshold`: Returns correlation threshold for Tier 2 diversity gate (default: `0.95`).
+- `quiet`: Suppress non-critical warnings (default: `False`).
 - `db_timeout`: Database block lock timeout limit (default: `15.0`).
 - `parsed_safe_imports` (property): Resolved set of whitelisted import names.
 - `ledger_db_path` (property): Resolved full Path to `ledger.db`.
@@ -750,8 +777,22 @@ def plot_equity_curves(
     final_returns: pd.Series,
     run_id: str,
     output_dir: Path,
+    benchmark_returns: pd.Series | None = None,
+    benchmark_ticker: str = "SPY",
 ) -> Path:
-    """Generate a comparison chart of cumulative returns and save as equity_curves.png."""
+    """Generate a comparison chart of cumulative returns and save as equity_curves.png.
+
+    Args:
+        baseline_returns: Daily returns for the baseline strategy.
+        final_returns: Daily returns for the optimized strategy.
+        run_id: Unique run identifier (used in chart title).
+        output_dir: Directory to save the PNG.
+        benchmark_returns: Optional benchmark daily returns series.
+        benchmark_ticker: Ticker label for the benchmark (default ``"SPY"``).
+
+    Returns:
+        Path to the saved ``equity_curves.png`` file.
+    """
 ```
 
 ### `compile_failure_summary`
@@ -775,6 +816,75 @@ def compile_strategy_report(
     strategy_code: str,
 ) -> Path:
     """Generate and write strategy_report.md inside the run directory."""
+```
+
+---
+
+## 15. Combinatorially Symmetric Cross-Validation (`autobacktest.evaluator.cscv`)
+
+### `calculate_pbo`
+Calculates the Probability of Backtest Overfitting (PBO) using the CSCV methodology from Bailey et al.
+```python
+def calculate_pbo(
+    returns_matrix: pd.DataFrame,
+    n_blocks: int = 10,
+) -> float:
+    """Calculate the Probability of Backtest Overfitting (PBO).
+
+    Partitions the returns matrix into n_blocks contiguous blocks, generates
+    all C(n_blocks, n_blocks/2) train/test split combinations, and measures
+    how often the in-sample winner's relative rank in out-of-sample falls
+    below 0.5 (indicating overfitting).
+
+    Args:
+        returns_matrix: DataFrame where each column is one trial's daily net
+            returns, rows are trading dates.
+        n_blocks: Number of blocks to split the data into (default: 10).
+
+    Returns:
+        float: PBO in [0, 1]. Higher values indicate greater overfitting risk.
+    """
+```
+
+---
+
+## 16. Config Jitter System (`autobacktest.strategy.config_jitter`)
+
+### `jitter_config`
+Deterministically mutates numeric config parameters to satisfy the config diversity gate.
+```python
+def jitter_config(
+    config_yaml: str,
+    tried_configs: list[str],
+    threshold: float,
+    *,
+    seed: int,
+    max_attempts: int = 12,
+    rel_step: float = 0.15,
+    importance: dict[str, Any] | None = None,
+) -> tuple[str | None, dict[str, Any]]:
+    """Mutate numeric config values until config similarity falls below threshold.
+
+    Perturbs numeric (int/float) parameters via bounded random steps.
+    Respects Pydantic schema constraints and ``KNOWN_RANGES`` from the
+    diversity module.  Uses importance-weighted step sizes when parameter
+    importance data is available.
+
+    Args:
+        config_yaml: Proposed strategy configuration YAML string.
+        tried_configs: Historical config YAML strings to compare against.
+        threshold: Config similarity threshold to beat (from ``AUTOBACKTEST_DIVERSITY_CONFIG_THRESHOLD``).
+        seed: Random seed for deterministic perturbation.
+        max_attempts: Maximum mutation attempts (default: 12).
+        rel_step: Base relative step size for perturbation (default: 0.15).
+        importance: Optional mapping of param names to correlation stats
+            from ``compute_parameter_importance``.
+
+    Returns:
+        tuple[str | None, dict]: ``(mutated_yaml, metadata_dict)`` where
+        metadata contains ``jitter_applied``, ``attempts``,
+        ``final_similarity``, and ``changed_params``.
+    """
 ```
 
 
