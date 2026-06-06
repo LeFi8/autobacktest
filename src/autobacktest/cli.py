@@ -109,6 +109,17 @@ def run(
 ) -> None:
     """Run the optimization loop on a strategy."""
     configure_verbosity(quiet=quiet)
+    if not quiet:
+        console = Console()
+        console.print(
+            Panel(
+                "[bold yellow]WARNING:[/] The default yfinance data provider is susceptible to "
+                "survivorship bias (omitting delisted/bankrupt tickers from past universes).\n"
+                "Verify performance against survivorship-free point-in-time data feeds before deploying live.",
+                title="Quantitative Due Diligence Notice",
+                border_style="yellow",
+            )
+        )
     # Resolve target metric
     try:
         metric = TargetMetric(target_metric)

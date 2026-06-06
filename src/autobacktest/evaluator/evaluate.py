@@ -359,6 +359,7 @@ def evaluate_strategy_detailed(
 
     tickers = flat_config.get("universe", [])
     benchmark_ticker = flat_config.get("benchmark", "SPY")
+    regime_bench_ticker = flat_config.get("regime_benchmark") or benchmark_ticker
 
     if _prices is not None and _bench_returns is not None:
         missing_assets = [t for t in tickers if t not in _prices.columns]
@@ -366,6 +367,8 @@ def evaluate_strategy_detailed(
             raise ValueError(f"Cached prices missing tickers: {missing_assets}")
         if benchmark_ticker not in _prices.columns:
             raise ValueError(f"Cached prices missing benchmark ticker: {benchmark_ticker}")
+        if regime_bench_ticker not in _prices.columns:
+            raise ValueError(f"Cached prices missing regime benchmark ticker: {regime_bench_ticker}")
         prices = _prices
         bench_returns = _bench_returns
     else:
@@ -378,6 +381,21 @@ def evaluate_strategy_detailed(
         if benchmark_prices.empty or benchmark_ticker not in benchmark_prices.columns:
             raise ValueError(f"No price history returned for benchmark ticker: {benchmark_ticker}")
         bench_returns = benchmark_prices[benchmark_ticker].pct_change().fillna(0.0)
+
+        # Join benchmark to prices if not already present
+        if benchmark_ticker not in prices.columns:
+            prices = prices.join(benchmark_prices[[benchmark_ticker]], how="outer")
+
+        # Ensure we have the regime benchmark prices loaded
+        if regime_bench_ticker == benchmark_ticker:
+            regime_bench_prices = benchmark_prices
+        else:
+            regime_bench_prices = provider.get_prices([regime_bench_ticker], start_date, end_date)
+            if regime_bench_prices.empty or regime_bench_ticker not in regime_bench_prices.columns:
+                raise ValueError(f"No price history returned for regime benchmark ticker: {regime_bench_ticker}")
+
+        if regime_bench_ticker not in prices.columns:
+            prices = prices.join(regime_bench_prices[[regime_bench_ticker]], how="outer")
 
     # Pre-compute asset returns once — reused across all window evaluations (Opt 2)
     _asset_returns = prices.pct_change().fillna(0.0)
@@ -555,7 +573,7 @@ def evaluate_strategy_detailed(
     benchmark_holdout_m = _compute_returns_metrics(bench_returns, holdout_start, holdout_end)
 
     # Calculate launch regime haircut and apply to strategy returns
-    haircut = calculate_regime_haircut(prices[benchmark_ticker], holdout_start)
+    haircut = calculate_regime_haircut(prices[regime_bench_ticker], holdout_start)
     if haircut > 0.0:
         in_sample_metrics.annualized_return *= 1.0 - haircut
         holdout_report.annualized_return *= 1.0 - haircut

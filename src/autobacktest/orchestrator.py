@@ -294,7 +294,7 @@ def run_optimization(
                 _eval_cache=_eval_cache,
                 _strategy_code=_baseline_code,
             )
-            _deflate(baseline_report, baseline_returns, ledger)
+            _deflate(baseline_report, baseline_returns, ledger, cscv_blocks=config.get("cscv_blocks", 10))
             _deflate_holdout(baseline_report, ledger)
             incumbent = baseline_report
             incumbent_returns = baseline_returns
@@ -661,9 +661,15 @@ def run_optimization(
                                     continue
 
                         # DSR deflation (in-sample)
-                        _deflate(report_k, returns_k, ledger)
+                        _deflate(report_k, returns_k, ledger, cscv_blocks=new_config.get("cscv_blocks", 10))
                         if incumbent is not None and not incumbent_returns.empty:
-                            _deflate(incumbent, incumbent_returns, ledger, exclude_id=incumbent_attempt_id)
+                            _deflate(
+                                incumbent,
+                                incumbent_returns,
+                                ledger,
+                                exclude_id=incumbent_attempt_id,
+                                cscv_blocks=new_config.get("cscv_blocks", 10),
+                            )
 
                         # Selection gate
                         sel = select(report_k, baseline=incumbent, target_metric=target_metric, config=new_config)
@@ -1186,6 +1192,7 @@ def _deflate(
     selection_returns: pd.Series[Any],
     ledger: LedgerStore,
     exclude_id: int | None = None,
+    cscv_blocks: int = 10,
 ) -> None:
     """Deflate the in-sample selection DSR using the ledger's multi-trial history.
 
@@ -1211,7 +1218,10 @@ def _deflate(
     # Compute and store PBO (Probability of Backtest Overfitting)
     from autobacktest.evaluator.cscv import calculate_pbo
 
-    report.pbo = calculate_pbo(hist_matrix)
+    if len(hist_matrix) >= 2 * cscv_blocks:
+        report.pbo = calculate_pbo(hist_matrix, n_blocks=cscv_blocks)
+    else:
+        report.pbo = 0.0
 
 
 def _deflate_holdout(
