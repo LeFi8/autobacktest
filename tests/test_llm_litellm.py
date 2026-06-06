@@ -182,3 +182,23 @@ def test_litellm_provider_error_classification(mock_completion: MagicMock) -> No
     with pytest.raises(LLMError) as exc_info:
         provider.generate_edit(_make_context())
     assert exc_info.value.retryable is True
+
+
+@patch("litellm.completion")
+def test_litellm_provider_malformed_json_raises_error(mock_completion: MagicMock) -> None:
+    # Trailing comma and missing closing brace
+    malformed = """{
+    "strategy_code": "def generate_signals(): return None",
+    "config_yaml": "universe: [SPY]",
+    "reasoning": "Conservative change",
+    "lessons_text": "Mock lessons",
+"""
+    mock_completion.return_value = _mock_response(malformed)
+    provider = LiteLLMProvider(model="gpt-4o")
+    with pytest.raises(LLMError):
+        provider.generate_edit(_make_context())
+
+    # Garbage JSON still raises LLMError
+    mock_completion.return_value = _mock_response("garbage stuff {not json")
+    with pytest.raises(LLMError):
+        provider.generate_edit(_make_context())

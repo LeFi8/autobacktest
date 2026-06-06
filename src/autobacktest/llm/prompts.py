@@ -524,6 +524,65 @@ def build_messages(
             "You MUST propose approaches that differ meaningfully from previous attempts (see Attempt History)."
         )
 
+    def _repair_hint(error_code: str, detail: str) -> str:
+        if error_code == "lookahead_detected":
+            return (
+                "\nLookahead bias was detected via a shifted-rerun test, "
+                "meaning past signals changed when future price rows were appended. "
+                "The 3 common causes are:\n"
+                "  1. Calculating statistics on the full sample "
+                "(like `.mean()`, `.std()`, `.min()`, `.max()`, or `.rank(pct=True)`) "
+                "on the entire column instead of a trailing/expanding window.\n"
+                "  2. Missing or negative shifts "
+                "(e.g., using `.shift(-1)` or not shifting lookbacks/features by at least `.shift(1)`).\n"
+                "  3. Using `center=True` in rolling calculations."
+            )
+        elif error_code in ("ast_line_limit_exceeded", "ast_cyclomatic_complexity_exceeded"):
+            return (
+                "\nTo resolve function length or cyclomatic complexity limit failures, "
+                "you must extract logic into top-level helper functions, "
+                "vectorize operations instead of branching "
+                "(e.g. using loops or nested if-statements), and keep the core logic identical."
+            )
+        elif error_code in ("ast_blocked_import", "undefined_name", "config_schema_invalid"):
+            alt = ""
+            if error_code == "config_schema_invalid":
+                alt = "Strategy-specific parameters must go under the 'params' dictionary at the root."
+            elif error_code == "ast_blocked_import":
+                alt = (
+                    "Use f-strings or concatenation instead of .format(), and import only "
+                    "from pandas, numpy, math, typing, scipy, dataclasses, collections, "
+                    "itertools, functools, decimal, statistics, numbers, json."
+                )
+            elif error_code == "undefined_name":
+                alt = (
+                    "Ensure all names are defined, imported (e.g., 'from typing import Any'), "
+                    "or passed in config/prices."
+                )
+            return f'\nError detail: "{detail}"\nAllowed alternative: {alt}'
+        elif error_code == "smoke_test_failed":
+            return (
+                "\nSmoke test execution failed. This usually means your code raised an exception at runtime "
+                "(e.g., KeyError, IndexError, ValueError), or it returned invalid weight outputs "
+                "(e.g. weights exceeding the sum <= 1.0 limit, incorrect shapes, or containing NaN values). "
+                "Ensure all operations handle missing or NaN data gracefully, avoid dividing by zero, "
+                "check shape consistency, and verify that portfolio weights sum to at most 1.0 at every step."
+            )
+        elif error_code == "import_failed":
+            return (
+                "\nImport failed. The Python interpreter failed to load your strategy file. "
+                "This is typically caused by syntax errors, invalid syntax in type annotations, or "
+                "code crashing at import time. Double-check your syntax and ensure the code compiles "
+                "without any side effects during import."
+            )
+        elif error_code == "signature_mismatch":
+            return (
+                "\nSignature mismatch. Your strategy must define a function with the exact signature:\n"
+                "  `def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFrame:`\n"
+                "Ensure the function is exported, name is spelled correctly, and parameters match."
+            )
+        return ""
+
     repair_request_section = ""
     if context.repair_request:
         req = context.repair_request
@@ -531,6 +590,7 @@ def build_messages(
         failed_config = req.get("failed_config_yaml", "")
         err_code = req.get("error_code", "")
         err_detail = req.get("error_detail", "")
+        hint = _repair_hint(err_code, err_detail)
         repair_request_section = (
             f"## Repair Request\n"
             f"Your previous proposal failed preflight validation with the following error:\n"
@@ -539,7 +599,7 @@ def build_messages(
             f"**Failed Code:**\n```python\n{failed_code}\n```\n\n"
             f"**Failed Config:**\n```yaml\n{failed_config}\n```\n\n"
             f"**Instruction:** Fix ONLY this validation error. Make the minimal change. "
-            f"Do not redesign the strategy.\n\n"
+            f"Do not redesign the strategy.{hint}\n\n"
             f"---\n\n"
         )
 
@@ -554,7 +614,9 @@ def build_messages(
             f"{context.explored_config_summary}\n\n"
             f"> [!WARNING]\n"
             f"> Any config with similarity > {settings.diversity_config_threshold} to ANY of these "
-            f"is auto-rejected. Choose parameter values outside these ranges.\n"
+            f"is auto-rejected. Choose parameter values outside these ranges. "
+            f"Specifically, pick numeric values ≥ ~25% away from every tried value, "
+            f"or change the parameter set structurally.\n"
         )
 
     last_iteration_failures_section = ""

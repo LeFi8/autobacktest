@@ -1,3 +1,10 @@
+"""Transaction cost and turnover calculation for vectorized backtesting.
+
+Computes net returns after accounting for commissions, bid-ask spreads,
+market impact, and short borrowing costs.  Handles weight drift between
+rebalance dates using a growth-adjusted drift model.
+"""
+
 import numpy as np
 import pandas as pd
 

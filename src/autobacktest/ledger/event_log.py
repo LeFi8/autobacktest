@@ -41,6 +41,7 @@ class EventLog:
         self._file.flush()
 
     def close(self) -> None:
+        """Close the underlying file handle. Safe to call multiple times."""
         self._file.close()
 
     def __enter__(self) -> EventLog:

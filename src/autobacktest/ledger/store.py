@@ -17,11 +17,13 @@ from autobacktest.config import settings
 
 
 def _serialize_returns(series: pd.Series) -> bytes:
+    """Compress a pandas Series to a zlib-compressed JSON blob for SQLite storage."""
     json_str = series.to_json(orient="split", date_format="iso")
     return zlib.compress(json_str.encode("utf-8"))
 
 
 def _deserialize_returns(blob: bytes) -> pd.Series:
+    """Decompress and reconstruct a pandas Series from a zlib-compressed JSON blob."""
     json_str = zlib.decompress(blob).decode("utf-8")
     return pd.read_json(StringIO(json_str), orient="split", typ="series")
 

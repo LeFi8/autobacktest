@@ -249,6 +249,7 @@ def run_optimization(
     total_completion_tokens = 0
     total_cost = 0.0
     _early_stop_iteration = 0
+    last_importance: dict[str, Any] = {}
     try:
         # 5. Load baseline config
         start_temp = getattr(provider, "temperature", None)
@@ -656,21 +657,72 @@ def run_optimization(
 
                     # Config diversity gate (pre-backtest, main thread)
                     valid_candidates = []
-                    for ev in candidate_results:
+                    batch_configs: list[str] = []
+                    for i, ev in enumerate(candidate_results):
                         if not ev.get("valid"):
                             valid_candidates.append(ev)
                             continue
                         e_config_yaml = ev["config_yaml"]
-                        if mode == "explore" and historical_configs:
-                            max_sim = max_config_similarity(e_config_yaml, historical_configs)
+                        if mode == "explore":
+                            all_tried = historical_configs + batch_configs
+                            max_sim = max_config_similarity(e_config_yaml, all_tried) if all_tried else 0.0
                             ev["config_similarity"] = max_sim
+
                             if settings.enable_config_diversity_gate and max_sim > settings.diversity_config_threshold:
-                                ev["valid"] = False
-                                ev["validation_stage"] = "diversity_config"
-                                ev["detail"] = (
-                                    f"Config similarity {max_sim:.3f} exceeded"
-                                    f" threshold {settings.diversity_config_threshold}."
-                                )
+                                if settings.enable_config_jitter:
+                                    import hashlib
+
+                                    seed_bytes = f"{e_config_yaml}_{k}_{i}".encode()
+                                    seed = int(hashlib.sha256(seed_bytes).hexdigest()[:8], 16) & 0xFFFFFFFF
+
+                                    from autobacktest.strategy.config_jitter import jitter_config
+
+                                    new_yaml, jitter_meta = jitter_config(
+                                        e_config_yaml,
+                                        all_tried,
+                                        settings.diversity_config_threshold,
+                                        seed=seed,
+                                        max_attempts=settings.config_jitter_max_attempts,
+                                        rel_step=settings.config_jitter_rel_step,
+                                        importance=last_importance,
+                                    )
+                                    if new_yaml is not None:
+                                        import dataclasses as _dc
+
+                                        edit_jittered = _dc.replace(ev["edit"], config_yaml=new_yaml)
+                                        # Re-run validation on the salvaged configuration
+                                        rep_ok, rep_err_code, rep_err_detail = _validate_candidate(
+                                            strategy_name, edit_jittered, strategies_dir, configs_dir
+                                        )
+                                        ev["config_yaml"] = new_yaml
+                                        if rep_ok:
+                                            ev["edit"] = edit_jittered
+                                            ev["jitter_applied"] = True
+                                            ev["jitter_meta"] = jitter_meta
+                                            ev["config_similarity"] = jitter_meta["final_similarity"]
+                                        else:
+                                            ev["valid"] = False
+                                            ev["validation_stage"] = "validation"
+                                            ev["error_code"] = rep_err_code
+                                            ev["detail"] = rep_err_detail
+                                            ev["jitter_applied"] = False
+                                            ev["jitter_meta"] = jitter_meta
+                                            ev["jitter_attempted"] = True
+                                    else:
+                                        ev["valid"] = False
+                                        ev["validation_stage"] = "diversity_config"
+                                        ev["jitter_attempted"] = True
+                                        ev["detail"] = (
+                                            f"Config similarity {max_sim:.3f} exceeded threshold "
+                                            f"{settings.diversity_config_threshold} (jitter failed)."
+                                        )
+                                else:
+                                    ev["valid"] = False
+                                    ev["validation_stage"] = "diversity_config"
+                                    ev["detail"] = (
+                                        f"Config similarity {max_sim:.3f} exceeded"
+                                        f" threshold {settings.diversity_config_threshold}."
+                                    )
                         elif mode == "exploit":
                             max_sim = max_config_similarity(e_config_yaml, [current_yaml])
                             if max_sim >= 0.999:
@@ -679,6 +731,9 @@ def run_optimization(
                                 ev["detail"] = (
                                     "Exploit candidate is identical to the incumbent config; no change to evaluate."
                                 )
+
+                        if ev.get("valid"):
+                            batch_configs.append(ev["config_yaml"])
                         valid_candidates.append(ev)
 
                     # Pre-backtest identical-behavior guard
@@ -993,6 +1048,8 @@ def run_optimization(
                                 lesson_store.ingest_markdown(imp_text, strategy_name)
                                 lessons_text = lesson_store.get_filtered_markdown(strategy_name)
                             event["parameter_importance"] = importance
+                            last_importance.clear()
+                            last_importance.update(importance)
                     except Exception:
                         logger.warning("Parameter importance computation failed", exc_info=True)
 
@@ -1014,6 +1071,16 @@ def run_optimization(
                                 "total_tokens": ev["edit"].total_tokens if ev.get("edit") else 0,
                                 "cost": ev["edit"].cost if ev.get("edit") else 0.0,
                             }
+                            if "config_yaml" in ev:
+                                fail_item["candidate_config_yaml"] = ev["config_yaml"]
+                            elif ev.get("edit"):
+                                fail_item["candidate_config_yaml"] = ev["edit"].config_yaml
+                            if "jitter_applied" in ev:
+                                fail_item["jitter_applied"] = ev["jitter_applied"]
+                            if "jitter_meta" in ev:
+                                fail_item["jitter_meta"] = ev["jitter_meta"]
+                            if "jitter_attempted" in ev:
+                                fail_item["jitter_attempted"] = ev["jitter_attempted"]
                             candidates_summary.append(fail_item)
                         else:
                             rp = ev.get("_report")
@@ -1028,6 +1095,14 @@ def run_optimization(
                                 "total_tokens": ev["edit"].total_tokens if ev.get("edit") else 0,
                                 "cost": ev["edit"].cost if ev.get("edit") else 0.0,
                             }
+                            if "config_yaml" in ev:
+                                pass_item["candidate_config_yaml"] = ev["config_yaml"]
+                            elif ev.get("edit"):
+                                pass_item["candidate_config_yaml"] = ev["edit"].config_yaml
+                            if "jitter_applied" in ev:
+                                pass_item["jitter_applied"] = ev["jitter_applied"]
+                            if "jitter_meta" in ev:
+                                pass_item["jitter_meta"] = ev["jitter_meta"]
                             candidates_summary.append(pass_item)
                     event["candidates"] = candidates_summary
                     if winner is not None:
