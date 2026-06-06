@@ -8,6 +8,9 @@ import warnings
 logging.getLogger("LiteLLM").setLevel(logging.ERROR)
 logging.getLogger("litellm").setLevel(logging.ERROR)
 
+# Always suppress common numerical RuntimeWarnings to prevent backtest strategy spam
+warnings.filterwarnings("ignore", category=RuntimeWarning)
+
 __version__ = "0.1.0"
 
 
@@ -19,7 +22,5 @@ def configure_verbosity(quiet: bool = False) -> None:
     autobacktest's internal loggers to ERROR level.
     """
     if quiet:
-        warnings.filterwarnings("ignore", message="All-NaN slice")
-        warnings.filterwarnings("ignore", message="Mean of empty slice")
         for name in ("autobacktest", "yfinance", "urllib3", "requests"):
             logging.getLogger(name).setLevel(logging.ERROR)
