@@ -591,6 +591,7 @@ def run_optimization(
                                         ctx,
                                         strategy_code=current_edit.strategy_code,
                                         config_yaml=current_edit.config_yaml,
+                                        lessons_text=lessons_text,
                                         repair_request=repair_request,
                                         directive=ev.get("directive", ""),
                                     )
