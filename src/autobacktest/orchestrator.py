@@ -331,7 +331,7 @@ def run_optimization(
             baseline_warnings = _audit_baseline(incumbent, config_obj)
             for w in baseline_warnings:
                 logger.warning("Baseline gate check: %s", w)
-            if baseline_warnings:
+            if baseline_warnings and not quiet:
                 from rich.console import Console
 
                 Console().print(
@@ -437,7 +437,7 @@ def run_optimization(
             BarColumn(),
             TaskProgressColumn(),
             MofNCompleteColumn(),
-            disable=quiet,
+            disable=False,
         ) as progress:
             task = progress.add_task(
                 f"[cyan]Optimizing {strategy_name}... (Incumbent Sharpe: {incumbent.observed_sharpe:.3f})",
@@ -979,8 +979,7 @@ def run_optimization(
                             f"→  FAIL  {reasons_str}  "
                             f"${_iter_cost:.4f}"
                         )
-                    if not quiet:
-                        progress.console.print(summary)
+                    progress.console.print(summary)
 
                     if consecutive_no_backtest >= 5 and not quiet:
                         progress.console.print(

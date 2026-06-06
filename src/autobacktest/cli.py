@@ -241,7 +241,7 @@ def run(
         )
 
     # Early-stop warning
-    if result.early_stopped:
+    if result.early_stopped and not quiet:
         console = Console()
         console.print(
             Panel(
