@@ -353,11 +353,14 @@ class CachedDataProvider(DataProvider):
             down_spike = (ratios < 0.5) & (next_ratios > 1.4)
 
             outliers = up_spike | down_spike
-            if outliers.any():
-                outlier_dates = series.index[outliers]
-                for date in outlier_dates:
-                    logger.warning("Outlier detected and cleaned for ticker %s on %s: %s", col, date, series.loc[date])
-                    idx = series.index.get_loc(date)
+            outlier_idxs = [i for i, x in enumerate(outliers) if x]
+            if outlier_idxs:
+                col_idx = cleaned_df.columns.get_loc(col)
+                for idx in outlier_idxs:
                     if idx > 0:
-                        cleaned_df.loc[date, col] = cleaned_df.iloc[idx - 1][col]
+                        date = series.index[idx]
+                        logger.warning(
+                            "Outlier detected and cleaned for ticker %s on %s: %s", col, date, series.iloc[idx]
+                        )
+                        cleaned_df.iloc[idx, col_idx] = cleaned_df.iloc[idx - 1, col_idx]
         return cleaned_df

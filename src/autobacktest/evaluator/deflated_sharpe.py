@@ -141,7 +141,7 @@ def calculate_effective_trials(returns_matrix: pd.DataFrame, threshold: float = 
 
         # Test threshold values from 0.1 to 0.9 (step 0.05) to optimize Silhouette score
         best_threshold = threshold
-        best_silhouette = 0.0
+        best_silhouette = -1.0
 
         thresholds = np.arange(0.1, 0.95, 0.05)
         for t in thresholds:
