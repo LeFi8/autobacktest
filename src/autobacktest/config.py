@@ -89,7 +89,19 @@ class Settings(BaseModel):
     enable_llm_repair: bool = Field(
         default_factory=lambda: os.getenv("AUTOBACKTEST_ENABLE_LLM_REPAIR", "true").lower() == "true"
     )
-    max_repair_attempts: int = Field(default_factory=lambda: int(os.getenv("AUTOBACKTEST_MAX_REPAIR_ATTEMPTS", "1")))
+    max_repair_attempts: int = Field(default_factory=lambda: int(os.getenv("AUTOBACKTEST_MAX_REPAIR_ATTEMPTS", "2")))
+    enable_config_jitter: bool = Field(
+        default_factory=lambda: os.getenv("AUTOBACKTEST_ENABLE_CONFIG_JITTER", "true").lower() == "true"
+    )
+    config_jitter_max_attempts: int = Field(
+        default_factory=lambda: int(os.getenv("AUTOBACKTEST_CONFIG_JITTER_MAX_ATTEMPTS", "12"))
+    )
+    config_jitter_rel_step: float = Field(
+        default_factory=lambda: float(os.getenv("AUTOBACKTEST_CONFIG_JITTER_REL_STEP", "0.15"))
+    )
+    enable_json_salvage: bool = Field(
+        default_factory=lambda: os.getenv("AUTOBACKTEST_ENABLE_JSON_SALVAGE", "true").lower() == "true"
+    )
     enable_candidate_directives: bool = Field(
         default_factory=lambda: os.getenv("AUTOBACKTEST_ENABLE_CANDIDATE_DIRECTIVES", "true").lower() == "true"
     )

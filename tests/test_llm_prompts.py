@@ -528,3 +528,52 @@ def test_build_messages_with_last_iteration_failures() -> None:
     assert "1. **Stage:** validation (undefined_name) | **Detail:** Name 'x' is not defined" in user_msg
     expected = "2. **Stage:** diversity_config | **Detail:** Too similar to past configs | Parameters: {'top_x': 3}"
     assert expected in user_msg
+
+
+def test_build_messages_repair_hints() -> None:
+    # 1. Test lookahead_detected hint
+    context = _make_context(
+        repair_request={
+            "failed_code": "def signals(): pass",
+            "failed_config_yaml": "universe: [SPY]",
+            "error_code": "lookahead_detected",
+            "error_detail": "Lookahead bias sniff test failed",
+        }
+    )
+    messages = build_messages(context)
+    user_msg = messages[1]["content"]
+    assert "Lookahead bias was detected via a shifted-rerun test" in user_msg
+    assert "Calculating statistics on the full sample" in user_msg
+
+    # 2. Test fn-length hint
+    context = _make_context(
+        repair_request={
+            "failed_code": "def signals(): pass",
+            "failed_config_yaml": "universe: [SPY]",
+            "error_code": "ast_line_limit_exceeded",
+            "error_detail": "Function signals has 150 lines",
+        }
+    )
+    messages = build_messages(context)
+    user_msg = messages[1]["content"]
+    assert "extract logic into top-level helper functions" in user_msg
+
+    # 3. Test config schema invalid hint
+    context = _make_context(
+        repair_request={
+            "failed_code": "def signals(): pass",
+            "failed_config_yaml": "universe: [SPY]",
+            "error_code": "config_schema_invalid",
+            "error_detail": "validation error",
+        }
+    )
+    messages = build_messages(context)
+    user_msg = messages[1]["content"]
+    assert "Strategy-specific parameters must go under the 'params' dictionary" in user_msg
+
+
+def test_build_messages_explored_config_instructions() -> None:
+    context = _make_context(explored_config_summary="- **top_x**: [2, 3]")
+    messages = build_messages(context)
+    user_msg = messages[1]["content"]
+    assert "pick numeric values ≥ ~25% away from every tried value" in user_msg

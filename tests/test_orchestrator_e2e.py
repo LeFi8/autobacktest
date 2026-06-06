@@ -640,3 +640,191 @@ def test_orchestrator_llm_repair_and_identical_behavior_guard(project_root: Path
     cand2 = candidates[1]
     assert cand2["passed"] is False
     assert cand2["stage"] == "identical_behavior"
+
+
+def test_duplicate_config_salvaged_via_jitter(project_root: Path) -> None:
+    """Duplicate config is salvaged by jittering instead of rejected as diversity_config."""
+    from autobacktest.config import settings
+
+    synthetic_prices = _make_synthetic_prices()
+    fake_instance = _make_fake_provider(synthetic_prices)
+
+    # First run commits a strategy to database with STRATEGY_CONFIG (momentum_lookback: 12)
+    # The provider tries to propose the exact same config STRATEGY_CONFIG.
+    # In explore mode, this is a duplicate.
+    scripted_edit = AgentEdit(
+        strategy_code=IMPROVED_STRATEGY,
+        config_yaml=STRATEGY_CONFIG,
+        reasoning="Propose same config",
+        raw_response="{}",
+    )
+    mock_provider = MockProvider(response=scripted_edit)
+
+    # Let's seed the database by committing one run
+    # (So STRATEGY_CONFIG is in the historical configs)
+    with patch("autobacktest.evaluator.evaluate.CachedDataProvider", return_value=fake_instance):
+        result = run_optimization(
+            program_path=project_root / "program.md",
+            strategy_name="toy",
+            iterations=1,
+            provider=mock_provider,
+            run_dir=project_root / "runs",
+            strategies_dir=project_root / "strategies",
+            configs_dir=project_root / "configs",
+            target_metric=TargetMetric.SHARPE,
+            repo_path=project_root,
+            start_date="2013-01-01",
+            end_date="2025-01-01",
+        )
+        assert result.n_committed == 1
+
+        # Now run again, explore mode. Since settings.enable_config_jitter=True,
+        # it should salvage it.
+        with (
+            patch.object(settings, "enable_config_jitter", True),
+            patch.object(settings, "n_candidates", 1),
+        ):
+            res2 = run_optimization(
+                program_path=project_root / "program.md",
+                strategy_name="toy",
+                iterations=1,
+                provider=mock_provider,
+                run_dir=project_root / "runs",
+                strategies_dir=project_root / "strategies",
+                configs_dir=project_root / "configs",
+                target_metric=TargetMetric.SHARPE,
+                repo_path=project_root,
+                start_date="2013-01-01",
+                end_date="2025-01-01",
+                resume=None,
+            )
+            # The event log should show jitter_applied: True
+            events_path = project_root / "runs" / res2.run_id / "events.jsonl"
+            raw = events_path.read_text(encoding="utf-8").strip()
+            event = json.loads(raw.split("\n")[0])
+            # Check the winner (the only candidate)
+            cand = event["candidates"][0]
+            # Since the code is IMPROVED_STRATEGY (not baseline) and config is jittered,
+            # it should be accepted / passed!
+            assert cand["passed"] is True or cand["stage"] == "diversity_returns" or cand["stage"] == "gate"
+            # It should have run backtest (so it doesn't fail at diversity_config stage!)
+            assert cand["stage"] != "diversity_config"
+
+
+def test_within_batch_dedup_jitters_second_candidate(project_root: Path) -> None:
+    """Two identical candidates generated in the same batch get jittered to different points."""
+    from autobacktest.config import settings
+
+    synthetic_prices = _make_synthetic_prices()
+    fake_instance = _make_fake_provider(synthetic_prices)
+
+    # Both candidates return IMPROVED_CONFIG
+    scripted_edit = AgentEdit(
+        strategy_code=IMPROVED_STRATEGY,
+        config_yaml=IMPROVED_CONFIG,
+        reasoning="Same config in batch",
+        raw_response="{}",
+    )
+    mock_provider = MockProvider(response=scripted_edit)
+
+    # Let's seed history first so IMPROVED_CONFIG is a duplicate
+    with patch("autobacktest.evaluator.evaluate.CachedDataProvider", return_value=fake_instance):
+        result = run_optimization(
+            program_path=project_root / "program.md",
+            strategy_name="toy",
+            iterations=1,
+            provider=mock_provider,
+            run_dir=project_root / "runs",
+            strategies_dir=project_root / "strategies",
+            configs_dir=project_root / "configs",
+            target_metric=TargetMetric.SHARPE,
+            repo_path=project_root,
+            start_date="2013-01-01",
+            end_date="2025-01-01",
+        )
+        assert result.n_committed == 1
+
+        # Now run with n_candidates=2, check both get jittered
+        with (
+            patch.object(settings, "enable_config_jitter", True),
+            patch.object(settings, "n_candidates", 2),
+        ):
+            res2 = run_optimization(
+                program_path=project_root / "program.md",
+                strategy_name="toy",
+                iterations=1,
+                provider=mock_provider,
+                run_dir=project_root / "runs",
+                strategies_dir=project_root / "strategies",
+                configs_dir=project_root / "configs",
+                target_metric=TargetMetric.SHARPE,
+                repo_path=project_root,
+                start_date="2013-01-01",
+                end_date="2025-01-01",
+            )
+            # The event log should show candidate configs are different!
+            events_path = project_root / "runs" / res2.run_id / "events.jsonl"
+            raw = events_path.read_text(encoding="utf-8").strip()
+            event = json.loads(raw.split("\n")[0])
+            cands = event["candidates"]
+            # Both should have candidate_config_yaml and they should differ
+            assert "candidate_config_yaml" in cands[0]
+            assert "candidate_config_yaml" in cands[1]
+            assert cands[0]["candidate_config_yaml"] != cands[1]["candidate_config_yaml"]
+
+
+def test_jitter_disabled_preserves_old_rejection(project_root: Path) -> None:
+    """When jitter is disabled, duplicate configs are rejected with diversity_config."""
+    from autobacktest.config import settings
+
+    synthetic_prices = _make_synthetic_prices()
+    fake_instance = _make_fake_provider(synthetic_prices)
+
+    scripted_edit = AgentEdit(
+        strategy_code=IMPROVED_STRATEGY,
+        config_yaml=STRATEGY_CONFIG,
+        reasoning="Propose same config",
+        raw_response="{}",
+    )
+    mock_provider = MockProvider(response=scripted_edit)
+
+    with patch("autobacktest.evaluator.evaluate.CachedDataProvider", return_value=fake_instance):
+        result = run_optimization(
+            program_path=project_root / "program.md",
+            strategy_name="toy",
+            iterations=1,
+            provider=mock_provider,
+            run_dir=project_root / "runs",
+            strategies_dir=project_root / "strategies",
+            configs_dir=project_root / "configs",
+            target_metric=TargetMetric.SHARPE,
+            repo_path=project_root,
+            start_date="2013-01-01",
+            end_date="2025-01-01",
+        )
+        assert result.n_committed == 1
+
+        with (
+            patch.object(settings, "enable_config_jitter", False),
+            patch.object(settings, "n_candidates", 1),
+        ):
+            res2 = run_optimization(
+                program_path=project_root / "program.md",
+                strategy_name="toy",
+                iterations=1,
+                provider=mock_provider,
+                run_dir=project_root / "runs",
+                strategies_dir=project_root / "strategies",
+                configs_dir=project_root / "configs",
+                target_metric=TargetMetric.SHARPE,
+                repo_path=project_root,
+                start_date="2013-01-01",
+                end_date="2025-01-01",
+            )
+            # The candidate should be rejected as diversity_config
+            events_path = project_root / "runs" / res2.run_id / "events.jsonl"
+            raw = events_path.read_text(encoding="utf-8").strip()
+            event = json.loads(raw.split("\n")[0])
+            cand = event["candidates"][0]
+            assert cand["passed"] is False
+            assert cand["stage"] == "diversity_config"
