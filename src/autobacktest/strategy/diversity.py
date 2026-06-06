@@ -377,3 +377,72 @@ def check_returns_correlation(
             max_corr = corr
 
     return max_corr <= threshold, max_corr
+
+
+def summarize_explored_space(historical_configs: list[str], max_configs: int = 30) -> str:
+    """Summarize explored configuration space to guide LLM search.
+
+    Args:
+        historical_configs: Previously attempted configs.
+        max_configs: Max historical configurations to summarize.
+
+    Returns:
+        Markdown-formatted summary of the explored parameter values.
+    """
+    if not historical_configs:
+        return ""
+
+    numeric_values: dict[str, set[float]] = {}
+    set_values: dict[str, set[str]] = {}
+
+    # Process only the last max_configs
+    for config_yml in historical_configs[-max_configs:]:
+        try:
+            fp = extract_config_fingerprint(config_yml)
+            for nk, nv in fp.numeric_params.items():
+                numeric_values.setdefault(nk, set()).add(nv)
+            for sk, sv in fp.set_fields.items():
+                if sk not in set_values:
+                    set_values[sk] = set()
+                set_values[sk].update(sv)
+        except Exception as e:
+            logger.warning("Failed to extract fingerprint for explored space: %s", e)
+            continue
+
+    if not numeric_values and not set_values:
+        return ""
+
+    lines = []
+    lines.append("### Tried parameters in past configurations:")
+
+    for param in sorted(numeric_values.keys()):
+        num_vals: list[float] = sorted(numeric_values[param])
+        formatted_vals = []
+        for v in num_vals:
+            if v.is_integer():
+                formatted_vals.append(str(int(v)))
+            else:
+                formatted_vals.append(f"{v:.4f}".rstrip("0").rstrip("."))
+
+        truncated = False
+        if len(formatted_vals) > 8:
+            formatted_vals = formatted_vals[:8]
+            truncated = True
+
+        vals_str = ", ".join(formatted_vals)
+        if truncated:
+            vals_str += ", …"
+        lines.append(f"- **{param}**: [{vals_str}]")
+
+    for param in sorted(set_values.keys()):
+        set_vals: list[str] = sorted(set_values[param])
+        truncated = False
+        if len(set_vals) > 8:
+            set_vals = set_vals[:8]
+            truncated = True
+        vals_str = ", ".join(set_vals)
+        if truncated:
+            vals_str += ", …"
+        lines.append(f"- **{param}**: {{{vals_str}}}")
+
+    return "\n".join(lines)

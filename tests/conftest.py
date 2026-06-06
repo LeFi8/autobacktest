@@ -19,6 +19,10 @@ None.
 def setup_test_environment() -> None:
     """Configure low-latency settings overrides for unit testing."""
     settings.sandbox_timeout = 2
+    settings.enable_llm_repair = False
+    settings.enable_candidate_directives = False
+    settings.enable_explored_config_injection = False
+    settings.enable_identical_behavior_guard = False
 
 
 @pytest.fixture

@@ -472,3 +472,59 @@ def test_build_messages_mode_exploit_section() -> None:
     user_msg = messages[1]["content"]
     assert "## Mode" in user_msg
     assert "**EXPLOIT**" in user_msg
+
+
+def test_system_prompt_forbidden_names() -> None:
+    from autobacktest.strategy.constants import FORBIDDEN_NAMES
+
+    for name in FORBIDDEN_NAMES:
+        assert name in SYSTEM_PROMPT
+
+
+def test_build_messages_with_repair_request() -> None:
+    context = _make_context(
+        repair_request={
+            "failed_code": "def signals(): raise ValueError()",
+            "failed_config_yaml": "universe: [SPY]",
+            "error_code": "smoke_test_failed",
+            "error_detail": "Subprocess crashed",
+        }
+    )
+    messages = build_messages(context)
+    user_msg = messages[1]["content"]
+    assert "## Repair Request" in user_msg
+    assert "def signals(): raise ValueError()" in user_msg
+    assert "smoke_test_failed" in user_msg
+    assert "Fix ONLY this validation error" in user_msg
+
+
+def test_build_messages_with_directive() -> None:
+    context = _make_context(directive="do something different")
+    messages = build_messages(context)
+    user_msg = messages[1]["content"]
+    assert "## Candidate Directive" in user_msg
+    assert "This candidate MUST: do something different" in user_msg
+
+
+def test_build_messages_with_explored_config_summary() -> None:
+    context = _make_context(explored_config_summary="- **top_x**: [2, 3]")
+    messages = build_messages(context)
+    user_msg = messages[1]["content"]
+    assert "## Explored Config Space" in user_msg
+    assert "- **top_x**: [2, 3]" in user_msg
+    assert "Any config with similarity >" in user_msg
+
+
+def test_build_messages_with_last_iteration_failures() -> None:
+    context = _make_context(
+        last_iteration_failures=[
+            {"stage": "validation", "error_code": "undefined_name", "detail": "Name 'x' is not defined"},
+            {"stage": "diversity_config", "detail": "Too similar to past configs", "params": {"top_x": 3}},
+        ]
+    )
+    messages = build_messages(context)
+    user_msg = messages[1]["content"]
+    assert "## Previous Iteration — All Candidates" in user_msg
+    assert "1. **Stage:** validation (undefined_name) | **Detail:** Name 'x' is not defined" in user_msg
+    expected = "2. **Stage:** diversity_config | **Detail:** Too similar to past configs | Parameters: {'top_x': 3}"
+    assert expected in user_msg

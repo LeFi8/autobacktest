@@ -92,7 +92,7 @@ def test_lessons_roundtrip_and_rollback(project_root_with_lessons: Path) -> None
     # Verify git rollback: the committed HEAD does NOT have the bad strategy code
     repo = git.Repo(project_root_with_lessons)
     committed_code = repo.git.show(f"{result.branch}:strategies/toy.py")
-    assert 'weights["HIGH"] = 1.0' in committed_code
+    assert 'weights["HIGH"] = 1.0' in committed_code or "weights['HIGH'] = 1.0" in committed_code
     assert "syntax error" not in committed_code
 
 

@@ -886,3 +886,66 @@ def generate_signals(prices: pd.DataFrame, config: dict) -> pd.DataFrame:
     res = preflight("calendar_strat", strat_dir, conf_dir)
     assert res.passed
     assert res.error_code is None
+
+
+def test_compare_signals_to_incumbent_identical_and_distinct(mock_dirs: tuple[Path, Path]) -> None:
+    """Verifies that compare_signals_to_incumbent correctly identifies identical and distinct signal generators."""
+    strat_dir, conf_dir = mock_dirs
+
+    incumbent_code = """
+import pandas as pd
+def generate_signals(prices: pd.DataFrame, config: dict) -> pd.DataFrame:
+    weights = pd.DataFrame(0.0, index=prices.index, columns=prices.columns)
+    if "SPY" in weights.columns:
+        weights["SPY"] = 1.0
+    return weights
+"""
+
+    candidate_identical = """
+import pandas as pd
+def generate_signals(prices: pd.DataFrame, config: dict) -> pd.DataFrame:
+    # Slightly different structure but mathematically identical
+    w = pd.DataFrame(0.0, index=prices.index, columns=prices.columns)
+    w.loc[:, "SPY"] = 1.0
+    return w
+"""
+
+    candidate_distinct = """
+import pandas as pd
+def generate_signals(prices: pd.DataFrame, config: dict) -> pd.DataFrame:
+    weights = pd.DataFrame(0.0, index=prices.index, columns=prices.columns)
+    if "SPY" in weights.columns:
+        weights["SPY"] = 0.5
+    return weights
+"""
+
+    config_yaml = """
+universe:
+  - SPY
+"""
+
+    from autobacktest.strategy.validator import compare_signals_to_incumbent
+
+    # Identical should return True for identical, and diff < 1e-6
+    is_identical, diff = compare_signals_to_incumbent(
+        "test_strat",
+        candidate_identical,
+        config_yaml,
+        incumbent_code,
+        strat_dir,
+        conf_dir,
+    )
+    assert is_identical
+    assert diff < 1e-6
+
+    # Distinct should return False for identical, and diff close to 0.5
+    is_identical, diff = compare_signals_to_incumbent(
+        "test_strat",
+        candidate_distinct,
+        config_yaml,
+        incumbent_code,
+        strat_dir,
+        conf_dir,
+    )
+    assert not is_identical
+    assert abs(diff - 0.5) < 1e-6

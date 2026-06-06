@@ -9,10 +9,13 @@ import pandas as _pd
 from autobacktest.config import settings
 from autobacktest.llm.base import AgentContext
 from autobacktest.strategy.config_schema import StrategyConfig as _StrategyConfig
+from autobacktest.strategy.constants import FORBIDDEN_NAMES
 
 _PANDAS_VERSION = _pd.__version__
 _NUMPY_VERSION = _np.__version__
 _ALLOWED_TOP_LEVEL_KEYS = sorted(_StrategyConfig.model_fields.keys())
+_CONSTRAINTS_TEXT_INDENTED = "\n".join("    " + line for line in _StrategyConfig.constraints_text().splitlines())
+_SORTED_FORBIDDEN_NAMES = ", ".join(sorted(FORBIDDEN_NAMES))
 
 # System prompt outlining constraints and role
 sorted_imports = sorted(settings.parsed_safe_imports)
@@ -83,6 +86,8 @@ You operate in a strict execution loop and MUST adhere to the following rules:
    ALL strategy-specific parameters (momentum windows, thresholds, top_n, etc.) MUST go under the
    `params:` key. Placing any custom parameter at the top level will cause a hard validation error.
    Every ticker symbol referenced in the strategy code MUST appear in the `universe` list in config.
+   The config schema constraints are:
+{_CONSTRAINTS_TEXT_INDENTED}
 10. No Full-Sample Statistics Rule (Lookahead Prevention):
     NEVER compute mean, std, min, max, rank, quantile, z-score, or any other normalization over
     an entire column or the full price history. This is lookahead bias — future rows affect past signals.
@@ -133,15 +138,18 @@ You operate in a strict execution loop and MUST adhere to the following rules:
       list comprehensions with multiple if clauses, or extensive boolean/and/or
       chains). You MUST refactor `generate_signals` into small helper functions — it must be an
       orchestrator that calls helpers, not a flat block of inline logic. See Rule 11 (Mandatory Decomposition).
-    - Maximum line count of any single function is 100.
+    - Maximum line count of any single function is {settings.max_function_lines}. Aim to keep
+      every function under 80 lines (hard limit {settings.max_function_lines}).
 16. Whitelist & Forbidden Names Rule:
     - The `.format()` method and attributes like `__dict__`, `__class__`, etc.,
       are strictly forbidden by AST checks. To format strings, you MUST use
       f-strings or standard string concatenation.
     - Only imports from the allowed whitelist ({sorted_imports}) are permitted.
-      Wildcard imports (`*`) are blocked. Avoid accessing forbidden variables or
-      built-in functions such as `eval`, `exec`, `getattr`, `setattr`, or
-      pandas/numpy filesystem read/write operations (e.g., `read_csv`, `to_csv`).
+      Wildcard imports (`*`) are blocked.
+    - The following names are strictly forbidden anywhere in the strategy code
+      (variables, functions, attributes, imports, etc.) by AST checks:
+      {_SORTED_FORBIDDEN_NAMES}
+      Use of any of these names will trigger a hard validation failure.
 """
 
 
@@ -516,10 +524,59 @@ def build_messages(
             "You MUST propose approaches that differ meaningfully from previous attempts (see Attempt History)."
         )
 
-    user_content = f"""## Iteration
+    repair_request_section = ""
+    if context.repair_request:
+        req = context.repair_request
+        failed_code = req.get("failed_code", "")
+        failed_config = req.get("failed_config_yaml", "")
+        err_code = req.get("error_code", "")
+        err_detail = req.get("error_detail", "")
+        repair_request_section = (
+            f"## Repair Request\n"
+            f"Your previous proposal failed preflight validation with the following error:\n"
+            f"**Error Code:** {err_code}\n"
+            f"**Error Detail:** {err_detail}\n\n"
+            f"**Failed Code:**\n```python\n{failed_code}\n```\n\n"
+            f"**Failed Config:**\n```yaml\n{failed_config}\n```\n\n"
+            f"**Instruction:** Fix ONLY this validation error. Make the minimal change. "
+            f"Do not redesign the strategy.\n\n"
+            f"---\n\n"
+        )
+
+    directive_section = ""
+    if context.directive:
+        directive_section = f"\n\n## Candidate Directive\nThis candidate MUST: {context.directive}\n"
+
+    explored_config_section = ""
+    if context.explored_config_summary:
+        explored_config_section = (
+            f"\n## Explored Config Space\n"
+            f"{context.explored_config_summary}\n\n"
+            f"> [!WARNING]\n"
+            f"> Any config with similarity > {settings.diversity_config_threshold} to ANY of these "
+            f"is auto-rejected. Choose parameter values outside these ranges.\n"
+        )
+
+    last_iteration_failures_section = ""
+    if context.last_iteration_failures:
+        lines = [
+            "## Previous Iteration — All Candidates",
+            "The following failures were observed across the parallel candidates generated in the last iteration:",
+        ]
+        for idx, fail in enumerate(context.last_iteration_failures):
+            stage = fail.get("stage", "unknown")
+            err = fail.get("error_code")
+            err_str = f" ({err})" if err else ""
+            detail = fail.get("detail") or ""
+            params = fail.get("params") or {}
+            params_str = f" | Parameters: {params}" if params else ""
+            lines.append(f"{idx + 1}. **Stage:** {stage}{err_str} | **Detail:** {detail}{params_str}")
+        last_iteration_failures_section = "\n".join(lines) + "\n\n"
+
+    user_content = f"""{repair_request_section}## Iteration
 Current Loop Iteration: {context.iteration}
 
-{mode_section}
+{mode_section}{directive_section}
 
 ## Lessons
 {injected_lessons}
@@ -535,9 +592,9 @@ Current Loop Iteration: {context.iteration}
 ```
 
 ## Latest Evaluation
-{eval_report_str}{attempt_history_section}
+{eval_report_str}{attempt_history_section}{explored_config_section}
 {diversity_warning}
-{previous_attempt_section}{performance_target_section}## Instructions
+{last_iteration_failures_section}{previous_attempt_section}{performance_target_section}## Instructions
 Improve the strategy per the objective. Optimize parameters, signal
 logic, or asset weights.
 Your response must be returned as a JSON object containing the keys:

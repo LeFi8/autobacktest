@@ -93,3 +93,40 @@ class StrategyConfig(BaseModel):
                 if k not in res:
                     res[k] = v
         return res
+
+    @classmethod
+    def constraints_text(cls) -> str:
+        """Render schema field constraints and default values as text."""
+        from pydantic_core import PydanticUndefined
+
+        lines = []
+        for name, field in cls.model_fields.items():
+            ann = field.annotation
+            if ann is None:
+                t_name = "None"
+            elif hasattr(ann, "__name__"):
+                t_name = ann.__name__
+            else:
+                t_name = str(ann).replace("typing.", "")
+
+            constraints = []
+            for m in getattr(field, "metadata", []):
+                for op, symbol in [("ge", ">="), ("gt", ">"), ("le", "<="), ("lt", "<")]:
+                    val = getattr(m, op, None)
+                    if val is not None:
+                        constraints.append(f"{symbol} {val}")
+                min_len = getattr(m, "min_length", None)
+                if min_len is not None:
+                    constraints.append(f"min_length={min_len}")
+
+            if constraints:
+                j = ", "
+                constraints_str = f", {j.join(constraints)}"
+            else:
+                constraints_str = ""
+
+            default_val = field.default
+            default_str = "" if default_val is PydanticUndefined else f" (default: {default_val})"
+
+            lines.append(f"- {name}: {t_name}{constraints_str}{default_str}")
+        return "\n".join(lines)

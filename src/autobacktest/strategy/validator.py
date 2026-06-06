@@ -18,79 +18,7 @@ from pydantic import ValidationError as PydanticValidationError
 
 from autobacktest.config import settings
 from autobacktest.strategy.config_schema import StrategyConfig
-
-# Forbidden variables, functions, and names that compromise sandboxing
-FORBIDDEN_NAMES = {
-    "exec",
-    "eval",
-    "compile",
-    "format",
-    "format_map",
-    "vformat",
-    "open",
-    "__import__",
-    "globals",
-    "locals",
-    "getattr",
-    "setattr",
-    "delattr",
-    "__builtins__",
-    "vars",
-    "breakpoint",
-    # numpy / pandas sandboxing escapes
-    "load",
-    "save",
-    "savez",
-    "savez_compressed",
-    "memmap",
-    "fromfile",
-    "tofile",
-    "loadtxt",
-    "genfromtxt",
-    "fromregex",
-    "DataSource",
-    "read_csv",
-    "read_table",
-    "read_fwf",
-    "to_csv",
-    "read_json",
-    "to_json",
-    "read_excel",
-    "to_excel",
-    "read_pickle",
-    "to_pickle",
-    "read_parquet",
-    "to_parquet",
-    "read_hdf",
-    "to_hdf",
-    "read_feather",
-    "to_feather",
-    "read_xml",
-    "to_xml",
-    "read_html",
-    "to_html",
-    "read_sql",
-    "read_sql_table",
-    "read_sql_query",
-    "to_sql",
-    "read_clipboard",
-    "to_clipboard",
-    "io",
-    "get_handle",
-    "lib",
-    "npyio",
-    "HDFStore",
-    "ExcelWriter",
-    "ExcelFile",
-    "read_sas",
-    "read_spss",
-    "read_gbq",
-    "read_stata",
-    "read_orc",
-    "to_stata",
-    "to_orc",
-}
-
+from autobacktest.strategy.constants import FORBIDDEN_NAMES
 
 # Names available as Python builtins (never cause NameError).
 _BUILTIN_NAMES: frozenset[str] = frozenset(
@@ -406,6 +334,7 @@ def _run_validation_in_subprocess(
     strategy_name: str,
     strategy_path: Path,
     config: StrategyConfig,
+    incumbent_code: str | None = None,
 ) -> ValidationResult:
     """Run dynamic import, signature, smoke, and lookahead tests in a sandboxed subprocess."""
     payload = {
@@ -415,6 +344,8 @@ def _run_validation_in_subprocess(
         "universe": config.universe,
         "sandbox_timeout": settings.sandbox_timeout,
     }
+    if incumbent_code is not None:
+        payload["incumbent_code"] = incumbent_code
 
     # Define the runner code block as a multi-line string
     runner_code = """
@@ -497,6 +428,33 @@ def run_checks():
                 "error_code": "smoke_test_failed",
                 "detail": f"Smoke test execution exception: {e}",
             }
+
+        # Incumbent signals comparison (identical-behavior guard)
+        if "incumbent_code" in payload:
+            try:
+                inc_code = payload["incumbent_code"]
+                inc_module = ModuleType(strategy_name + "_incumbent")
+                inc_spec = importlib.util.spec_from_file_location(strategy_name + "_incumbent", strategy_path)
+                if inc_spec is not None:
+                    inc_module.__spec__ = inc_spec
+                    inc_module.__loader__ = inc_spec.loader
+                sys.modules[strategy_name + "_incumbent"] = inc_module
+                inc_code_obj = compile(inc_code, "<incumbent>", "exec")
+                exec(inc_code_obj, inc_module.__dict__)
+                
+                with timeout_sandbox(seconds=sandbox_timeout):
+                    inc_weights = inc_module.generate_signals(prices, config_dict)
+                
+                max_abs_diff = float(np.abs(weights.values - inc_weights.values).max())
+                return {"passed": True, "error_code": None, "detail": f"max_abs_weight_diff:{max_abs_diff}"}
+            except Exception as e:
+                return {
+                    "passed": False,
+                    "error_code": "smoke_test_failed",
+                    "detail": f"Incumbent signal comparison failed: {e}",
+                }
+            finally:
+                sys.modules.pop(strategy_name + "_incumbent", None)
 
         # 4. Lookahead Sniff Test
         try:
@@ -1116,3 +1074,59 @@ def _generate_synthetic_prices(tickers: list[str], n_days: int, seed: int = 42) 
         steps = rng.normal(0.0002, 0.01, n_days)
         prices[ticker] = 100.0 * np.exp(np.cumsum(steps))
     return prices
+
+
+def compare_signals_to_incumbent(
+    _strategy_name: str,
+    candidate_code: str,
+    candidate_config_yaml: str,
+    incumbent_code: str,
+    strategies_dir: Path,
+    configs_dir: Path,
+    epsilon: float = 1e-6,
+) -> tuple[bool, float]:
+    """Compare candidate signals against incumbent on synthetic prices.
+
+    Returns:
+        (is_identical, max_abs_diff) where is_identical is True if max_abs_diff < epsilon.
+    """
+    import tempfile
+
+    strategies_dir.mkdir(parents=True, exist_ok=True)
+    configs_dir.mkdir(parents=True, exist_ok=True)
+
+    fd_py, temp_py_path = tempfile.mkstemp(suffix=".py", prefix="compare_", dir=strategies_dir)
+    fd_yaml, temp_yaml_path = tempfile.mkstemp(suffix=".yaml", prefix="compare_", dir=configs_dir)
+
+    try:
+        os.close(fd_py)
+        os.close(fd_yaml)
+
+        temp_py = Path(temp_py_path)
+        temp_yaml = Path(temp_yaml_path)
+
+        temp_py.write_text(candidate_code, encoding="utf-8")
+        temp_yaml.write_text(candidate_config_yaml, encoding="utf-8")
+
+        temp_name = temp_py.stem
+        config_model = StrategyConfig.from_yaml(temp_yaml)
+
+        res = _run_validation_in_subprocess(
+            temp_name,
+            temp_py,
+            config_model,
+            incumbent_code=incumbent_code,
+        )
+
+        if res.passed and res.detail and str(res.detail).startswith("max_abs_weight_diff:"):
+            diff_str = str(res.detail).split(":")[1]
+            diff = float(diff_str)
+            return diff < epsilon, diff
+        else:
+            return False, 1.0
+
+    finally:
+        if Path(temp_py_path).exists():
+            Path(temp_py_path).unlink()
+        if Path(temp_yaml_path).exists():
+            Path(temp_yaml_path).unlink()
