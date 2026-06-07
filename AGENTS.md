@@ -23,7 +23,7 @@ No `.pre-commit-config.yaml` exists — skip `pre-commit install`.
 
 ## Architecture
 
-- **Entrypoint**: `src/autobacktest/cli.py:app` (typer) delegating to `commands/` package. 8 subcommands: `run`, `report`, `reset`, `evaluate`, `spa`, `llm-test`, `init-strategy`. `run` has `--quiet` and `--json` flags.
+- **Entrypoint**: `src/autobacktest/cli.py:app` (typer) delegating to `commands/` package. 7 subcommands: `run`, `report`, `reset`, `evaluate`, `spa`, `llm-test`, `init-strategy`. `run` has `--quiet` and `--json` flags.
 - **Strategy files**: `strategies/<name>.py` + `configs/<name>.yaml` — matched by stem. Strategy exports `generate_signals(prices: pd.DataFrame, config: dict) -> pd.DataFrame`.
 - **Allowed imports** in strategy code: pandas, numpy, math, typing, scipy, dataclasses, collections, itertools, functools, decimal, statistics, numbers, json only. Blocked by AST whitelist.
 - **Optimization loop** (`orchestrator.py` with `optimization/` sub-package): LLM edits code → `repair_strategy_code()` (3 AST passes: pandas deprecation fix, `typing.Any` import injection, weight renormalization) → preflight validation (8 checks incl. AST linter in `ast_linter.py`, sandboxed smoke test in `sandbox_runner.py`) → config diversity gate (with optional jitter salvage via `config_jitter.py`) → evaluation (walk-forward + holdout) → returns diversity gate → two-phase select/confirm gate → git commit or rollback. Config jitter and LLM repair loop are optional salvages when candidates fail diversity or preflight.
@@ -44,7 +44,7 @@ No `.pre-commit-config.yaml` exists — skip `pre-commit install`.
 | `strategies/<name>.py` | Strategy signal code |
 | `configs/<name>.yaml` | Strategy parameters (Pydantic-validated) |
 | `.antigravity/` | Removed from repo — local IDE/agent config (git-ignored) |
-| `docs/` | Comprehensive docs: architecture, API reference, setup, ADRs |
+| `docs/` | Comprehensive docs: architecture, API reference, setup, ADRs (`docs/adrs/`) |
 | `src/autobacktest/optimization/` | Candidate gen, eval mgmt, ledger persistence helpers |
 | `src/autobacktest/commands/` | CLI subcommand implementations (8 commands) |
 | `src/autobacktest/strategy/ast_linter.py` | AST-based static validation (imports, complexity, undefined names) |

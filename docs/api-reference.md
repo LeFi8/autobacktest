@@ -70,7 +70,7 @@ def run_vectorized_backtest(
 ```
 
 ### `calculate_turnover_and_costs`
-Computes daily rebalancing turnover and penalizes returns by transaction costs (commissions, bid-ask spreads, and market impact).
+Computes daily rebalancing turnover and penalizes returns by transaction costs (commissions, bid-ask spreads, and market impact). Supports volatility-adaptive slippage via the `adaptive_slippage` flag.
 ```python
 def calculate_turnover_and_costs(
     daily_returns: pd.Series,
@@ -82,6 +82,9 @@ def calculate_turnover_and_costs(
     *,
     asset_returns: pd.DataFrame | None = None,
     borrow_cost_bps: float = 100.0,
+    adaptive_slippage: bool = False,
+    slippage_vol_window: int = 21,
+    slippage_vol_cap: float = 3.0,
 ) -> tuple[pd.Series, pd.Series, float]:
     """Calculate portfolio turnover and returns adjusted for transaction costs.
 
@@ -92,8 +95,11 @@ def calculate_turnover_and_costs(
         commission_bps: Commission fee in basis points (1 bp = 0.0001).
         spread_bps: Bid-ask spread in basis points.
         impact_coef: Market impact parameter (quadratic/linear cost).
-        asset_returns: Pre-computed daily asset returns.
+        asset_returns: Pre-computed daily asset returns (skips pct_change()).
         borrow_cost_bps: Short borrowing cost in basis points annualized (default: 100.0).
+        adaptive_slippage: Use volatility-adaptive slippage model (default: False).
+        slippage_vol_window: Rolling window for volatility estimation (default: 21).
+        slippage_vol_cap: Cap multiplier for volatility-adaptive slippage (default: 3.0).
 
     Returns:
         tuple containing:
@@ -124,13 +130,14 @@ def calculate_psr_dsr(
 ```
 
 ### `run_block_bootstrap`
-Performs stationary block bootstrapping to determine Sharpe ratio significance thresholds under Monte Carlo.
+Performs block bootstrapping to determine Sharpe ratio significance thresholds under Monte Carlo. Supports circular and stationary bootstrap methods.
 ```python
 def run_block_bootstrap(
     returns: pd.Series,
     n_paths: int = 10000,
     block_size: int = 21,
     seed: int | None = None,
+    method: str = "circular",
 ) -> tuple[float, float, float, np.ndarray]:
     """Execute block bootstrap to calculate Sharpe ratio percentiles.
 
@@ -139,6 +146,7 @@ def run_block_bootstrap(
         n_paths: Number of simulation iterations (default: 10000).
         block_size: Block size for stationary bootstrap (default: 21 trading days).
         seed: Random state seed.
+        method: Bootstrap method ``"circular"`` (default) or ``"stationary"``.
 
     Returns:
         tuple containing:
