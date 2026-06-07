@@ -166,52 +166,20 @@ def process_and_repair_candidate(
     repair_applied = False
 
     if not ok and settings.enable_llm_repair:
-        current_edit = edit
-        for _attempt_idx in range(settings.max_repair_attempts):
-            repair_request = {
-                "failed_code": current_edit.strategy_code,
-                "failed_config_yaml": current_edit.config_yaml,
-                "error_code": err_code,
-                "error_detail": err_detail,
-            }
-            repair_ctx = dataclasses.replace(
-                ctx,
-                strategy_code=current_edit.strategy_code,
-                config_yaml=current_edit.config_yaml,
-                lessons_text=lessons_text,
-                repair_request=repair_request,
-                directive=ev.get("directive", ""),
-            )
-            try:
-                repair_edit = provider.generate_edit(repair_ctx)
-            except LLMError as e:
-                if not e.retryable:
-                    raise
-                break
-
-            if repair_edit is not None:
-                edit = dataclasses.replace(
-                    repair_edit,
-                    prompt_tokens=edit.prompt_tokens + repair_edit.prompt_tokens,
-                    completion_tokens=edit.completion_tokens + repair_edit.completion_tokens,
-                    total_tokens=edit.total_tokens + repair_edit.total_tokens,
-                    cost=edit.cost + repair_edit.cost,
-                )
-
-                if settings.enable_codemod_repair:
-                    repaired_code, applied_fixes = repair_strategy_code(edit.strategy_code)
-                    if applied_fixes:
-                        edit = dataclasses.replace(edit, strategy_code=repaired_code)
-
-                rep_ok, rep_err_code, rep_err_detail = validate_fn(strategy_name, edit, strategies_dir, configs_dir)
-                if rep_ok:
-                    ok, err_code, err_detail = rep_ok, rep_err_code, rep_err_detail
-                    repair_applied = True
-                    break
-                else:
-                    current_edit = edit
-                    err_code, err_detail = rep_err_code, rep_err_detail
-
+        repair_result = _attempt_llm_repair(
+            ctx,
+            edit,
+            ev,
+            provider,
+            validate_fn,
+            strategy_name,
+            strategies_dir,
+            configs_dir,
+            lessons_text,
+            err_code,
+            err_detail,
+        )
+        ok, err_code, err_detail, repair_applied, edit = repair_result
         if not repair_applied:
             ok, err_code, err_detail = orig_ok, orig_err_code, orig_err_detail
 
@@ -234,3 +202,67 @@ def process_and_repair_candidate(
         ev["config_yaml"] = edit.config_yaml
 
     return ev
+
+
+def _attempt_llm_repair(
+    ctx: AgentContext,
+    edit: AgentEdit,
+    ev: dict[str, Any],
+    provider: LLMProvider,
+    validate_fn: Any,
+    strategy_name: str,
+    strategies_dir: Path,
+    configs_dir: Path,
+    lessons_text: str,
+    err_code: str | None,
+    err_detail: str | None,
+) -> tuple[bool, str | None, str | None, bool, AgentEdit]:
+    """Attempt LLM-based repair rounds to fix a failed candidate.
+
+    Returns (ok, err_code, err_detail, repair_applied, updated_edit).
+    """
+    current_edit = edit
+    for _attempt_idx in range(settings.max_repair_attempts):
+        repair_request = {
+            "failed_code": current_edit.strategy_code,
+            "failed_config_yaml": current_edit.config_yaml,
+            "error_code": err_code,
+            "error_detail": err_detail,
+        }
+        repair_ctx = dataclasses.replace(
+            ctx,
+            strategy_code=current_edit.strategy_code,
+            config_yaml=current_edit.config_yaml,
+            lessons_text=lessons_text,
+            repair_request=repair_request,
+            directive=ev.get("directive", ""),
+        )
+        try:
+            repair_edit = provider.generate_edit(repair_ctx)
+        except LLMError as e:
+            if not e.retryable:
+                raise
+            break
+
+        if repair_edit is not None:
+            edit = dataclasses.replace(
+                repair_edit,
+                prompt_tokens=edit.prompt_tokens + repair_edit.prompt_tokens,
+                completion_tokens=edit.completion_tokens + repair_edit.completion_tokens,
+                total_tokens=edit.total_tokens + repair_edit.total_tokens,
+                cost=edit.cost + repair_edit.cost,
+            )
+
+            if settings.enable_codemod_repair:
+                repaired_code, applied_fixes = repair_strategy_code(edit.strategy_code)
+                if applied_fixes:
+                    edit = dataclasses.replace(edit, strategy_code=repaired_code)
+
+            rep_ok, rep_err_code, rep_err_detail = validate_fn(strategy_name, edit, strategies_dir, configs_dir)
+            if rep_ok:
+                return rep_ok, rep_err_code, rep_err_detail, True, edit
+            else:
+                current_edit = edit
+                err_code, err_detail = rep_err_code, rep_err_detail
+
+    return False, err_code, err_detail, False, edit

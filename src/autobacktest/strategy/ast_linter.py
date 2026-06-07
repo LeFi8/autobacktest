@@ -417,6 +417,55 @@ def _extract_names(node: ast.AST | None, scope: set[str]) -> None:
             _extract_names(elt, scope)
 
 
+def _walk_assign(stmt: ast.stmt, scope: set[str]) -> None:
+    """Handle ``ast.Assign`` — extract names from all targets."""
+    assert isinstance(stmt, ast.Assign)
+    for target in stmt.targets:
+        _extract_names(target, scope)
+
+
+def _walk_ann_aug_assign(stmt: ast.stmt, scope: set[str]) -> None:
+    """Handle ``ast.AnnAssign`` / ``ast.AugAssign`` — add simple name."""
+    assert isinstance(stmt, (ast.AnnAssign, ast.AugAssign))
+    if isinstance(stmt.target, ast.Name):
+        scope.add(stmt.target.id)
+
+
+def _walk_for(stmt: ast.stmt, scope: set[str]) -> None:
+    """Handle ``ast.For`` — extract loop target and walk body/orelse."""
+    assert isinstance(stmt, ast.For)
+    _extract_names(stmt.target, scope)
+    _walk_body(stmt.body, scope)
+    _walk_body(stmt.orelse, scope)
+
+
+def _walk_while_if(stmt: ast.stmt, scope: set[str]) -> None:
+    """Handle ``ast.While`` / ``ast.If`` — walk body and orelse."""
+    assert isinstance(stmt, (ast.While, ast.If))
+    _walk_body(stmt.body, scope)
+    _walk_body(stmt.orelse, scope)
+
+
+def _walk_try(stmt: ast.stmt, scope: set[str]) -> None:
+    """Handle ``ast.Try`` — walk body, handlers, orelse, finalbody."""
+    assert isinstance(stmt, ast.Try)
+    _walk_body(stmt.body, scope)
+    for handler in stmt.handlers:
+        if isinstance(handler.name, str):
+            scope.add(handler.name)
+        _walk_body(handler.body, scope)
+    _walk_body(stmt.orelse, scope)
+    _walk_body(stmt.finalbody, scope)
+
+
+def _walk_with(stmt: ast.stmt, scope: set[str]) -> None:
+    """Handle ``ast.With`` / ``ast.AsyncWith`` — extract vars and walk body."""
+    assert isinstance(stmt, (ast.With, ast.AsyncWith))
+    for item in stmt.items:
+        _extract_names(item.optional_vars, scope)
+    _walk_body(stmt.body, scope)
+
+
 def _walk_body(body: list[ast.stmt], scope: set[str]) -> None:
     """Recursively collect locally-defined names from *body*.
 
@@ -430,29 +479,17 @@ def _walk_body(body: list[ast.stmt], scope: set[str]) -> None:
     """
     for stmt in body:
         if isinstance(stmt, ast.Assign):
-            for target in stmt.targets:
-                _extract_names(target, scope)
-        elif isinstance(stmt, (ast.AnnAssign, ast.AugAssign)) and isinstance(stmt.target, ast.Name):
-            scope.add(stmt.target.id)
+            _walk_assign(stmt, scope)
+        elif isinstance(stmt, (ast.AnnAssign, ast.AugAssign)):
+            _walk_ann_aug_assign(stmt, scope)
         elif isinstance(stmt, ast.For):
-            _extract_names(stmt.target, scope)
-            _walk_body(stmt.body, scope)
-            _walk_body(stmt.orelse, scope)
+            _walk_for(stmt, scope)
         elif isinstance(stmt, (ast.While, ast.If)):
-            _walk_body(stmt.body, scope)
-            _walk_body(stmt.orelse, scope)
+            _walk_while_if(stmt, scope)
         elif isinstance(stmt, ast.Try):
-            _walk_body(stmt.body, scope)
-            for handler in stmt.handlers:
-                if isinstance(handler.name, str):
-                    scope.add(handler.name)
-                _walk_body(handler.body, scope)
-            _walk_body(stmt.orelse, scope)
-            _walk_body(stmt.finalbody, scope)
+            _walk_try(stmt, scope)
         elif isinstance(stmt, (ast.With, ast.AsyncWith)):
-            for item in stmt.items:
-                _extract_names(item.optional_vars, scope)
-            _walk_body(stmt.body, scope)
+            _walk_with(stmt, scope)
         elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
             scope.add(stmt.name)
         elif (

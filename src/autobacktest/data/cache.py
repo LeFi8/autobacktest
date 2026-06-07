@@ -171,7 +171,6 @@ class CachedDataProvider(DataProvider):
         cache_end: pd.Timestamp,
         start_dt: pd.Timestamp,
         end_dt: pd.Timestamp,
-        start: str,
         end: str,
     ) -> pd.DataFrame:
         """Fetch rows newer than *cache_end* and extend the on-disk cache.
@@ -187,7 +186,6 @@ class CachedDataProvider(DataProvider):
             cache_end: Latest date covered by the on-disk cache.
             start_dt: Requested window start as a ``Timestamp``.
             end_dt: Requested window end as a ``Timestamp``.
-            start: Requested window start as a date string.
             end: Requested window end as a date string.
 
         Returns:
@@ -370,7 +368,7 @@ class CachedDataProvider(DataProvider):
             if cache_start <= start_dt and cache_end >= end_dt:
                 return self._slice_window(cached_df, start_dt, end_dt)
             if cache_start <= start_dt and cache_end < end_dt:
-                return self._update_suffix(ticker, interval, cached_df, cache_start, cache_end, start_dt, end_dt, start, end)
+                return self._update_suffix(ticker, interval, cached_df, cache_start, cache_end, start_dt, end_dt, end)
             if cache_start > start_dt and cache_end >= end_dt:
                 return self._update_prefix(ticker, interval, cached_df, cache_start, cache_end, start_dt, end_dt, start)
 

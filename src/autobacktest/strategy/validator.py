@@ -82,6 +82,38 @@ class ValidationResult:
     detail: Any = None
 
 
+def _resolve_strategy_paths(
+    strategy_name: str,
+    strategies_dir: Path,
+    configs_dir: Path,
+) -> tuple[Path, Path]:
+    """Check path traversal safety and return resolved strategy/config paths.
+
+    Raises:
+        ValueError: If path traversal is detected or files don't exist.
+    """
+    strategy_path = strategies_dir / f"{strategy_name}.py"
+    config_path = configs_dir / f"{strategy_name}.yaml"
+
+    resolved_strategies_dir = strategies_dir.resolve()
+    resolved_strategy_path = strategy_path.resolve()
+    if resolved_strategies_dir not in resolved_strategy_path.parents:
+        raise ValueError("path traversal detected outside strategies directory.")
+
+    resolved_configs_dir = configs_dir.resolve()
+    resolved_config_path = config_path.resolve()
+    if resolved_configs_dir not in resolved_config_path.parents:
+        raise ValueError("path traversal detected outside configs directory.")
+
+    if not strategy_path.exists():
+        raise ValueError(f"Strategy file not found at: {strategy_path}")
+
+    if not config_path.exists():
+        raise ValueError(f"Strategy config file not found at: {config_path}")
+
+    return strategy_path, config_path
+
+
 def preflight(
     strategy_name: str,
     strategies_dir: Path,
@@ -106,34 +138,7 @@ def preflight(
     """
     # 1. Path traversal check (Finding 2)
     try:
-        strategy_path = strategies_dir / f"{strategy_name}.py"
-        config_path = configs_dir / f"{strategy_name}.yaml"
-
-        # Resolve paths safely to check traversal first
-        resolved_strategies_dir = strategies_dir.resolve()
-        resolved_strategy_path = strategy_path.resolve()
-        if resolved_strategies_dir not in resolved_strategy_path.parents:
-            raise ValueError("path traversal detected outside strategies directory.")
-
-        resolved_configs_dir = configs_dir.resolve()
-        resolved_config_path = config_path.resolve()
-        if resolved_configs_dir not in resolved_config_path.parents:
-            raise ValueError("path traversal detected outside configs directory.")
-
-        if not strategy_path.exists():
-            return ValidationResult(
-                passed=False,
-                error_code=ValidationError.IMPORT_FAILED,
-                detail=f"Strategy file not found at: {strategy_path}",
-            )
-
-        if not config_path.exists():
-            return ValidationResult(
-                passed=False,
-                error_code=ValidationError.IMPORT_FAILED,
-                detail=f"Strategy config file not found at: {config_path}",
-            )
-
+        strategy_path, config_path = _resolve_strategy_paths(strategy_name, strategies_dir, configs_dir)
     except Exception as e:
         return ValidationResult(
             passed=False,

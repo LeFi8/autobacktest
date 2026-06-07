@@ -156,6 +156,177 @@ def _render_rich_summary(
         console.print(f"\n[bold]📄 Strategy Report:[/] [link=file://{report_path.resolve()}]{report_path.resolve()}[/]")
 
 
+def _run_impl(
+    program: str,
+    strategy: str,
+    iterations: int,
+    provider: str | None,
+    model: str | None,
+    run_dir: str | None,
+    target_metric: str,
+    resume: str | None,
+    holdout_peek_limit: int,
+    early_stop_patience: int,
+    json_output: bool,
+    quiet: bool,
+) -> None:
+    """Execute the optimization run. Extracted from the Typer wrapper for CC."""
+    configure_verbosity(quiet=quiet)
+    if not quiet:
+        console = Console()
+        console.print(
+            Panel(
+                "[bold yellow]WARNING:[/] The default yfinance data provider is susceptible to "
+                "survivorship bias (omitting delisted/bankrupt tickers from past universes).\n"
+                "Verify performance against survivorship-free point-in-time data feeds before deploying live.",
+                title="Quantitative Due Diligence Notice",
+                border_style="yellow",
+            )
+        )
+
+    try:
+        metric = TargetMetric(target_metric)
+    except ValueError as err:
+        error_msg = f"Error: Unknown target metric '{target_metric}'. Use: sharpe, sortino, information_ratio."
+        typer.echo(error_msg)
+        raise typer.Exit(code=1) from err
+
+    from autobacktest.llm.litellm_provider import LiteLLMProvider
+    from autobacktest.llm.mock_provider import MockProvider
+
+    provider_impl: Any
+    if provider == "mock":
+        provider_impl = MockProvider()
+    else:
+        model_str = model or settings.llm_model
+        if provider and provider != "litellm" and "/" not in model_str:
+            model_str = f"{provider}/{model_str}"
+        provider_impl = LiteLLMProvider(
+            model=model_str,
+            temperature=settings.llm_temperature,
+            max_tokens=settings.llm_max_tokens,
+        )
+
+    program_path = Path(program)
+    run_dir_path = Path(run_dir) if run_dir else settings.run_dir
+
+    try:
+        result: OrchestratorResult = run_optimization(
+            program_path=program_path,
+            strategy_name=strategy,
+            iterations=iterations,
+            provider=provider_impl,
+            run_dir=run_dir_path,
+            target_metric=metric,
+            holdout_peek_limit=holdout_peek_limit,
+            early_stop_patience=early_stop_patience,
+            resume=resume,
+            quiet=quiet,
+        )
+    except Exception as e:
+        typer.echo(f"Error: {e}")
+        raise typer.Exit(code=1) from e
+
+    if json_output:
+        typer.echo(result.final_report.to_json())
+        return
+
+    _generate_reports_and_charts(result, strategy, program_path, run_dir_path, iterations, early_stop_patience, quiet)
+
+
+def _generate_reports_and_charts(
+    result: OrchestratorResult,
+    strategy: str,
+    program_path: Path,
+    run_dir_path: Path,
+    iterations: int,
+    early_stop_patience: int,
+    quiet: bool,
+) -> None:
+    """Generate reports, charts, and summary after an optimization run."""
+    strategy_path = settings.strategies_dir / f"{strategy}.py"
+    config_path = settings.configs_dir / f"{strategy}.yaml"
+    strategy_code = strategy_path.read_text(encoding="utf-8") if strategy_path.exists() else ""
+    config_yaml = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
+    program_text = program_path.read_text(encoding="utf-8") if program_path.exists() else ""
+
+    output_dir = run_dir_path / result.run_id
+    baseline_report = result.baseline_report
+
+    baseline_returns = getattr(baseline_report, "holdout_net_returns", None) if baseline_report else None
+    final_returns = result.final_report.holdout_net_returns
+    if (
+        final_returns is not None
+        and not final_returns.empty
+        and baseline_returns is not None
+        and not baseline_returns.empty
+    ):
+        benchmark_returns = getattr(result.final_report, "benchmark_returns", None)
+        benchmark_ticker = getattr(result.final_report, "benchmark_ticker", "SPY")
+        plot_equity_curves(
+            baseline_returns,
+            final_returns,
+            result.run_id,
+            output_dir,
+            benchmark_returns=benchmark_returns,
+            benchmark_ticker=benchmark_ticker,
+        )
+
+    mc_sharpes = getattr(result.final_report, "mc_sharpes", None)
+    if mc_sharpes is not None and mc_sharpes.size > 0:
+        plot_mc_histogram(
+            mc_sharpes,
+            result.final_report.observed_sharpe,
+            result.final_report.mc_sharpe_5th,
+            result.final_report.mc_sharpe_50th,
+            result.final_report.mc_sharpe_95th,
+            result.run_id,
+            output_dir,
+        )
+
+    if result.final_report.walk_forward_metrics:
+        plot_walk_forward_bars(
+            result.final_report.walk_forward_metrics,
+            result.run_id,
+            output_dir,
+        )
+
+    failure_summary = compile_failure_summary(output_dir)
+
+    if baseline_report is not None:
+        compile_strategy_report(
+            baseline_report=baseline_report,
+            final_report=result.final_report,
+            run_id=result.run_id,
+            output_dir=output_dir,
+            program_text=program_text,
+            config_yaml=config_yaml,
+            failure_summary=failure_summary,
+            strategy_code=strategy_code,
+        )
+
+    if result.early_stopped and not quiet:
+        console = Console()
+        console.print(
+            Panel(
+                f"[bold red]⚠ Run stopped early at iteration "
+                f"{result.early_stop_iteration}/{iterations}[/]\n"
+                f"No candidate passed all gates for "
+                f"{early_stop_patience} consecutive iterations.",
+                border_style="red",
+            )
+        )
+
+    report_path = output_dir / "strategy_report.md"
+    config_path = settings.configs_dir / f"{strategy}.yaml"
+    _render_rich_summary(
+        result,
+        iterations,
+        report_path if report_path.exists() else None,
+        config_path=config_path,
+    )
+
+
 def register_command(app: typer.Typer) -> None:
     @app.command()
     def run(
@@ -225,144 +396,17 @@ def register_command(app: typer.Typer) -> None:
         ),
     ) -> None:
         """Start the autonomous LLM-driven strategy optimization loop."""
-        configure_verbosity(quiet=quiet)
-        if not quiet:
-            console = Console()
-            console.print(
-                Panel(
-                    "[bold yellow]WARNING:[/] The default yfinance data provider is susceptible to "
-                    "survivorship bias (omitting delisted/bankrupt tickers from past universes).\n"
-                    "Verify performance against survivorship-free point-in-time data feeds before deploying live.",
-                    title="Quantitative Due Diligence Notice",
-                    border_style="yellow",
-                )
-            )
-
-        try:
-            metric = TargetMetric(target_metric)
-        except ValueError as err:
-            error_msg = f"Error: Unknown target metric '{target_metric}'. Use: sharpe, sortino, information_ratio."
-            typer.echo(error_msg)
-            raise typer.Exit(code=1) from err
-
-        from autobacktest.llm.litellm_provider import LiteLLMProvider
-        from autobacktest.llm.mock_provider import MockProvider
-
-        provider_impl: Any
-        if provider == "mock":
-            provider_impl = MockProvider()
-        else:
-            model_str = model or settings.llm_model
-            if provider and provider != "litellm" and "/" not in model_str:
-                model_str = f"{provider}/{model_str}"
-            provider_impl = LiteLLMProvider(
-                model=model_str,
-                temperature=settings.llm_temperature,
-                max_tokens=settings.llm_max_tokens,
-            )
-
-        program_path = Path(program)
-        run_dir_path = Path(run_dir) if run_dir else settings.run_dir
-
-        try:
-            result: OrchestratorResult = run_optimization(
-                program_path=program_path,
-                strategy_name=strategy,
-                iterations=iterations,
-                provider=provider_impl,
-                run_dir=run_dir_path,
-                target_metric=metric,
-                holdout_peek_limit=holdout_peek_limit,
-                early_stop_patience=early_stop_patience,
-                resume=resume,
-                quiet=quiet,
-            )
-        except Exception as e:
-            typer.echo(f"Error: {e}")
-            raise typer.Exit(code=1) from e
-
-        if json_output:
-            typer.echo(result.final_report.to_json())
-            return
-
-        strategy_path = settings.strategies_dir / f"{strategy}.py"
-        config_path = settings.configs_dir / f"{strategy}.yaml"
-        strategy_code = strategy_path.read_text(encoding="utf-8") if strategy_path.exists() else ""
-        config_yaml = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
-        program_text = program_path.read_text(encoding="utf-8") if program_path.exists() else ""
-
-        output_dir = run_dir_path / result.run_id
-        baseline_report = result.baseline_report
-
-        baseline_returns = getattr(baseline_report, "holdout_net_returns", None) if baseline_report else None
-        final_returns = result.final_report.holdout_net_returns
-        if (
-            final_returns is not None
-            and not final_returns.empty
-            and baseline_returns is not None
-            and not baseline_returns.empty
-        ):
-            benchmark_returns = getattr(result.final_report, "benchmark_returns", None)
-            benchmark_ticker = getattr(result.final_report, "benchmark_ticker", "SPY")
-            plot_equity_curves(
-                baseline_returns,
-                final_returns,
-                result.run_id,
-                output_dir,
-                benchmark_returns=benchmark_returns,
-                benchmark_ticker=benchmark_ticker,
-            )
-
-        mc_sharpes = getattr(result.final_report, "mc_sharpes", None)
-        if mc_sharpes is not None and mc_sharpes.size > 0:
-            plot_mc_histogram(
-                mc_sharpes,
-                result.final_report.observed_sharpe,
-                result.final_report.mc_sharpe_5th,
-                result.final_report.mc_sharpe_50th,
-                result.final_report.mc_sharpe_95th,
-                result.run_id,
-                output_dir,
-            )
-
-        if result.final_report.walk_forward_metrics:
-            plot_walk_forward_bars(
-                result.final_report.walk_forward_metrics,
-                result.run_id,
-                output_dir,
-            )
-
-        failure_summary = compile_failure_summary(output_dir)
-
-        if baseline_report is not None:
-            compile_strategy_report(
-                baseline_report=baseline_report,
-                final_report=result.final_report,
-                run_id=result.run_id,
-                output_dir=output_dir,
-                program_text=program_text,
-                config_yaml=config_yaml,
-                failure_summary=failure_summary,
-                strategy_code=strategy_code,
-            )
-
-        if result.early_stopped and not quiet:
-            console = Console()
-            console.print(
-                Panel(
-                    f"[bold red]⚠ Run stopped early at iteration "
-                    f"{result.early_stop_iteration}/{iterations}[/]\n"
-                    f"No candidate passed all gates for "
-                    f"{early_stop_patience} consecutive iterations.",
-                    border_style="red",
-                )
-            )
-
-        report_path = output_dir / "strategy_report.md"
-        config_path = settings.configs_dir / f"{strategy}.yaml"
-        _render_rich_summary(
-            result,
-            iterations,
-            report_path if report_path.exists() else None,
-            config_path=config_path,
+        _run_impl(
+            program=program,
+            strategy=strategy,
+            iterations=iterations,
+            provider=provider,
+            model=model,
+            run_dir=run_dir,
+            target_metric=target_metric,
+            resume=resume,
+            holdout_peek_limit=holdout_peek_limit,
+            early_stop_patience=early_stop_patience,
+            json_output=json_output,
+            quiet=quiet,
         )

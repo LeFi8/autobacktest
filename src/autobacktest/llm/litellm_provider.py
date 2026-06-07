@@ -59,7 +59,7 @@ def _compute_run_max_tokens(
     buffer = 4096
     dynamic_max = context_window - prompt_tokens - buffer
     cap = instance_max_tokens if instance_max_tokens is not None and instance_max_tokens != env_limit else env_limit
-    return max(1, min(dynamic_max, cap))
+    return max(1, min(dynamic_max, cap))  # type: ignore[no-any-return]
 
 
 def _extract_clean_json(content: str) -> str:
@@ -272,4 +272,3 @@ class LiteLLMProvider(LLMProvider):
                 retryable=retryable,
                 finish_reason=finish_reason,
             ) from e
-

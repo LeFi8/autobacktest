@@ -199,15 +199,23 @@ def init_strategy_impl(
     universe = _prompt_universe_tickers()
     benchmark = typer.prompt("Enter benchmark asset ticker", default="SPY").strip().upper()
     mdd = _prompt_valid_float(
-        "Max drawdown limit (0.0 to 1.0)", "0.20", 0.0, 1.0,
+        "Max drawdown limit (0.0 to 1.0)",
+        "0.20",
+        0.0,
+        1.0,
         "Error: Drawdown limit must be between 0.0 and 1.0.",
     )
     turnover = _prompt_valid_float(
-        "Annualized turnover limit (e.g. 2.0)", "2.0", 1e-9, float("inf"),
+        "Annualized turnover limit (e.g. 2.0)",
+        "2.0",
+        1e-9,
+        float("inf"),
         "Error: Turnover limit must be greater than 0.0.",
     )
     momentum_lookback = _prompt_valid_int(
-        "Momentum score lookback window (months)", "12", 1,
+        "Momentum score lookback window (months)",
+        "12",
+        1,
         "Error: Momentum lookback must be at least 1.",
     )
 
@@ -283,4 +291,3 @@ def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFra
     typer.echo(f"\n[Success] Strategy '{strategy_name}' initialized!")
     typer.echo(f"  Config:   {config_file.resolve()}")
     typer.echo(f"  Strategy: {strategy_file.resolve()}")
-

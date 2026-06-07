@@ -148,6 +148,37 @@ def select(
     Returns:
         GateResult: Decision outcome. The holdout is **never** consulted.
     """
+    dd_limit, turnover_limit, pbo_limit, min_improvement, min_return_ratio, require_dsr = _resolve_select_config(
+        config,
+        dd_limit,
+        turnover_limit,
+        pbo_limit,
+        min_improvement,
+        min_return_ratio,
+        require_dsr_non_degradation,
+    )
+
+    result = _check_hard_gates(report, dd_limit, turnover_limit, pbo_limit)
+    if not result.accepted:
+        return result
+
+    result = _check_soft_gates(report, baseline, target_metric, min_improvement, min_return_ratio, require_dsr)
+    if not result.accepted:
+        return result
+
+    return GateResult(accepted=True)
+
+
+def _resolve_select_config(
+    config: Any,
+    dd_limit: float | None,
+    turnover_limit: float | None,
+    pbo_limit: float | None,
+    min_improvement: float | None,
+    min_return_ratio: float | None,
+    require_dsr_non_degradation: bool | None,
+) -> tuple[float, float, float | None, float, float, bool]:
+    """Resolve select gate parameters from explicit args or config object."""
     dd_limit = dd_limit if dd_limit is not None else _get_config_val(config, "max_drawdown_limit", 0.20)
     turnover_limit = turnover_limit if turnover_limit is not None else _get_config_val(config, "turnover_limit", 2.0)
     pbo_limit = pbo_limit if pbo_limit is not None else _get_config_val(config, "pbo_limit", None)
@@ -161,8 +192,16 @@ def select(
         require_dsr = require_dsr_non_degradation
     else:
         require_dsr = _get_config_val(config, "require_dsr_non_degradation", True)
+    return dd_limit, turnover_limit, pbo_limit, min_improvement, min_return_ratio, require_dsr
 
-    # --- Hard constraints on in_sample_metrics ---
+
+def _check_hard_gates(
+    report: EvaluationReport,
+    dd_limit: float,
+    turnover_limit: float,
+    pbo_limit: float | None,
+) -> GateResult:
+    """Check hard constraints: drawdown, regime, turnover, PBO."""
     max_dd = report.in_sample_metrics.max_drawdown
     max_dd_passed = not (math.isnan(max_dd) or max_dd > dd_limit)
 
@@ -177,15 +216,9 @@ def select(
 
     _write_gates_passed(
         report,
-        {
-            "max_drawdown": max_dd_passed,
-            "turnover": turnover_passed,
-            "regimes": regime_passed,
-            "pbo": pbo_passed,
-        },
+        {"max_drawdown": max_dd_passed, "turnover": turnover_passed, "regimes": regime_passed, "pbo": pbo_passed},
     )
 
-    # 1. Max Drawdown
     if not max_dd_passed:
         if math.isnan(max_dd):
             msg = "In-sample max drawdown is NaN."
@@ -195,14 +228,12 @@ def select(
         report.rejection_reason = msg
         return GateResult(accepted=False, reason=msg, failed_gate="max_drawdown")
 
-    # 2. Regime stress tests
     if not regime_passed:
         msg = "Strategy failed to pass historical crisis regime drawdown stress test."
         report.is_accepted = False
         report.rejection_reason = msg
         return GateResult(accepted=False, reason=msg, failed_gate="regimes")
 
-    # 3. Turnover
     if not turnover_passed:
         if math.isnan(turnover):
             msg = "In-sample turnover is NaN."
@@ -212,59 +243,100 @@ def select(
         report.rejection_reason = msg
         return GateResult(accepted=False, reason=msg, failed_gate="turnover")
 
-    # 4. PBO limit check
     if not pbo_passed:
         msg = f"In-sample PBO {report.pbo:.4f} exceeds limit of {pbo_limit:.4f}."
         report.is_accepted = False
         report.rejection_reason = msg
         return GateResult(accepted=False, reason=msg, failed_gate="pbo")
 
-    # 5. Target Metric Improvement on in-sample aggregate
+    return GateResult(accepted=True)
+
+
+def _check_soft_gates(
+    report: EvaluationReport,
+    baseline: EvaluationReport | None,
+    target_metric: TargetMetric,
+    min_improvement: float,
+    min_return_ratio: float,
+    require_dsr: bool,
+) -> GateResult:
+    """Check soft constraints: metric improvement, return floor, DSR non-degradation."""
     if baseline is not None:
-        candidate_val = _get_in_sample_metric_val(report, target_metric)
-        baseline_val = _get_in_sample_metric_val(baseline, target_metric)
+        result = _check_metric_improvement(report, baseline, target_metric, min_improvement)
+        if not result.accepted:
+            return result
 
-        if math.isnan(candidate_val) or math.isnan(baseline_val) or candidate_val <= baseline_val + min_improvement:
-            msg = (
-                f"Candidate in-sample {target_metric.value} ({candidate_val:.4f}) does not "
-                f"improve upon baseline in-sample {target_metric.value} ({baseline_val:.4f}) "
-                f"by at least {min_improvement:.4f}."
-            )
-            report.is_accepted = False
-            report.rejection_reason = msg
-            return GateResult(accepted=False, reason=msg, failed_gate="target_metric_improvement")
+        result = _check_return_floor(report, baseline, min_return_ratio)
+        if not result.accepted:
+            return result
 
-    # 6. Annualized Return Floor (must maintain min_return_ratio of baseline return)
-    if baseline is not None:
-        cand_ret = report.in_sample_metrics.annualized_return
-        base_ret = baseline.in_sample_metrics.annualized_return
-        if math.isnan(cand_ret):
-            msg = "Candidate in-sample annualized return is NaN."
-            report.is_accepted = False
-            report.rejection_reason = msg
-            return GateResult(accepted=False, reason=msg, failed_gate="min_return_ratio")
-        if base_ret > 0 and cand_ret < base_ret * min_return_ratio:
-            msg = (
-                f"Candidate in-sample annualized return ({cand_ret:.4f}) is below "
-                f"{min_return_ratio:.0%} of baseline annualized return ({base_ret:.4f})."
-            )
-            report.is_accepted = False
-            report.rejection_reason = msg
-            return GateResult(accepted=False, reason=msg, failed_gate="min_return_ratio")
-
-    # 7. DSR Non-Degradation (always-on by default)
     if require_dsr and baseline is not None:
-        eps = 1e-6
-        if report.deflated_sharpe < baseline.deflated_sharpe - eps:
-            msg = (
-                f"Candidate in-sample DSR ({report.deflated_sharpe:.6f}) degrades below "
-                f"baseline in-sample DSR ({baseline.deflated_sharpe:.6f}) by more than {eps}."
-            )
-            report.is_accepted = False
-            report.rejection_reason = msg
-            return GateResult(accepted=False, reason=msg, failed_gate="dsr_non_degradation")
+        result = _check_dsr_non_degradation(report, baseline)
+        if not result.accepted:
+            return result
 
-    # All gates passed
+    return GateResult(accepted=True)
+
+
+def _check_metric_improvement(
+    report: EvaluationReport,
+    baseline: EvaluationReport,
+    target_metric: TargetMetric,
+    min_improvement: float,
+) -> GateResult:
+    """Check candidate metric improves over baseline by at least min_improvement."""
+    candidate_val = _get_in_sample_metric_val(report, target_metric)
+    baseline_val = _get_in_sample_metric_val(baseline, target_metric)
+    if math.isnan(candidate_val) or math.isnan(baseline_val) or candidate_val <= baseline_val + min_improvement:
+        msg = (
+            f"Candidate in-sample {target_metric.value} ({candidate_val:.4f}) does not "
+            f"improve upon baseline in-sample {target_metric.value} ({baseline_val:.4f}) "
+            f"by at least {min_improvement:.4f}."
+        )
+        report.is_accepted = False
+        report.rejection_reason = msg
+        return GateResult(accepted=False, reason=msg, failed_gate="target_metric_improvement")
+    return GateResult(accepted=True)
+
+
+def _check_return_floor(
+    report: EvaluationReport,
+    baseline: EvaluationReport,
+    min_return_ratio: float,
+) -> GateResult:
+    """Check candidate return is at least min_return_ratio of baseline."""
+    cand_ret = report.in_sample_metrics.annualized_return
+    base_ret = baseline.in_sample_metrics.annualized_return
+    if math.isnan(cand_ret):
+        msg = "Candidate in-sample annualized return is NaN."
+        report.is_accepted = False
+        report.rejection_reason = msg
+        return GateResult(accepted=False, reason=msg, failed_gate="min_return_ratio")
+    if base_ret > 0 and cand_ret < base_ret * min_return_ratio:
+        msg = (
+            f"Candidate in-sample annualized return ({cand_ret:.4f}) is below "
+            f"{min_return_ratio:.0%} of baseline annualized return ({base_ret:.4f})."
+        )
+        report.is_accepted = False
+        report.rejection_reason = msg
+        return GateResult(accepted=False, reason=msg, failed_gate="min_return_ratio")
+    return GateResult(accepted=True)
+
+
+def _check_dsr_non_degradation(
+    report: EvaluationReport,
+    baseline: EvaluationReport,
+) -> GateResult:
+    """Check candidate DSR does not degrade below baseline DSR."""
+    eps = 1e-6
+    if report.deflated_sharpe < baseline.deflated_sharpe - eps:
+        msg = (
+            f"Candidate in-sample DSR ({report.deflated_sharpe:.6f}) degrades below "
+            f"baseline in-sample DSR ({baseline.deflated_sharpe:.6f}) by more than {eps}."
+        )
+        report.is_accepted = False
+        report.rejection_reason = msg
+        return GateResult(accepted=False, reason=msg, failed_gate="dsr_non_degradation")
     return GateResult(accepted=True)
 
 

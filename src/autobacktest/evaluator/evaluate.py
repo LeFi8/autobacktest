@@ -173,7 +173,6 @@ def _load_evaluation_data(
     return _fetch_and_join_prices(tickers, benchmark_ticker, regime_bench_ticker, start_date, end_date)
 
 
-
 def _generate_wf_weights(
     prices: pd.DataFrame,
     generate_signals_fn: Any,
