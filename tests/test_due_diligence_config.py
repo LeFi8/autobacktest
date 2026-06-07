@@ -53,8 +53,8 @@ def test_cscv_pbo_length_safety():
     # Mock historical returns matrix returns empty dataframe (meaning only candidate is used)
     ledger.fetch_historical_returns.return_value = (pd.DataFrame(), [])
 
-    # Run _deflate with cscv_blocks=10. Since 5 < 20 (2 * cscv_blocks), it should skip and set PBO to 0.0
+    # Run _deflate with cscv_blocks=10. Since 5 < 20 (2 * cscv_blocks), it should skip and set PBO to None
     with patch("autobacktest.evaluator.cscv.calculate_pbo") as mock_calc_pbo:
         _deflate(report, short_returns, ledger, cscv_blocks=10)
-        assert report.pbo == 0.0
+        assert report.pbo is None
         mock_calc_pbo.assert_not_called()

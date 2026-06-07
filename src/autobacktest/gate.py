@@ -80,6 +80,7 @@ def select(
     min_improvement: float | None = None,
     require_dsr_non_degradation: bool | None = None,
     min_return_ratio: float | None = None,
+    pbo_limit: float | None = None,
     config: Any = None,
 ) -> GateResult:
     """In-sample selection gate — evaluated on every candidate.
@@ -88,12 +89,13 @@ def select(
     1. Drawdown: ``in_sample_metrics.max_drawdown <= dd_limit``
     2. Regime tests: ``regime_passed`` is True
     3. Turnover: ``in_sample_metrics.turnover <= turnover_limit``
+    4. PBO limit: ``report.pbo <= pbo_limit`` (if set)
 
     If all pass, tie-breaker (only when baseline is present):
-    4. Target metric improvement on the in-sample aggregate
+    5. Target metric improvement on the in-sample aggregate
        (``candidate > baseline + min_improvement``)
-    5. Annualized return must be at least ``min_return_ratio`` of baseline return.
-    6. DSR non-degradation: always-on when baseline is present
+    6. Annualized return must be at least ``min_return_ratio`` of baseline return.
+    7. DSR non-degradation: always-on when baseline is present
        (config can disable via ``require_dsr_non_degradation: false``).
 
     Returns:
@@ -101,6 +103,7 @@ def select(
     """
     dd_limit = dd_limit if dd_limit is not None else _get_config_val(config, "max_drawdown_limit", 0.20)
     turnover_limit = turnover_limit if turnover_limit is not None else _get_config_val(config, "turnover_limit", 2.0)
+    pbo_limit = pbo_limit if pbo_limit is not None else _get_config_val(config, "pbo_limit", None)
     min_improvement = (
         min_improvement if min_improvement is not None else _get_config_val(config, "min_improvement", 0.0)
     )
@@ -121,12 +124,17 @@ def select(
     turnover = report.in_sample_metrics.turnover
     turnover_passed = not (math.isnan(turnover) or turnover > turnover_limit)
 
+    pbo_passed = True
+    if pbo_limit is not None and report.pbo is not None:
+        pbo_passed = not (math.isnan(report.pbo) or report.pbo > pbo_limit)
+
     _write_gates_passed(
         report,
         {
             "max_drawdown": max_dd_passed,
             "turnover": turnover_passed,
             "regimes": regime_passed,
+            "pbo": pbo_passed,
         },
     )
 
@@ -157,7 +165,14 @@ def select(
         report.rejection_reason = msg
         return GateResult(accepted=False, reason=msg, failed_gate="turnover")
 
-    # 4. Target Metric Improvement on in-sample aggregate
+    # 4. PBO limit check
+    if not pbo_passed:
+        msg = f"In-sample PBO {report.pbo:.4f} exceeds limit of {pbo_limit:.4f}."
+        report.is_accepted = False
+        report.rejection_reason = msg
+        return GateResult(accepted=False, reason=msg, failed_gate="pbo")
+
+    # 5. Target Metric Improvement on in-sample aggregate
     if baseline is not None:
         candidate_val = _get_in_sample_metric_val(report, target_metric)
         baseline_val = _get_in_sample_metric_val(baseline, target_metric)
@@ -172,7 +187,7 @@ def select(
             report.rejection_reason = msg
             return GateResult(accepted=False, reason=msg, failed_gate="target_metric_improvement")
 
-    # 5. Annualized Return Floor (must maintain min_return_ratio of baseline return)
+    # 6. Annualized Return Floor (must maintain min_return_ratio of baseline return)
     if baseline is not None:
         cand_ret = report.in_sample_metrics.annualized_return
         base_ret = baseline.in_sample_metrics.annualized_return
@@ -190,7 +205,7 @@ def select(
             report.rejection_reason = msg
             return GateResult(accepted=False, reason=msg, failed_gate="min_return_ratio")
 
-    # 6. DSR Non-Degradation (always-on by default)
+    # 7. DSR Non-Degradation (always-on by default)
     if require_dsr and baseline is not None:
         eps = 1e-6
         if report.deflated_sharpe < baseline.deflated_sharpe - eps:
@@ -303,6 +318,7 @@ def accept(
     min_improvement: float | None = None,
     require_dsr_non_degradation: bool | None = None,
     min_return_ratio: float | None = None,
+    pbo_limit: float | None = None,
     config: Any = None,
 ) -> GateResult:
     """Backward-compatible wrapper: composes ``select`` + ``confirm``.
@@ -324,6 +340,7 @@ def accept(
         min_improvement=min_improvement,
         require_dsr_non_degradation=require_dsr_non_degradation,
         min_return_ratio=min_return_ratio,
+        pbo_limit=pbo_limit,
         config=config,
     )
     if not sel.accepted:

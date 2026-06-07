@@ -337,6 +337,43 @@ class LedgerStore:
         matrix = pd.concat(series_list, axis=1)
         return matrix, sharpes
 
+    def fetch_run_returns(
+        self,
+        run_id: str,
+        accepted_only: bool = False,
+    ) -> tuple[pd.Series | None, pd.DataFrame]:
+        """Fetch historical returns for a run.
+
+        Returns:
+            Tuple of (benchmark_returns, alternative_returns_df).
+            benchmark_returns is iteration=0.
+            alternative_returns_df has columns named by iteration/strategy.
+        """
+        query = "SELECT iteration, accepted, returns_blob, strategy_name, id FROM attempts WHERE run_id = ?"
+        rows = self._conn().execute(query, (run_id,)).fetchall()
+        if not rows:
+            return None, pd.DataFrame()
+
+        benchmark: pd.Series | None = None
+        alternatives: list[pd.Series] = []
+
+        for iteration, accepted, blob, strategy_name, attempt_id in rows:
+            s = _deserialize_returns(bytes(blob))
+            if iteration == 0:
+                s.name = f"{strategy_name}_baseline_id{attempt_id}"
+                benchmark = s
+            else:
+                if accepted_only and not accepted:
+                    continue
+                s.name = f"{strategy_name}_iter{iteration}_id{attempt_id}"
+                alternatives.append(s)
+
+        if not alternatives:
+            return benchmark, pd.DataFrame()
+
+        df_alt = pd.concat(alternatives, axis=1)
+        return benchmark, df_alt
+
     def fetch_holdout_history(
         self,
         dataset_hash: str,

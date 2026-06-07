@@ -554,3 +554,47 @@ params:
 
     # invalid YAML → empty fingerprint
     assert results[1]["config_fingerprint"] == {}
+
+
+def test_fetch_run_returns(tmp_path: Path) -> None:
+    """fetch_run_returns retrieves benchmark and alternative return series for a run."""
+    db = tmp_path / "ledger.db"
+    store = LedgerStore(db)
+
+    # 1. Test empty db
+    bench, alts = store.fetch_run_returns("nonexistent-run")
+    assert bench is None
+    assert alts.empty
+
+    # 2. Add baseline and two iterations
+    original_bench = _make_returns(seed=0)
+    original_iter1 = _make_returns(seed=1)
+    original_iter2 = _make_returns(seed=2)
+
+    _record(store, run_id="run-x", iteration=0, strategy_name="haa", returns=original_bench, accepted=True)
+    _record(store, run_id="run-x", iteration=1, strategy_name="haa", returns=original_iter1, accepted=True)
+    _record(store, run_id="run-x", iteration=2, strategy_name="haa", returns=original_iter2, accepted=False)
+
+    # Fetch without filter
+    bench, alts = store.fetch_run_returns("run-x", accepted_only=False)
+    assert bench is not None
+    assert bench.name.startswith("haa_baseline_id")
+    assert alts.shape[1] == 2
+
+    col1 = next(c for c in alts.columns if c.startswith("haa_iter1_id"))
+
+    pd.testing.assert_series_equal(
+        bench.reset_index(drop=True), original_bench.reset_index(drop=True), check_names=False
+    )
+    pd.testing.assert_series_equal(
+        alts[col1].reset_index(drop=True), original_iter1.reset_index(drop=True), check_names=False
+    )
+
+    # Fetch accepted only
+    bench, alts_accepted = store.fetch_run_returns("run-x", accepted_only=True)
+    assert bench is not None
+    assert alts_accepted.shape[1] == 1
+    assert any(c.startswith("haa_iter1_id") for c in alts_accepted.columns)
+    assert not any(c.startswith("haa_iter2_id") for c in alts_accepted.columns)
+
+    store.close()

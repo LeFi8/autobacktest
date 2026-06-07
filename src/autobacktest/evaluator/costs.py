@@ -19,6 +19,9 @@ def calculate_turnover_and_costs(
     *,
     asset_returns: pd.DataFrame | None = None,
     borrow_cost_bps: float = 100.0,
+    adaptive_slippage: bool = False,
+    slippage_vol_window: int = 21,
+    slippage_vol_cap: float = 3.0,
 ) -> tuple[pd.Series, pd.Series, float]:
     """Calculate net returns after transaction costs, borrowing costs, and annualized turnover.
 
@@ -42,9 +45,6 @@ def calculate_turnover_and_costs(
     if daily_returns.empty or daily_weights.empty:
         return daily_returns, (1.0 + daily_returns).cumprod(), 0.0
 
-    # Convert bps to decimals
-    cost_per_trade_value = (commission_bps + spread_bps) / 10000.0
-
     # Calculate weight drift due to daily asset returns
     # drift_weights_t = weights_{t-1} * (1 + R_t) / (1 + Rp_t)
     asset_returns = asset_returns.loc[prices.index] if asset_returns is not None else prices.pct_change().fillna(0.0)
@@ -64,8 +64,23 @@ def calculate_turnover_and_costs(
     # Sum of trades across assets at each day
     daily_trade_volume = trades.sum(axis=1)
 
+    # Convert bps to decimals
+    commission_rate = commission_bps / 10000.0
+    spread_rate = spread_bps / 10000.0
+
+    if adaptive_slippage:
+        vol = asset_returns.rolling(slippage_vol_window, min_periods=slippage_vol_window).std()
+        vol_median = vol.median(axis=0)
+        mult = vol.div(vol_median.replace(0.0, np.nan), axis=1).clip(lower=1.0, upper=slippage_vol_cap).fillna(1.0)
+        spread_cost = (trades * spread_rate * mult).sum(axis=1)
+        commission_cost = daily_trade_volume * commission_rate
+        linear_costs = spread_cost + commission_cost
+    else:
+        cost_per_trade_value = commission_rate + spread_rate
+        linear_costs = daily_trade_volume * cost_per_trade_value
+
     # Linear fee + market impact (quadratic term calculated per asset)
-    transaction_costs = daily_trade_volume * cost_per_trade_value + impact_coef * (trades**2).sum(axis=1)
+    transaction_costs = linear_costs + impact_coef * (trades**2).sum(axis=1)
 
     # Calculate short borrowing cost
     # w_{i,t} is the weight of asset i at day t.
