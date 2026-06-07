@@ -187,4 +187,3 @@ def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFra
     typer.echo(f"\n[Success] Strategy '{strategy_name}' initialized!")
     typer.echo(f"  Config:   {config_file.resolve()}")
     typer.echo(f"  Strategy: {strategy_file.resolve()}")
-

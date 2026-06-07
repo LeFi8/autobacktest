@@ -1,6 +1,5 @@
 import numpy as np
 import pandas as pd
-import pytest
 
 from autobacktest.evaluator.evaluate import evaluate_strategy_detailed
 from autobacktest.evaluator.report import EvaluationReport

@@ -223,6 +223,356 @@ def _text_block(text: str, cache: bool = False) -> dict[str, Any]:
     return block
 
 
+def _format_previous_attempt_hint(error_code: str, detail: str) -> str:
+    if error_code == "lookahead_detected":
+        return (
+            "\nLookahead bias was detected via a shifted-rerun test, "
+            "meaning past signals changed when future price rows were appended. "
+            "The 3 common causes are:\n"
+            "  1. Calculating statistics on the full sample "
+            "(like `.mean()`, `.std()`, `.min()`, `.max()`, or `.rank(pct=True)`) "
+            "on the entire column instead of a trailing/expanding window.\n"
+            "  2. Missing or negative shifts "
+            "(e.g., using `.shift(-1)` or not shifting lookbacks/features by at least `.shift(1)`).\n"
+            "  3. Using `center=True` in rolling calculations."
+        )
+    elif error_code in ("ast_line_limit_exceeded", "ast_cyclomatic_complexity_exceeded"):
+        return (
+            "\nTo resolve function length or cyclomatic complexity limit failures, "
+            "you must extract logic into top-level helper functions, "
+            "vectorize operations instead of branching "
+            "(e.g. using loops or nested if-statements), and keep the core logic identical."
+        )
+    elif error_code in ("ast_blocked_import", "undefined_name", "config_schema_invalid"):
+        alt = ""
+        if error_code == "config_schema_invalid":
+            alt = "Strategy-specific parameters must go under the 'params' dictionary at the root."
+        elif error_code == "ast_blocked_import":
+            alt = (
+                "Use f-strings or concatenation instead of .format(), and import only "
+                "from pandas, numpy, math, typing, scipy, dataclasses, collections, "
+                "itertools, functools, decimal, statistics, numbers, json."
+            )
+        elif error_code == "undefined_name":
+            alt = "Ensure all names are defined, imported (e.g., 'from typing import Any'), or passed in config/prices."
+        return f'\nError detail: "{detail}"\nAllowed alternative: {alt}'
+    elif error_code == "smoke_test_failed":
+        return (
+            "\nSmoke test execution failed. This usually means your code raised an exception at runtime "
+            "(e.g., KeyError, IndexError, ValueError), or it returned invalid weight outputs "
+            "(e.g. weights exceeding the sum <= 1.0 limit, incorrect shapes, or containing NaN values). "
+            "Ensure all operations handle missing or NaN data gracefully, avoid dividing by zero, "
+            "check shape consistency, and verify that portfolio weights sum to at most 1.0 at every step."
+        )
+    elif error_code == "import_failed":
+        return (
+            "\nImport failed. The Python interpreter failed to load your strategy file. "
+            "This is typically caused by syntax errors, invalid syntax in type annotations, or "
+            "code crashing at import time. Double-check your syntax and ensure the code compiles "
+            "without any side effects during import."
+        )
+    elif error_code == "signature_mismatch":
+        return (
+            "\nSignature mismatch. Your strategy must define a function with the exact signature:\n"
+            "  `def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFrame:`\n"
+            "Ensure the function is exported, name is spelled correctly, and parameters match."
+        )
+    return ""
+
+
+def _format_evaluation_report(context: AgentContext) -> str:
+    if context.evaluation_report is None:
+        return "First iteration (no prior evaluation report exists)."
+
+    rep = context.evaluation_report
+    try:
+        m = rep.in_sample_metrics
+        wf_span = f"{m.start_date} → {m.end_date}"
+        wf_count = len(rep.walk_forward_metrics)
+        folds_detail = ""
+        if wf_count > 1:
+            fold_sharpes = [f.sharpe_ratio for f in rep.walk_forward_metrics]
+            min_s = min(fold_sharpes)
+            max_s = max(fold_sharpes)
+            folds_detail = f"\n  Per-fold Sharpe:   {min_s:.4f} - {max_s:.4f} (across {wf_count} windows)"
+        return (
+            f"In-Sample Walk-Forward Aggregate (selection basis):\n"
+            f"  Window:            {wf_span}\n"
+            f"  Sharpe:            {m.sharpe_ratio:.4f}\n"
+            f"  Sortino:           {m.sortino_ratio:.4f}\n"
+            f"  Information Ratio: {m.information_ratio:.4f}\n"
+            f"  Max Drawdown:      {m.max_drawdown:.4f}\n"
+            f"  Turnover:          {m.turnover:.4f}"
+            f"{folds_detail}\n"
+            f"  DSR (selection):   {rep.deflated_sharpe:.4f}\n"
+            f"  Effective Trials:  {rep.effective_trials}\n"
+            f"  Regime tests:      {'PASS' if rep.regime_passed else 'FAIL'}\n"
+            f"\n"
+            f"> **OOS holdout** is reserved as a **budgeted confirmation gate** — "
+            f"it is never shown here and cannot be optimised against."
+        )
+    except Exception:
+        return str(context.evaluation_report)
+
+
+def _attempt_fmt(val: Any, default: float = 0.0) -> str:
+    try:
+        return f"{float(val if val is not None else default):.4f}"
+    except (TypeError, ValueError):
+        return "-"
+
+
+def _attempt_outcome(r: dict[str, Any]) -> str:
+    if r.get("committed"):
+        return "✓ committed"
+    if r.get("accepted"):
+        return "✓ accepted"
+    reason = r.get("rejection_reason") or ""
+    return f"✗ {str(reason)[:30]}"
+
+
+def _attempt_fingerprint_repr(r: dict[str, Any]) -> str:
+    fp = r.get("config_fingerprint", {})
+    s = str(fp)
+    return s[:60] + "..." if len(s) > 60 else s
+
+
+def _attempt_ho_flag(r: dict[str, Any]) -> str:
+    if r.get("holdout_confirmed"):
+        return "✓ HO"
+    return ""
+
+
+def _format_attempt_history(context: AgentContext) -> str:
+    if not context.attempt_history:
+        return ""
+
+    committed_rows = [r for r in context.attempt_history if r.get("committed")]
+    non_committed_rows = [r for r in context.attempt_history if not r.get("committed")]
+    total_non_committed = len(non_committed_rows)
+    omitted_count = max(0, total_non_committed - 25)
+    displayed_non_committed = non_committed_rows[-25:] if omitted_count > 0 else non_committed_rows
+    rows_to_render = committed_rows + displayed_non_committed
+
+    header = "| iter | outcome | target | DSR | regime | reason | config | HO |"
+    separator = "|------|---------|--------|-----|--------|--------|--------|-----|"
+    table_lines = [header, separator]
+    for r in rows_to_render:
+        rejection_reason = r.get("rejection_reason") or None
+        reason_col = "-" if (r.get("committed") or rejection_reason is None) else str(rejection_reason)[:30]
+        row = (
+            f"| {r.get('iteration', '')} "
+            f"| {_attempt_outcome(r)} "
+            f"| {_attempt_fmt(r.get('target_metric_value'))} "
+            f"| {_attempt_fmt(r.get('deflated_sharpe'))} "
+            f"| {'pass' if r.get('regime_passed') else ('FAIL' if 'regime_passed' in r else '-')} "
+            f"| {reason_col} "
+            f"| {_attempt_fingerprint_repr(r)} "
+            f"| {_attempt_ho_flag(r)} |"
+        )
+        table_lines.append(row)
+
+    table_str = "\n".join(table_lines)
+    omit_note = ""
+    if omitted_count > 0:
+        total_non_committed_shown = len(displayed_non_committed)
+        omit_note = (
+            f"\n(showing {total_non_committed_shown + len(committed_rows)} of "
+            f"{len(context.attempt_history)} total — oldest non-committed omitted)"
+        )
+    return f"\n## Attempt History\n{table_str}{omit_note}\n"
+
+
+def _format_previous_validation(attempt: dict[str, Any], lines: list[str]) -> None:
+    error_code = attempt.get("error_code", "")
+    detail = attempt.get("detail", "")
+    lines.append(f"**Error:** `{error_code}`")
+    lines.append(f"**Detail:** {detail}")
+    if error_code == "lookahead_detected":
+        lines.append(
+            "**Explanation:** `lookahead_detected` means past signals changed when future "
+            "price rows were appended. The most common causes are:\n"
+            "  1. Full-sample normalization: `(x - x.mean()) / x.std()` or `.rank(pct=True)` "
+            "over the whole column — future rows shift the mean/rank for ALL past dates.\n"
+            "  2. Negative shifts: `.shift(-n)` looks forward in time.\n"
+            "  3. Any statistic computed over the full history at signal generation time.\n"
+            "Fix: replace whole-column statistics with `rolling(N).mean()` / `rolling(N).std()` "
+            "so each signal only sees data up to time t. This is a hard disqualifier."
+        )
+    code = attempt.get("candidate_strategy_code", "")
+    config = attempt.get("candidate_config_yaml", "")
+    if code:
+        lines.append(f"\n**Failed strategy code:**\n```python\n{code}\n```")
+    if config:
+        lines.append(f"\n**Failed config:**\n```yaml\n{config}\n```")
+
+
+def _format_previous_diversity_config(attempt: dict[str, Any], lines: list[str]) -> None:
+    detail = attempt.get("detail", "")
+    lines.append(f"**Detail:** {detail}")
+    config = attempt.get("candidate_config_yaml", "")
+    if config:
+        lines.append(f"\n**Rejected config:**\n```yaml\n{config}\n```")
+
+
+def _format_previous_eval_error(attempt: dict[str, Any], lines: list[str]) -> None:
+    detail = attempt.get("detail", "")
+    lines.append(f"**Error:** {detail}")
+    code = attempt.get("candidate_strategy_code", "")
+    config = attempt.get("candidate_config_yaml", "")
+    if code:
+        lines.append(f"\n**Failed strategy code:**\n```python\n{code}\n```")
+    if config:
+        lines.append(f"\n**Failed config:**\n```yaml\n{config}\n```")
+
+
+def _format_previous_diversity_returns(attempt: dict[str, Any], lines: list[str]) -> None:
+    detail = attempt.get("detail", "")
+    lines.append(f"**Detail:** {detail}")
+    metrics = attempt.get("candidate_metrics", {})
+    if metrics:
+        lines.append("**Observed metrics:**")
+        for k, v in metrics.items():
+            lines.append(f"  - {k}: {v}")
+    config = attempt.get("candidate_config_yaml", "")
+    if config:
+        lines.append(f"\n**Rejected config:**\n```yaml\n{config}\n```")
+
+
+def _format_previous_gate(attempt: dict[str, Any], lines: list[str]) -> None:
+    rejection_reason = attempt.get("rejection_reason", "")
+    failed_gate = attempt.get("failed_gate", "")
+    lines.append(f"**Rejection reason:** {rejection_reason}")
+    lines.append(f"**Failed gate:** `{failed_gate}`")
+    metrics = attempt.get("candidate_metrics", {})
+    if metrics:
+        lines.append("**Candidate metrics at rejection:**")
+        for k, v in metrics.items():
+            lines.append(f"  - {k}: {v}")
+    code = attempt.get("candidate_strategy_code", "")
+    config = attempt.get("candidate_config_yaml", "")
+    if code:
+        lines.append(f"\n**Failed strategy code:**\n```python\n{code}\n```")
+    if config:
+        lines.append(f"\n**Failed config:**\n```yaml\n{config}\n```")
+
+
+def _format_previous_attempt(context: AgentContext) -> str:
+    if context.last_attempt is None:
+        return ""
+
+    attempt = context.last_attempt
+    stage = attempt.get("stage", "unknown")
+    lines: list[str] = ["## Previous Attempt Result", f"**Stage:** {stage}"]
+
+    if stage == "validation":
+        _format_previous_validation(attempt, lines)
+    elif stage == "diversity_config":
+        _format_previous_diversity_config(attempt, lines)
+    elif stage == "eval_error":
+        _format_previous_eval_error(attempt, lines)
+    elif stage == "diversity_returns":
+        _format_previous_diversity_returns(attempt, lines)
+    elif stage == "gate":
+        _format_previous_gate(attempt, lines)
+    else:
+        detail = attempt.get("detail", attempt.get("rejection_reason", ""))
+        if detail:
+            lines.append(f"**Detail:** {detail}")
+
+    lines.append(
+        "\n**Diagnose the failure above. Do NOT regenerate the same code or config. "
+        "Your fix must address the specific error shown.**"
+    )
+    return "\n".join(lines) + "\n\n"
+
+
+def _format_performance_target(context: AgentContext) -> str:
+    if context.evaluation_report is not None:
+        rep = context.evaluation_report
+        m = rep.in_sample_metrics
+        return (
+            f"## Performance Target\n"
+            f"Incumbent in-sample walk-forward aggregate (you must beat these):\n"
+            f"  - Sharpe: {m.sharpe_ratio:.4f}\n"
+            f"  - Sortino: {m.sortino_ratio:.4f}\n"
+            f"  - Information Ratio: {m.information_ratio:.4f}\n"
+            f"  - Max Drawdown: {m.max_drawdown:.4f}\n"
+            f"  - Turnover: {m.turnover:.4f}\n\n"
+            f"Hard gate limits (select — all must pass):\n"
+            f"  - In-sample max drawdown <= {context.dd_limit:.2f}\n"
+            f"  - In-sample turnover <= {context.turnover_limit:.2f}\n"
+            f"  - All historical crisis regime stress tests must pass\n"
+            f"  - Target metric must strictly exceed the incumbent in-sample value above.\n"
+            f"  - Annualized return must be at least {context.min_return_ratio * 100:.0f}% "
+            f"of the incumbent's annualized return.\n"
+            f"  - Deflated Sharpe (DSR) non-degradation is **always enforced** on the "
+            f"in-sample selection basis.\n\n"
+            f"> [!WARNING]\n"
+            f"> While the hard drawdown limit is {context.dd_limit:.2f}, strategies pushing close to\n"
+            f"> the boundary are risky — prefer candidates that operate well within constraints.\n\n"
+            f"Strategies that pass the in-sample select gate face a hidden OOS holdout\n"
+            f"confirmation gate before commit. That holdout is **not visible** here.\n\n"
+        )
+    else:
+        return (
+            "## Performance Target\n"
+            "No incumbent evaluation yet (first iteration). "
+            f"Hard gate limits: in-sample drawdown <= {context.dd_limit:.2f}, "
+            f"turnover <= {context.turnover_limit:.2f}, "
+            "all regime stress tests must pass. "
+            f"Once a baseline exists, annualized return must be at least "
+            f"{context.min_return_ratio * 100:.0f}% of the baseline.\n"
+            "DSR non-degradation is always enforced on the in-sample selection basis.\n"
+            f"> [!WARNING]\n"
+            f"> While the hard drawdown limit is {context.dd_limit:.2f}, strategies pushing close to\n"
+            f"> the boundary are risky — prefer candidates that operate well within constraints.\n\n"
+            "Strategies that pass select are confirmed against a hidden OOS holdout.\n\n"
+        )
+
+
+def _format_repair_request(context: AgentContext) -> str:
+    if not context.repair_request:
+        return ""
+
+    req = context.repair_request
+    failed_code = req.get("failed_code", "")
+    failed_config = req.get("failed_config_yaml", "")
+    err_code = req.get("error_code", "")
+    err_detail = req.get("error_detail", "")
+    hint = _format_previous_attempt_hint(err_code, err_detail)
+    return (
+        f"## Repair Request\n"
+        f"Your previous proposal failed preflight validation with the following error:\n"
+        f"**Error Code:** {err_code}\n"
+        f"**Error Detail:** {err_detail}\n\n"
+        f"**Failed Code:**\n```python\n{failed_code}\n```\n\n"
+        f"**Failed Config:**\n```yaml\n{failed_config}\n```\n\n"
+        f"**Instruction:** Fix ONLY this validation error. Make the minimal change. "
+        f"Do not redesign the strategy.{hint}\n\n"
+        f"---\n\n"
+    )
+
+
+def _format_last_iteration_failures(context: AgentContext) -> str:
+    if not context.last_iteration_failures:
+        return ""
+
+    lines = [
+        "## Previous Iteration — All Candidates",
+        "The following failures were observed across the parallel candidates generated in the last iteration:",
+    ]
+    for idx, fail in enumerate(context.last_iteration_failures):
+        stage = fail.get("stage", "unknown")
+        err = fail.get("error_code")
+        err_str = f" ({err})" if err else ""
+        detail = fail.get("detail") or ""
+        params = fail.get("params") or {}
+        params_str = f" | Parameters: {params}" if params else ""
+        lines.append(f"{idx + 1}. **Stage:** {stage}{err_str} | **Detail:** {detail}{params_str}")
+    return "\n".join(lines) + "\n\n"
+
+
 def build_messages(
     context: AgentContext,
     cache_supported: bool = False,
@@ -256,41 +606,7 @@ def build_messages(
 
     context_stage = context.last_attempt.get("stage") if context.last_attempt else None
     injected_lessons = filter_lessons(context.lessons_text, context_stage)
-
-    # Format the latest evaluation — in-sample walk-forward aggregate only.
-    # Holdout metrics are deliberately hidden from the LLM.
-    if context.evaluation_report is not None:
-        rep = context.evaluation_report
-        try:
-            m = rep.in_sample_metrics
-            wf_span = f"{m.start_date} → {m.end_date}"
-            wf_count = len(rep.walk_forward_metrics)
-            folds_detail = ""
-            if wf_count > 1:
-                fold_sharpes = [f.sharpe_ratio for f in rep.walk_forward_metrics]
-                min_s = min(fold_sharpes)
-                max_s = max(fold_sharpes)
-                folds_detail = f"\n  Per-fold Sharpe:   {min_s:.4f} - {max_s:.4f} (across {wf_count} windows)"
-            eval_report_str = (
-                f"In-Sample Walk-Forward Aggregate (selection basis):\n"
-                f"  Window:            {wf_span}\n"
-                f"  Sharpe:            {m.sharpe_ratio:.4f}\n"
-                f"  Sortino:           {m.sortino_ratio:.4f}\n"
-                f"  Information Ratio: {m.information_ratio:.4f}\n"
-                f"  Max Drawdown:      {m.max_drawdown:.4f}\n"
-                f"  Turnover:          {m.turnover:.4f}"
-                f"{folds_detail}\n"
-                f"  DSR (selection):   {rep.deflated_sharpe:.4f}\n"
-                f"  Effective Trials:  {rep.effective_trials}\n"
-                f"  Regime tests:      {'PASS' if rep.regime_passed else 'FAIL'}\n"
-                f"\n"
-                f"> **OOS holdout** is reserved as a **budgeted confirmation gate** — "
-                f"it is never shown here and cannot be optimised against."
-            )
-        except Exception:
-            eval_report_str = str(context.evaluation_report)
-    else:
-        eval_report_str = "First iteration (no prior evaluation report exists)."
+    eval_report_str = _format_evaluation_report(context)
 
     # Calculate character-based token proxy for lessons limit warning
     lessons_tokens = len(context.lessons_text) // 4
@@ -304,69 +620,8 @@ def build_messages(
             f"to keep them under the cap.\n"
         )
 
-    # Attempt history table section
-    attempt_history_section = ""
-    if context.attempt_history:
-        committed_rows = [r for r in context.attempt_history if r.get("committed")]
-        non_committed_rows = [r for r in context.attempt_history if not r.get("committed")]
-        total_non_committed = len(non_committed_rows)
-        omitted_count = max(0, total_non_committed - 25)
-        displayed_non_committed = non_committed_rows[-25:] if omitted_count > 0 else non_committed_rows
-        rows_to_render = committed_rows + displayed_non_committed
+    attempt_history_section = _format_attempt_history(context)
 
-        def _fmt(val: Any, default: float = 0.0) -> str:
-            try:
-                return f"{float(val if val is not None else default):.4f}"
-            except (TypeError, ValueError):
-                return "-"
-
-        def _outcome(r: dict[str, Any]) -> str:
-            if r.get("committed"):
-                return "✓ committed"
-            if r.get("accepted"):
-                return "✓ accepted"
-            reason = r.get("rejection_reason") or ""
-            return f"✗ {str(reason)[:30]}"
-
-        def _fingerprint_repr(r: dict[str, Any]) -> str:
-            fp = r.get("config_fingerprint", {})
-            s = str(fp)
-            return s[:60] + "..." if len(s) > 60 else s
-
-        def _ho_flag(r: dict[str, Any]) -> str:
-            if r.get("holdout_confirmed"):
-                return "✓ HO"
-            return ""
-
-        header = "| iter | outcome | target | DSR | regime | reason | config | HO |"
-        separator = "|------|---------|--------|-----|--------|--------|--------|-----|"
-        table_lines = [header, separator]
-        for r in rows_to_render:
-            rejection_reason = r.get("rejection_reason") or None
-            reason_col = "-" if (r.get("committed") or rejection_reason is None) else str(rejection_reason)[:30]
-            row = (
-                f"| {r.get('iteration', '')} "
-                f"| {_outcome(r)} "
-                f"| {_fmt(r.get('target_metric_value'))} "
-                f"| {_fmt(r.get('deflated_sharpe'))} "
-                f"| {'pass' if r.get('regime_passed') else ('FAIL' if 'regime_passed' in r else '-')} "
-                f"| {reason_col} "
-                f"| {_fingerprint_repr(r)} "
-                f"| {_ho_flag(r)} |"
-            )
-            table_lines.append(row)
-
-        table_str = "\n".join(table_lines)
-        omit_note = ""
-        if omitted_count > 0:
-            total_non_committed_shown = len(displayed_non_committed)
-            omit_note = (
-                f"\n(showing {total_non_committed_shown + len(committed_rows)} of "
-                f"{len(context.attempt_history)} total — oldest non-committed omitted)"
-            )
-        attempt_history_section = f"\n## Attempt History\n{table_str}{omit_note}\n"
-
-    # Diversity warning section
     diversity_warning = ""
     if context.n_historical_configs > 0:
         diversity_warning = (
@@ -377,135 +632,8 @@ def build_messages(
             f"Ensure your strategy behaves differently — not just has different parameters.\n"
         )
 
-    # Build the "Previous Attempt Result" section if a failed attempt exists
-    previous_attempt_section = ""
-    if context.last_attempt is not None:
-        attempt = context.last_attempt
-        stage = attempt.get("stage", "unknown")
-        lines: list[str] = ["## Previous Attempt Result", f"**Stage:** {stage}"]
-
-        if stage == "validation":
-            error_code = attempt.get("error_code", "")
-            detail = attempt.get("detail", "")
-            lines.append(f"**Error:** `{error_code}`")
-            lines.append(f"**Detail:** {detail}")
-            if error_code == "lookahead_detected":
-                lines.append(
-                    "**Explanation:** `lookahead_detected` means past signals changed when future "
-                    "price rows were appended. The most common causes are:\n"
-                    "  1. Full-sample normalization: `(x - x.mean()) / x.std()` or `.rank(pct=True)` "
-                    "over the whole column — future rows shift the mean/rank for ALL past dates.\n"
-                    "  2. Negative shifts: `.shift(-n)` looks forward in time.\n"
-                    "  3. Any statistic computed over the full history at signal generation time.\n"
-                    "Fix: replace whole-column statistics with `rolling(N).mean()` / `rolling(N).std()` "
-                    "so each signal only sees data up to time t. This is a hard disqualifier."
-                )
-            code = attempt.get("candidate_strategy_code", "")
-            config = attempt.get("candidate_config_yaml", "")
-            if code:
-                lines.append(f"\n**Failed strategy code:**\n```python\n{code}\n```")
-            if config:
-                lines.append(f"\n**Failed config:**\n```yaml\n{config}\n```")
-
-        elif stage == "diversity_config":
-            detail = attempt.get("detail", "")
-            lines.append(f"**Detail:** {detail}")
-            config = attempt.get("candidate_config_yaml", "")
-            if config:
-                lines.append(f"\n**Rejected config:**\n```yaml\n{config}\n```")
-
-        elif stage == "eval_error":
-            detail = attempt.get("detail", "")
-            lines.append(f"**Error:** {detail}")
-            code = attempt.get("candidate_strategy_code", "")
-            config = attempt.get("candidate_config_yaml", "")
-            if code:
-                lines.append(f"\n**Failed strategy code:**\n```python\n{code}\n```")
-            if config:
-                lines.append(f"\n**Failed config:**\n```yaml\n{config}\n```")
-
-        elif stage == "diversity_returns":
-            detail = attempt.get("detail", "")
-            lines.append(f"**Detail:** {detail}")
-            metrics = attempt.get("candidate_metrics", {})
-            if metrics:
-                lines.append("**Observed metrics:**")
-                for k, v in metrics.items():
-                    lines.append(f"  - {k}: {v}")
-            config = attempt.get("candidate_config_yaml", "")
-            if config:
-                lines.append(f"\n**Rejected config:**\n```yaml\n{config}\n```")
-
-        elif stage == "gate":
-            rejection_reason = attempt.get("rejection_reason", "")
-            failed_gate = attempt.get("failed_gate", "")
-            lines.append(f"**Rejection reason:** {rejection_reason}")
-            lines.append(f"**Failed gate:** `{failed_gate}`")
-            metrics = attempt.get("candidate_metrics", {})
-            if metrics:
-                lines.append("**Candidate metrics at rejection:**")
-                for k, v in metrics.items():
-                    lines.append(f"  - {k}: {v}")
-            code = attempt.get("candidate_strategy_code", "")
-            config = attempt.get("candidate_config_yaml", "")
-            if code:
-                lines.append(f"\n**Failed strategy code:**\n```python\n{code}\n```")
-            if config:
-                lines.append(f"\n**Failed config:**\n```yaml\n{config}\n```")
-
-        else:
-            detail = attempt.get("detail", attempt.get("rejection_reason", ""))
-            if detail:
-                lines.append(f"**Detail:** {detail}")
-
-        lines.append(
-            "\n**Diagnose the failure above. Do NOT regenerate the same code or config. "
-            "Your fix must address the specific error shown.**"
-        )
-        previous_attempt_section = "\n".join(lines) + "\n\n"
-
-    # Build the "Performance Target" section (in-sample walk-forward basis)
-    if context.evaluation_report is not None:
-        rep = context.evaluation_report
-        m = rep.in_sample_metrics
-        performance_target_section = (
-            f"## Performance Target\n"
-            f"Incumbent in-sample walk-forward aggregate (you must beat these):\n"
-            f"  - Sharpe: {m.sharpe_ratio:.4f}\n"
-            f"  - Sortino: {m.sortino_ratio:.4f}\n"
-            f"  - Information Ratio: {m.information_ratio:.4f}\n"
-            f"  - Max Drawdown: {m.max_drawdown:.4f}\n"
-            f"  - Turnover: {m.turnover:.4f}\n\n"
-            f"Hard gate limits (select — all must pass):\n"
-            f"  - In-sample max drawdown <= {context.dd_limit:.2f}\n"
-            f"  - In-sample turnover <= {context.turnover_limit:.2f}\n"
-            f"  - All historical crisis regime stress tests must pass\n"
-            f"  - Target metric must strictly exceed the incumbent in-sample value above.\n"
-            f"  - Annualized return must be at least {context.min_return_ratio * 100:.0f}% "
-            f"of the incumbent's annualized return.\n"
-            f"  - Deflated Sharpe (DSR) non-degradation is **always enforced** on the "
-            f"in-sample selection basis.\n\n"
-            f"> [!WARNING]\n"
-            f"> While the hard drawdown limit is {context.dd_limit:.2f}, strategies pushing close to\n"
-            f"> the boundary are risky — prefer candidates that operate well within constraints.\n\n"
-            f"Strategies that pass the in-sample select gate face a hidden OOS holdout\n"
-            f"confirmation gate before commit. That holdout is **not visible** here.\n\n"
-        )
-    else:
-        performance_target_section = (
-            "## Performance Target\n"
-            "No incumbent evaluation yet (first iteration). "
-            f"Hard gate limits: in-sample drawdown <= {context.dd_limit:.2f}, "
-            f"turnover <= {context.turnover_limit:.2f}, "
-            "all regime stress tests must pass. "
-            f"Once a baseline exists, annualized return must be at least "
-            f"{context.min_return_ratio * 100:.0f}% of the baseline.\n"
-            "DSR non-degradation is always enforced on the in-sample selection basis.\n"
-            f"> [!WARNING]\n"
-            f"> While the hard drawdown limit is {context.dd_limit:.2f}, strategies pushing close to\n"
-            f"> the boundary are risky — prefer candidates that operate well within constraints.\n\n"
-            "Strategies that pass select are confirmed against a hidden OOS holdout.\n\n"
-        )
+    previous_attempt_section = _format_previous_attempt(context)
+    performance_target_section = _format_performance_target(context)
 
     # Mode-aware instruction section
     if context.mode == "exploit":
@@ -524,84 +652,7 @@ def build_messages(
             "You MUST propose approaches that differ meaningfully from previous attempts (see Attempt History)."
         )
 
-    def _repair_hint(error_code: str, detail: str) -> str:
-        if error_code == "lookahead_detected":
-            return (
-                "\nLookahead bias was detected via a shifted-rerun test, "
-                "meaning past signals changed when future price rows were appended. "
-                "The 3 common causes are:\n"
-                "  1. Calculating statistics on the full sample "
-                "(like `.mean()`, `.std()`, `.min()`, `.max()`, or `.rank(pct=True)`) "
-                "on the entire column instead of a trailing/expanding window.\n"
-                "  2. Missing or negative shifts "
-                "(e.g., using `.shift(-1)` or not shifting lookbacks/features by at least `.shift(1)`).\n"
-                "  3. Using `center=True` in rolling calculations."
-            )
-        elif error_code in ("ast_line_limit_exceeded", "ast_cyclomatic_complexity_exceeded"):
-            return (
-                "\nTo resolve function length or cyclomatic complexity limit failures, "
-                "you must extract logic into top-level helper functions, "
-                "vectorize operations instead of branching "
-                "(e.g. using loops or nested if-statements), and keep the core logic identical."
-            )
-        elif error_code in ("ast_blocked_import", "undefined_name", "config_schema_invalid"):
-            alt = ""
-            if error_code == "config_schema_invalid":
-                alt = "Strategy-specific parameters must go under the 'params' dictionary at the root."
-            elif error_code == "ast_blocked_import":
-                alt = (
-                    "Use f-strings or concatenation instead of .format(), and import only "
-                    "from pandas, numpy, math, typing, scipy, dataclasses, collections, "
-                    "itertools, functools, decimal, statistics, numbers, json."
-                )
-            elif error_code == "undefined_name":
-                alt = (
-                    "Ensure all names are defined, imported (e.g., 'from typing import Any'), "
-                    "or passed in config/prices."
-                )
-            return f'\nError detail: "{detail}"\nAllowed alternative: {alt}'
-        elif error_code == "smoke_test_failed":
-            return (
-                "\nSmoke test execution failed. This usually means your code raised an exception at runtime "
-                "(e.g., KeyError, IndexError, ValueError), or it returned invalid weight outputs "
-                "(e.g. weights exceeding the sum <= 1.0 limit, incorrect shapes, or containing NaN values). "
-                "Ensure all operations handle missing or NaN data gracefully, avoid dividing by zero, "
-                "check shape consistency, and verify that portfolio weights sum to at most 1.0 at every step."
-            )
-        elif error_code == "import_failed":
-            return (
-                "\nImport failed. The Python interpreter failed to load your strategy file. "
-                "This is typically caused by syntax errors, invalid syntax in type annotations, or "
-                "code crashing at import time. Double-check your syntax and ensure the code compiles "
-                "without any side effects during import."
-            )
-        elif error_code == "signature_mismatch":
-            return (
-                "\nSignature mismatch. Your strategy must define a function with the exact signature:\n"
-                "  `def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFrame:`\n"
-                "Ensure the function is exported, name is spelled correctly, and parameters match."
-            )
-        return ""
-
-    repair_request_section = ""
-    if context.repair_request:
-        req = context.repair_request
-        failed_code = req.get("failed_code", "")
-        failed_config = req.get("failed_config_yaml", "")
-        err_code = req.get("error_code", "")
-        err_detail = req.get("error_detail", "")
-        hint = _repair_hint(err_code, err_detail)
-        repair_request_section = (
-            f"## Repair Request\n"
-            f"Your previous proposal failed preflight validation with the following error:\n"
-            f"**Error Code:** {err_code}\n"
-            f"**Error Detail:** {err_detail}\n\n"
-            f"**Failed Code:**\n```python\n{failed_code}\n```\n\n"
-            f"**Failed Config:**\n```yaml\n{failed_config}\n```\n\n"
-            f"**Instruction:** Fix ONLY this validation error. Make the minimal change. "
-            f"Do not redesign the strategy.{hint}\n\n"
-            f"---\n\n"
-        )
+    repair_request_section = _format_repair_request(context)
 
     directive_section = ""
     if context.directive:
@@ -619,21 +670,7 @@ def build_messages(
             f"or change the parameter set structurally.\n"
         )
 
-    last_iteration_failures_section = ""
-    if context.last_iteration_failures:
-        lines = [
-            "## Previous Iteration — All Candidates",
-            "The following failures were observed across the parallel candidates generated in the last iteration:",
-        ]
-        for idx, fail in enumerate(context.last_iteration_failures):
-            stage = fail.get("stage", "unknown")
-            err = fail.get("error_code")
-            err_str = f" ({err})" if err else ""
-            detail = fail.get("detail") or ""
-            params = fail.get("params") or {}
-            params_str = f" | Parameters: {params}" if params else ""
-            lines.append(f"{idx + 1}. **Stage:** {stage}{err_str} | **Detail:** {detail}{params_str}")
-        last_iteration_failures_section = "\n".join(lines) + "\n\n"
+    last_iteration_failures_section = _format_last_iteration_failures(context)
 
     user_content = f"""{repair_request_section}## Iteration
 Current Loop Iteration: {context.iteration}

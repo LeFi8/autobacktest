@@ -6,7 +6,6 @@ from unittest.mock import patch
 import git
 import numpy as np
 import pandas as pd
-import pytest
 
 from autobacktest.gate import TargetMetric
 from autobacktest.llm.base import AgentEdit
@@ -89,7 +88,7 @@ class FakeProvider:
     def __init__(self, prices: pd.DataFrame):
         self.prices = prices
 
-    def get_prices(self, tickers: list[str], start: str, end: str, interval: str = "1d") -> pd.DataFrame:
+    def get_prices(self, tickers: list[str], _start: str, _end: str, _interval: str = "1d") -> pd.DataFrame:
         available = [t for t in tickers if t in self.prices.columns]
         if not available:
             return self.prices[[self.prices.columns[0]]].rename(columns={self.prices.columns[0]: tickers[0]})

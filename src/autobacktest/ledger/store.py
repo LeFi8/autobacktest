@@ -146,15 +146,11 @@ class LedgerStore:
                 ("holdout_returns_blob", "BLOB"),
             ]
             if self._ensure_columns(conn, "attempts", column_specs):
-                conn.execute(
-                    "UPDATE attempts SET target_metric_value = observed_sharpe WHERE target_metric = 'sharpe'"
-                )
+                conn.execute("UPDATE attempts SET target_metric_value = observed_sharpe WHERE target_metric = 'sharpe'")
                 conn.commit()
 
             if "holdout_max_drawdown" in columns and "in_sample_max_drawdown" not in columns:
-                conn.execute(
-                    "ALTER TABLE attempts RENAME COLUMN holdout_max_drawdown TO in_sample_max_drawdown"
-                )
+                conn.execute("ALTER TABLE attempts RENAME COLUMN holdout_max_drawdown TO in_sample_max_drawdown")
             if "holdout_turnover" in columns and "in_sample_turnover" not in columns:
                 conn.execute("ALTER TABLE attempts RENAME COLUMN holdout_turnover TO in_sample_turnover")
 
@@ -197,7 +193,6 @@ class LedgerStore:
         except Exception:
             pass
         return {}
-
 
     def create_run(
         self,

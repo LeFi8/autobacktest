@@ -6,7 +6,6 @@ to satisfy the config diversity gate without discarding candidates.
 
 from __future__ import annotations
 
-import copy
 import logging
 import random
 from typing import Any
@@ -116,6 +115,205 @@ def compute_max_similarity(
     return max_sim
 
 
+# Keys that must not be perturbed during jitter (system / gate parameters)
+_EXCLUDE_JITTER_KEYS: frozenset[str] = frozenset(
+    {
+        "pbo_limit",
+        "cscv_embargo_days",
+        "adaptive_slippage",
+        "slippage_vol_window",
+        "slippage_vol_cap",
+        "mc_bootstrap_method",
+        "cscv_blocks",
+        "borrow_cost_bps",
+        "min_improvement",
+        "select_min_return_ratio",
+        "holdout_min_improvement",
+        "max_drawdown_limit",
+        "turnover_limit",
+        "dsr_floor",
+    }
+)
+
+
+def _collect_jitter_paths(
+    orig_dict: dict[str, Any],
+    flat: dict[str, Any],
+) -> list[tuple[tuple[Any, ...], int | float]]:
+    """Build a list of ``(path, value)`` pairs for all jitterable numeric parameters.
+
+    Only root-level and ``params``-nested numeric keys that are not in
+    ``_EXCLUDE_JITTER_KEYS`` are included.
+
+    Args:
+        orig_dict: Parsed config dictionary.
+        flat: Flat key→value mapping produced by ``_parse_config_to_flat``.
+
+    Returns:
+        list of ``(path_tuple, original_value)`` pairs eligible for mutation.
+    """
+    all_paths: list[tuple[tuple[Any, ...], int | float]] = []
+    for k, v in flat.items():
+        if k in _EXCLUDE_JITTER_KEYS:
+            continue
+        if not isinstance(v, (int, float)) or isinstance(v, bool):
+            continue
+        if k in orig_dict:
+            all_paths.append(((k,), v))
+        elif "params" in orig_dict and isinstance(orig_dict["params"], dict) and k in orig_dict["params"]:
+            all_paths.append((("params", k), v))
+    return all_paths
+
+
+def _get_param_bounds(name: str, path: tuple[Any, ...]) -> tuple[float | None, float | None]:
+    """Return ``(min_val, max_val)`` for *name* from known ranges and root schema constraints.
+
+    Args:
+        name: Flattened parameter name.
+        path: Path tuple pointing to the parameter in the config dict.
+
+    Returns:
+        tuple: ``(min_val, max_val)`` — either bound may be ``None`` if unconstrained.
+    """
+    min_val: float | None = None
+    max_val: float | None = None
+    if name in KNOWN_RANGES:
+        min_val, max_val = KNOWN_RANGES[name]
+    if path[0] in ROOT_CONSTRAINTS:
+        rmin, rmax = ROOT_CONSTRAINTS[path[0]]
+        if rmin is not None:
+            min_val = rmin if min_val is None else max(min_val, rmin)
+        if rmax is not None:
+            max_val = rmax if max_val is None else min(max_val, rmax)
+    return min_val, max_val
+
+
+def _apply_sign_and_bounds(
+    v_new: float,
+    v: int | float,
+    is_int: bool,
+    min_val: float | None,
+    max_val: float | None,
+) -> int | float:
+    """Clamp *v_new* to preserve the sign of *v* and respect numeric bounds.
+
+    Args:
+        v_new: The proposed new value after perturbation.
+        v: The original value (used for sign-preservation direction).
+        is_int: Whether the parameter is an integer type.
+        min_val: Lower bound, or ``None`` if unconstrained.
+        max_val: Upper bound, or ``None`` if unconstrained.
+
+    Returns:
+        int | float: The clamped value, cast to ``int`` when *is_int* is True.
+    """
+    if v > 0:
+        v_new = max(1 if is_int else 1e-6, v_new)
+    elif v < 0:
+        v_new = min(-1 if is_int else -1e-6, v_new)
+    if min_val is not None:
+        v_new = max(min_val, v_new)
+    if max_val is not None:
+        v_new = min(max_val, v_new)
+    if is_int:
+        v_new = round(v_new)
+    return v_new
+
+
+def _force_change(
+    v: int | float,
+    is_int: bool,
+    min_val: float | None,
+    max_val: float | None,
+    rng: random.Random,
+    scale: float,
+) -> int | float:
+    """Compute a guaranteed non-zero mutation of *v* when the perturbation rounded back.
+
+    Chooses a direction (±1) that respects current bounds, applies a step,
+    then re-clamps the result via :func:`_apply_sign_and_bounds`.
+
+    Args:
+        v: The original value.
+        is_int: Whether the parameter is an integer type.
+        min_val: Lower bound, or ``None`` if unconstrained.
+        max_val: Upper bound, or ``None`` if unconstrained.
+        rng: Random number generator for direction selection.
+        scale: Magnitude of the forced step.
+
+    Returns:
+        int | float: A value that differs from *v* after clamping (best-effort).
+    """
+    direction = rng.choice([1, -1])
+    if is_int and v == 1:
+        direction = 1
+    elif is_int and v == -1:
+        direction = -1
+    elif min_val is not None and v <= min_val:
+        direction = 1
+    elif max_val is not None and v >= max_val:
+        direction = -1
+    step = direction if is_int else scale * direction
+    return _apply_sign_and_bounds(v + step, v, is_int, min_val, max_val)
+
+
+def _attempt_mutation(
+    orig_dict: dict[str, Any],
+    all_paths: list[tuple[tuple[Any, ...], int | float]],
+    rng: random.Random,
+    rel_step_attempt: float,
+    importance: dict[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, dict[str, float]]] | None:
+    """Mutate every numeric parameter in *orig_dict* by one jitter step.
+
+    Applies sign-preservation, numeric bounds, and a forced-change fallback.
+    Returns ``None`` when the mutated config fails Pydantic schema validation.
+
+    Args:
+        orig_dict: Original parsed config dictionary (not modified in place).
+        all_paths: ``(path, original_value)`` pairs from :func:`_collect_jitter_paths`.
+        rng: Seeded random number generator.
+        rel_step_attempt: Relative perturbation magnitude for this attempt.
+        importance: Optional dict mapping param name → correlation stats for adaptive step sizing.
+
+    Returns:
+        tuple ``(mutated_dict, changed_params)`` on success, or ``None`` on schema failure.
+    """
+    import copy
+
+    mutated_dict = copy.deepcopy(orig_dict)
+    changed_params: dict[str, dict[str, float]] = {}
+
+    for path, v in all_paths:
+        name = get_param_name(path)
+        param_rel_step = rel_step_attempt
+        if importance and name in importance:
+            rho = importance[name].get("rho", 0.0)
+            param_rel_step *= 1.0 + abs(rho)
+
+        scale = max(abs(v) * param_rel_step, param_rel_step)
+        change = rng.uniform(-scale, scale)
+        v_new: int | float = v + change
+        is_int = isinstance(v, int)
+
+        min_val, max_val = _get_param_bounds(name, path)
+        v_new = _apply_sign_and_bounds(v_new, v, is_int, min_val, max_val)
+
+        if v_new == v:
+            v_new = _force_change(v, is_int, min_val, max_val, rng, scale)
+
+        set_at_path(mutated_dict, path, v_new)
+        if v_new != v:
+            changed_params[name] = {"old": float(v), "new": float(v_new)}
+
+    try:
+        StrategyConfig.model_validate(mutated_dict)
+    except Exception:
+        return None
+
+    return mutated_dict, changed_params
+
+
 def jitter_config(
     config_yaml: str,
     tried_configs: list[str],
@@ -140,153 +338,43 @@ def jitter_config(
     Returns:
         tuple[str | None, dict]: (new_config_yaml, metadata_dict)
     """
+    _fail_meta = {"jitter_applied": False, "attempts": 0, "final_similarity": 1.0, "changed_params": {}}
     rng = random.Random(seed)
 
     try:
         orig_dict = yaml.safe_load(config_yaml)
     except Exception as e:
         logger.warning("Failed to parse config YAML for jittering: %s", e)
-        return None, {"jitter_applied": False, "attempts": 0, "final_similarity": 1.0, "changed_params": {}}
+        return None, _fail_meta
 
     if not isinstance(orig_dict, dict):
-        return None, {"jitter_applied": False, "attempts": 0, "final_similarity": 1.0, "changed_params": {}}
+        return None, _fail_meta
 
-    # Pre-parse historical config fingerprints once to optimize performance
     historical_fps = [extract_config_fingerprint(h) for h in tried_configs]
-
-    # Map flat parameters to original paths
     flat = _parse_config_to_flat(config_yaml)
-    all_paths: list[tuple[tuple[Any, ...], int | float]] = []
-
-    exclude_jitter_keys = {
-        "pbo_limit",
-        "cscv_embargo_days",
-        "adaptive_slippage",
-        "slippage_vol_window",
-        "slippage_vol_cap",
-        "mc_bootstrap_method",
-        "cscv_blocks",
-        "borrow_cost_bps",
-        "min_improvement",
-        "select_min_return_ratio",
-        "holdout_min_improvement",
-        "max_drawdown_limit",
-        "turnover_limit",
-        "dsr_floor",
-    }
-
-    for k, v in flat.items():
-        if k in exclude_jitter_keys:
-            continue
-        if isinstance(v, (int, float)) and not isinstance(v, bool):
-            if k in orig_dict:
-                all_paths.append(((k,), v))
-            elif "params" in orig_dict and isinstance(orig_dict["params"], dict) and k in orig_dict["params"]:
-                all_paths.append((("params", k), v))
+    all_paths = _collect_jitter_paths(orig_dict, flat)
 
     if not all_paths:
-        return None, {"jitter_applied": False, "attempts": 0, "final_similarity": 1.0, "changed_params": {}}
+        return None, _fail_meta
 
     last_similarity = 1.0
     for a in range(max_attempts):
         rel_step_attempt = rel_step * (1.0 + a * 0.5)
-
-        mutated_dict = copy.deepcopy(orig_dict)
-        changed_params: dict[str, dict[str, float]] = {}
-
-        for path, v in all_paths:
-            name = get_param_name(path)
-
-            param_rel_step = rel_step_attempt
-            if importance and name in importance:
-                rho = importance[name].get("rho", 0.0)
-                param_rel_step *= 1.0 + abs(rho)
-
-            scale = max(abs(v) * param_rel_step, param_rel_step)
-            change = rng.uniform(-scale, scale)
-            v_new = v + change
-
-            is_int = isinstance(v, int)
-            if is_int:
-                v_new = round(v_new)
-
-            # Retrieve bounds from KNOWN_RANGES or ROOT_CONSTRAINTS
-            min_val: float | None = None
-            max_val: float | None = None
-            if name in KNOWN_RANGES:
-                min_val, max_val = KNOWN_RANGES[name]
-            if path[0] in ROOT_CONSTRAINTS:
-                rmin, rmax = ROOT_CONSTRAINTS[path[0]]
-                if rmin is not None:
-                    min_val = rmin if min_val is None else max(min_val, rmin)
-                if rmax is not None:
-                    max_val = rmax if max_val is None else min(max_val, rmax)
-
-            # Sign-preservation
-            if v > 0:
-                v_new = max(1 if is_int else 1e-6, v_new)
-            elif v < 0:
-                v_new = min(-1 if is_int else -1e-6, v_new)
-
-            if min_val is not None:
-                v_new = max(min_val, v_new)
-            if max_val is not None:
-                v_new = min(max_val, v_new)
-
-            if is_int:
-                v_new = round(v_new)
-
-            # Force adjustment if no change occurred, respecting direction and bounds
-            if v_new == v:
-                direction = rng.choice([1, -1])
-                if is_int and v == 1:
-                    direction = 1
-                elif is_int and v == -1:
-                    direction = -1
-                elif min_val is not None and v <= min_val:
-                    direction = 1
-                elif max_val is not None and v >= max_val:
-                    direction = -1
-
-                v_new = v + (direction if is_int else (scale * direction))
-
-                # Re-apply sign-preservation & bounds
-                if v > 0:
-                    v_new = max(1 if is_int else 1e-6, v_new)
-                elif v < 0:
-                    v_new = min(-1 if is_int else -1e-6, v_new)
-
-                if min_val is not None:
-                    v_new = max(min_val, v_new)
-                if max_val is not None:
-                    v_new = min(max_val, v_new)
-
-                if is_int:
-                    v_new = round(v_new)
-
-            set_at_path(mutated_dict, path, v_new)
-            if v_new != v:
-                changed_params[name] = {"old": float(v), "new": float(v_new)}
-
-        # Validate against schema
-        try:
-            StrategyConfig.model_validate(mutated_dict)
-        except Exception:
+        attempt = _attempt_mutation(orig_dict, all_paths, rng, rel_step_attempt, importance)
+        if attempt is None:
             continue
-
+        mutated_dict, changed_params = attempt
         mutated_yaml = yaml.safe_dump(mutated_dict, sort_keys=False)
         cf_candidate = extract_config_fingerprint(mutated_yaml)
         sim = compute_max_similarity(cf_candidate, historical_fps)
         last_similarity = sim
-
         if sim < threshold:
-            meta = {
+            return mutated_yaml, {
                 "jitter_applied": True,
                 "attempts": a + 1,
                 "final_similarity": float(sim),
                 "changed_params": changed_params,
             }
-            return mutated_yaml, meta
 
     return None, {
         "jitter_applied": False,

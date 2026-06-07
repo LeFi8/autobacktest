@@ -1,5 +1,4 @@
 import ast
-import pytest
 
 from autobacktest.strategy.ast_linter import _check_ast, _check_undefined_names
 from autobacktest.strategy.validator import ValidationError

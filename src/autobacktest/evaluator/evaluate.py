@@ -53,6 +53,168 @@ from autobacktest.strategy.config_schema import StrategyConfig
 logger = logging.getLogger(__name__)
 
 
+def _flatten_config(config: dict[str, Any] | StrategyConfig) -> dict[str, Any]:
+    """Normalise *config* to a flat ``dict`` for downstream evaluation.
+
+    When *config* is a :class:`StrategyConfig`, delegates to its
+    ``to_flat_dict`` method.  Otherwise merges the top-level ``params``
+    sub-dict into the root dict.
+
+    Args:
+        config: Strategy configuration as a raw dict or a Pydantic model.
+
+    Returns:
+        dict[str, Any]: Flat key-value mapping ready for signal generation.
+    """
+    if isinstance(config, StrategyConfig):
+        return config.to_flat_dict()
+    flat_config = dict(config)
+    params = flat_config.get("params", {})
+    if isinstance(params, dict):
+        for k, v in params.items():
+            if k not in flat_config:
+                flat_config[k] = v
+    return flat_config
+
+
+def _load_evaluation_data(
+    flat_config: dict[str, Any],
+    start_date: str,
+    end_date: str,
+    _prices: pd.DataFrame | None,
+    _bench_returns: pd.Series | None,
+) -> tuple[pd.DataFrame, pd.Series]:
+    """Return ``(prices, bench_returns)`` for the evaluation period.
+
+    When *_prices* and *_bench_returns* are provided, validates that all
+    required tickers are present and returns them directly.  Otherwise
+    downloads data from YFinance, joining benchmark and regime-benchmark
+    tickers into the prices frame.
+
+    Args:
+        flat_config: Flat strategy configuration dict.
+        start_date: Start of the data range.
+        end_date: End of the data range.
+        _prices: Optional pre-fetched price DataFrame.
+        _bench_returns: Optional pre-fetched benchmark return series.
+
+    Returns:
+        tuple: ``(prices, bench_returns)``.
+
+    Raises:
+        ValueError: When required tickers are missing or data is empty.
+    """
+    tickers = flat_config.get("universe", [])
+    benchmark_ticker = flat_config.get("benchmark", "SPY")
+    regime_bench_ticker = flat_config.get("regime_benchmark") or benchmark_ticker
+
+    if _prices is not None and _bench_returns is not None:
+        missing_assets = [t for t in tickers if t not in _prices.columns]
+        if missing_assets:
+            raise ValueError(f"Cached prices missing tickers: {missing_assets}")
+        if benchmark_ticker not in _prices.columns:
+            raise ValueError(f"Cached prices missing benchmark ticker: {benchmark_ticker}")
+        if regime_bench_ticker not in _prices.columns:
+            raise ValueError(f"Cached prices missing regime benchmark ticker: {regime_bench_ticker}")
+        return _prices, _bench_returns
+
+    raw_provider = YFinanceProvider()
+    provider = CachedDataProvider(raw_provider, cache_dir=str(settings.cache_dir))
+    prices = provider.get_prices(tickers, start_date, end_date)
+    benchmark_prices = provider.get_prices([benchmark_ticker], start_date, end_date)
+    if prices.empty:
+        raise ValueError("No price history returned for requested strategy universe.")
+    if benchmark_prices.empty or benchmark_ticker not in benchmark_prices.columns:
+        raise ValueError(f"No price history returned for benchmark ticker: {benchmark_ticker}")
+    bench_returns = benchmark_prices[benchmark_ticker].pct_change().fillna(0.0)
+
+    if benchmark_ticker not in prices.columns:
+        prices = prices.join(benchmark_prices[[benchmark_ticker]], how="outer")
+
+    if regime_bench_ticker == benchmark_ticker:
+        regime_bench_prices = benchmark_prices
+    else:
+        regime_bench_prices = provider.get_prices([regime_bench_ticker], start_date, end_date)
+        if regime_bench_prices.empty or regime_bench_ticker not in regime_bench_prices.columns:
+            raise ValueError(f"No price history returned for regime benchmark ticker: {regime_bench_ticker}")
+
+    if regime_bench_ticker not in prices.columns:
+        prices = prices.join(regime_bench_prices[[regime_bench_ticker]], how="outer")
+
+    return prices, bench_returns
+
+
+def _generate_wf_weights(
+    prices: pd.DataFrame,
+    generate_signals_fn: Any,
+    flat_config: dict[str, Any],
+    tickers: list[str],
+    wf_windows: list[tuple[Any, Any, Any, Any]],
+) -> pd.DataFrame:
+    """Generate concatenated walk-forward test-period weights.
+
+    Runs ``generate_signals_fn`` on each fold (up to ``test_end``) and
+    splices the test-segment weights together, deduplicating any overlapping
+    index rows.
+
+    Args:
+        prices: Full price DataFrame.
+        generate_signals_fn: The strategy signal function.
+        flat_config: Flat strategy configuration dict.
+        tickers: Asset tickers in the universe.
+        wf_windows: Walk-forward window list of ``(train_start, train_end, test_start, test_end)``.
+
+    Returns:
+        pd.DataFrame: Concatenated and deduplicated test-period weights.
+
+    Raises:
+        ValueError: When any fold's weights fail output validation.
+    """
+    from autobacktest.strategy.contract import validate_output
+
+    wf_test_weights_list: list[pd.DataFrame] = []
+    for _train_start, _train_end, test_start, test_end in wf_windows:
+        prices_truncated = prices.loc[:test_end]
+        fold_weights = generate_signals_fn(prices_truncated, flat_config)
+        ok, err = validate_output(fold_weights, tickers, expected_index=prices.index)
+        if not ok:
+            raise ValueError(f"Strategy weights validation failed at fold test={test_start}: {err}")
+        wf_test_weights_list.append(fold_weights.loc[test_start:test_end])
+
+    wf_weights = pd.concat(wf_test_weights_list)
+    return wf_weights[~wf_weights.index.duplicated(keep="first")]
+
+
+def _apply_regime_haircut(
+    haircut: float,
+    in_sample_metrics: WindowReport,
+    holdout_report: WindowReport,
+    wf_reports: list[WindowReport],
+) -> None:
+    """Scale return and risk-adjusted metrics by ``(1 - haircut)`` in-place.
+
+    Applied when the regime-benchmark haircut is non-zero to penalise
+    strategies evaluated in harsh market regimes.
+
+    Args:
+        haircut: Fraction by which to reduce all ratio metrics (0 = no effect).
+        in_sample_metrics: In-sample aggregate ``WindowReport``.
+        holdout_report: Holdout-period ``WindowReport``.
+        wf_reports: Per-fold walk-forward ``WindowReport`` list.
+    """
+    factor = 1.0 - haircut
+    in_sample_metrics.annualized_return *= factor
+    in_sample_metrics.sharpe_ratio *= factor
+    in_sample_metrics.sortino_ratio *= factor
+    holdout_report.annualized_return *= factor
+    holdout_report.sharpe_ratio *= factor
+    holdout_report.sortino_ratio *= factor
+    for r in wf_reports:
+        r.annualized_return *= factor
+        r.sharpe_ratio *= factor
+        r.sortino_ratio *= factor
+
+
 def evaluate_strategy_detailed(
     strategy_name: str,
     generate_signals_fn: Any,
@@ -95,15 +257,7 @@ def evaluate_strategy_detailed(
         ValueError: When prices are empty, in-sample/holdout periods are
             empty, or walk-forward windows cannot be generated.
     """
-    if isinstance(config, StrategyConfig):
-        flat_config = config.to_flat_dict()
-    else:
-        flat_config = dict(config)
-        params = flat_config.get("params", {})
-        if isinstance(params, dict):
-            for k, v in params.items():
-                if k not in flat_config:
-                    flat_config[k] = v
+    flat_config = _flatten_config(config)
 
     # ---- Evaluation cache check ----
     if _eval_cache is not None and _strategy_code is not None:
@@ -125,40 +279,7 @@ def evaluate_strategy_detailed(
     benchmark_ticker = flat_config.get("benchmark", "SPY")
     regime_bench_ticker = flat_config.get("regime_benchmark") or benchmark_ticker
 
-    if _prices is not None and _bench_returns is not None:
-        missing_assets = [t for t in tickers if t not in _prices.columns]
-        if missing_assets:
-            raise ValueError(f"Cached prices missing tickers: {missing_assets}")
-        if benchmark_ticker not in _prices.columns:
-            raise ValueError(f"Cached prices missing benchmark ticker: {benchmark_ticker}")
-        if regime_bench_ticker not in _prices.columns:
-            raise ValueError(f"Cached prices missing regime benchmark ticker: {regime_bench_ticker}")
-        prices = _prices
-        bench_returns = _bench_returns
-    else:
-        raw_provider = YFinanceProvider()
-        provider = CachedDataProvider(raw_provider, cache_dir=str(settings.cache_dir))
-        prices = provider.get_prices(tickers, start_date, end_date)
-        benchmark_prices = provider.get_prices([benchmark_ticker], start_date, end_date)
-        if prices.empty:
-            raise ValueError("No price history returned for requested strategy universe.")
-        if benchmark_prices.empty or benchmark_ticker not in benchmark_prices.columns:
-            raise ValueError(f"No price history returned for benchmark ticker: {benchmark_ticker}")
-        bench_returns = benchmark_prices[benchmark_ticker].pct_change().fillna(0.0)
-
-        if benchmark_ticker not in prices.columns:
-            prices = prices.join(benchmark_prices[[benchmark_ticker]], how="outer")
-
-        if regime_bench_ticker == benchmark_ticker:
-            regime_bench_prices = benchmark_prices
-        else:
-            regime_bench_prices = provider.get_prices([regime_bench_ticker], start_date, end_date)
-            if regime_bench_prices.empty or regime_bench_ticker not in regime_bench_prices.columns:
-                raise ValueError(f"No price history returned for regime benchmark ticker: {regime_bench_ticker}")
-
-        if regime_bench_ticker not in prices.columns:
-            prices = prices.join(regime_bench_prices[[regime_bench_ticker]], how="outer")
-
+    prices, bench_returns = _load_evaluation_data(flat_config, start_date, end_date, _prices, _bench_returns)
     _asset_returns = prices.pct_change().fillna(0.0)
 
     in_sample_idx, holdout_idx = partition_holdout_data(prices.index, holdout_years=settings.default_holdout_years)
@@ -174,18 +295,7 @@ def evaluate_strategy_detailed(
             "Ensure the backtest range is long enough for at least one 5y-train/1y-test fold."
         )
 
-    wf_test_weights_list: list[pd.DataFrame] = []
-    for _train_start, _train_end, test_start, test_end in wf_windows:
-        prices_truncated = prices.loc[:test_end]
-        fold_weights = generate_signals_fn(prices_truncated, flat_config)
-        ok, err = validate_output(fold_weights, tickers, expected_index=prices.index)
-        if not ok:
-            raise ValueError(f"Strategy weights validation failed at fold test={test_start}: {err}")
-        test_segment = fold_weights.loc[test_start:test_end]
-        wf_test_weights_list.append(test_segment)
-
-    wf_weights = pd.concat(wf_test_weights_list)
-    wf_weights = wf_weights[~wf_weights.index.duplicated(keep="first")]
+    wf_weights = _generate_wf_weights(prices, generate_signals_fn, flat_config, tickers, wf_windows)
 
     wf_portfolio_returns, _wf_equity, wf_daily_weights = run_vectorized_backtest(
         prices,
@@ -329,17 +439,7 @@ def evaluate_strategy_detailed(
 
     haircut = get_regime_haircut(prices[regime_bench_ticker], holdout_start)
     if haircut > 0.0:
-        factor = 1.0 - haircut
-        in_sample_metrics.annualized_return *= factor
-        in_sample_metrics.sharpe_ratio *= factor
-        in_sample_metrics.sortino_ratio *= factor
-        holdout_report.annualized_return *= factor
-        holdout_report.sharpe_ratio *= factor
-        holdout_report.sortino_ratio *= factor
-        for r in wf_reports:
-            r.annualized_return *= factor
-            r.sharpe_ratio *= factor
-            r.sortino_ratio *= factor
+        _apply_regime_haircut(haircut, in_sample_metrics, holdout_report, wf_reports)
 
     dataset_hash = compute_dataset_hash(
         tickers,
