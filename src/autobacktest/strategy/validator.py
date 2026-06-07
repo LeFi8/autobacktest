@@ -17,14 +17,46 @@ from pydantic import ValidationError as PydanticValidationError
 
 from autobacktest.config import settings
 
-# Import sandbox runner and AST linter helpers
+# Import sandbox runner and AST linter helpers with explicit as re-exports
 from autobacktest.strategy.ast_linter import (
-    _check_ast,
+    _build_function_scope as _build_function_scope,
+)
+from autobacktest.strategy.ast_linter import (
+    _calculate_complexity as _calculate_complexity,
+)
+from autobacktest.strategy.ast_linter import (
+    _check_ast as _check_ast,
+)
+from autobacktest.strategy.ast_linter import (
+    _count_node_lines as _count_node_lines,
 )
 from autobacktest.strategy.config_schema import StrategyConfig
 from autobacktest.strategy.sandbox_runner import (
-    _run_validation_in_subprocess,
+    SandboxTimeoutError as SandboxTimeoutError,
 )
+from autobacktest.strategy.sandbox_runner import (
+    _generate_synthetic_prices as _generate_synthetic_prices,
+)
+from autobacktest.strategy.sandbox_runner import (
+    _run_validation_in_subprocess as _run_validation_in_subprocess,
+)
+from autobacktest.strategy.sandbox_runner import (
+    timeout_sandbox as timeout_sandbox,
+)
+
+__all__ = [
+    "SandboxTimeoutError",
+    "ValidationError",
+    "ValidationResult",
+    "_build_function_scope",
+    "_calculate_complexity",
+    "_check_ast",
+    "_count_node_lines",
+    "_generate_synthetic_prices",
+    "compare_signals_to_incumbent",
+    "preflight",
+    "timeout_sandbox",
+]
 
 
 class ValidationError(StrEnum):

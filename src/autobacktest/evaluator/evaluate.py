@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
-from typing import Any, Protocol
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -18,326 +16,41 @@ from autobacktest.data.yfinance_provider import YFinanceProvider
 from autobacktest.evaluator.backtest import run_vectorized_backtest
 from autobacktest.evaluator.costs import calculate_turnover_and_costs
 from autobacktest.evaluator.deflated_sharpe import calculate_psr_dsr
+from autobacktest.evaluator.engine import (
+    _CacheProtocol as _CacheProtocol,
+)
+from autobacktest.evaluator.engine import (
+    _run_walk_forward_windows as _run_walk_forward_windows,
+)
+from autobacktest.evaluator.engine import (
+    compute_dataset_hash as compute_dataset_hash,
+)
+from autobacktest.evaluator.engine import (
+    generate_window_report as generate_window_report,
+)
 from autobacktest.evaluator.holdout import partition_holdout_data
-from autobacktest.evaluator.monte_carlo import run_block_bootstrap
-from autobacktest.evaluator.regime import calculate_regime_haircut, evaluate_stress_regimes
+
+# Re-expose helper functions to maintain test backward compatibility
+from autobacktest.evaluator.metrics import (
+    _compute_returns_metrics as _compute_returns_metrics,
+)
+from autobacktest.evaluator.metrics import (
+    calculate_information_ratio as calculate_information_ratio,
+)
+from autobacktest.evaluator.metrics import (
+    calculate_sortino_ratio as calculate_sortino_ratio,
+)
 from autobacktest.evaluator.report import EvaluationReport, WindowReport
+from autobacktest.evaluator.stress_testing import (
+    get_regime_haircut as get_regime_haircut,
+)
+from autobacktest.evaluator.stress_testing import (
+    run_stress_and_bootstrap_tests as run_stress_and_bootstrap_tests,
+)
 from autobacktest.evaluator.walk_forward import generate_walk_forward_windows
 from autobacktest.strategy.config_schema import StrategyConfig
 
 logger = logging.getLogger(__name__)
-
-
-def _compute_returns_metrics(
-    returns: pd.Series,
-    start: pd.Timestamp,
-    end: pd.Timestamp,
-) -> WindowReport:
-    """Compute standard performance metrics directly from a return series."""
-    period_returns = returns.loc[start:end]
-    if period_returns.empty:
-        return WindowReport(
-            start_date=start.strftime("%Y-%m-%d"),
-            end_date=end.strftime("%Y-%m-%d"),
-            annualized_return=0.0,
-            annualized_volatility=0.0,
-            sharpe_ratio=0.0,
-            sortino_ratio=0.0,
-            max_drawdown=0.0,
-            turnover=0.0,
-        )
-
-    mean_ret = period_returns.mean()
-    std_ret = period_returns.std(ddof=1) if len(period_returns) >= 2 else 0.0
-
-    cum = (1.0 + period_returns).cumprod()
-    total_growth = cum.iloc[-1] if not cum.empty else 1.0
-    ann_ret = float(total_growth ** (252.0 / len(period_returns)) - 1.0) if total_growth > 0.0 else -1.0
-    ann_vol = float(std_ret * np.sqrt(252))
-    sharpe = float((mean_ret / std_ret * np.sqrt(252)) if std_ret > 0.0 else 0.0)
-
-    running_max = cum.cummax()
-    drawdowns = (cum - running_max) / running_max
-    max_dd = float(abs(drawdowns.min())) if not drawdowns.empty else 0.0
-
-    negative_returns = np.minimum(period_returns, 0.0)
-    downside_std = float(np.sqrt((negative_returns**2).mean()))
-    sortino = float((mean_ret / downside_std) * np.sqrt(252)) if downside_std > 0.0 else 0.0
-
-    return WindowReport(
-        start_date=start.strftime("%Y-%m-%d"),
-        end_date=end.strftime("%Y-%m-%d"),
-        annualized_return=ann_ret,
-        annualized_volatility=ann_vol,
-        sharpe_ratio=sharpe,
-        sortino_ratio=sortino,
-        max_drawdown=max_dd,
-        turnover=0.0,
-        information_ratio=None,  # N/A for standalone benchmark self-comparison
-    )
-
-
-class _CacheProtocol(Protocol):
-    """Minimal eval-result cache interface — satisfies both ``dict`` and ``_LRUCache``."""
-
-    def get(self, key: int, default: Any = None) -> Any: ...
-
-    def __getitem__(self, key: int) -> Any: ...
-
-    def __setitem__(self, key: int, value: Any) -> None: ...
-
-
-def compute_dataset_hash(
-    tickers: list[str],
-    start_date: str = "",
-    end_date: str = "",
-    holdout_years: int = 3,
-) -> str:
-    """Compute a stable dataset hash from universe tickers and date parameters.
-
-    Includes start/end dates and holdout years so that the same universe with
-    different time ranges produces distinct hashes.
-
-    Args:
-        tickers: Asset tickers in the universe.
-        start_date: Backtest start date string (YYYY-MM-DD).
-        end_date: Backtest end date string (YYYY-MM-DD).
-        holdout_years: Number of years reserved for holdout.
-
-    Returns:
-        str: 16-character hex hash digest.
-    """
-    data = "|".join(
-        [
-            ",".join(sorted(tickers)),
-            start_date,
-            end_date,
-            str(holdout_years),
-        ]
-    )
-    return hashlib.sha256(data.encode()).hexdigest()[:16]
-
-
-def calculate_sortino_ratio(net_returns: pd.Series) -> float:
-    """Calculate the Sortino Ratio of a daily net returns series.
-
-    Uses a minimum acceptable return (MAR) of 0.0.  Downside deviation
-    is computed over the full sample size ``N`` (not ``N-1``) following
-    the Sortino framework.
-
-    Args:
-        net_returns: Daily portfolio net returns.
-
-    Returns:
-        float: Annualised Sortino ratio.  Returns ``inf`` when downside
-        deviation is zero but mean return is positive (risk-free profile).
-    """
-    if net_returns.empty:
-        return 0.0
-    mean_ret = net_returns.mean()
-    # Downside deviation target = 0.0, replace positive returns with 0
-    negative_returns = np.minimum(net_returns, 0.0)
-    # Compute downside deviation over the FULL sample size N
-    downside_std = np.sqrt((negative_returns**2).mean())
-    if downside_std == 0.0:
-        return float("inf") if mean_ret > 0.0 else 0.0
-    return float((mean_ret / downside_std) * np.sqrt(252))
-
-
-def calculate_information_ratio(net_returns: pd.Series, benchmark_returns: pd.Series) -> float:
-    """Calculate the Information Ratio of daily returns relative to benchmark.
-
-    Computed as the annualised ratio of active return (strategy minus
-    benchmark) mean to tracking error (std dev of active returns).
-    Dates are aligned via an inner join — only overlapping trading days
-    contribute to the ratio.
-
-    Args:
-        net_returns: Daily portfolio net returns.
-        benchmark_returns: Daily benchmark returns.
-
-    Returns:
-        float: Annualised Information Ratio.  Returns 0.0 when the series
-        are empty, have fewer than 2 observations, or tracking error is zero.
-    """
-    if net_returns.empty or benchmark_returns.empty:
-        return 0.0
-    # Align dates
-    aligned = pd.concat([net_returns, benchmark_returns], axis=1, sort=True).dropna()
-    if aligned.empty:
-        return 0.0
-    active_returns = aligned.iloc[:, 0] - aligned.iloc[:, 1]
-    if len(active_returns) < 2:
-        return 0.0
-    mean_active = active_returns.mean()
-    tracking_error = active_returns.std(ddof=1)
-    if tracking_error == 0.0 or np.isnan(tracking_error):
-        return 0.0
-    return float((mean_active / tracking_error) * np.sqrt(252))
-
-
-def generate_window_report(
-    prices: pd.DataFrame,
-    weights: pd.DataFrame,
-    start: pd.Timestamp,
-    end: pd.Timestamp,
-    benchmark_returns: pd.Series | None = None,
-    *,
-    asset_returns: pd.DataFrame | None = None,
-    borrow_cost_bps: float = 100.0,
-    adaptive_slippage: bool = False,
-    slippage_vol_window: int = 21,
-    slippage_vol_cap: float = 3.0,
-) -> WindowReport:
-    """Run backtest and cost assessment for a specific date window."""
-    window_prices = prices.loc[start:end]
-    window_weights = weights.loc[start:end]
-
-    portfolio_returns, _, daily_weights = run_vectorized_backtest(
-        window_prices,
-        window_weights,
-        asset_returns=asset_returns,
-    )
-
-    # Compute net returns and turnover
-    net_returns, net_equity, turnover = calculate_turnover_and_costs(
-        portfolio_returns,
-        daily_weights,
-        window_prices,
-        asset_returns=asset_returns,
-        borrow_cost_bps=borrow_cost_bps,
-        adaptive_slippage=adaptive_slippage,
-        slippage_vol_window=slippage_vol_window,
-        slippage_vol_cap=slippage_vol_cap,
-    )
-
-    # Standard performance metrics
-    mean_ret = net_returns.mean() if not net_returns.empty else 0.0
-    std_ret = net_returns.std(ddof=1) if len(net_returns) >= 2 else 0.0
-
-    ann_ret = 0.0
-    if not net_returns.empty:
-        total_growth = net_equity.iloc[-1] if not net_equity.empty else 1.0
-        ann_ret = float(total_growth ** (252.0 / len(net_returns)) - 1.0) if total_growth > 0.0 else -1.0
-
-    ann_vol = float(std_ret * np.sqrt(252))
-    sharpe = float((mean_ret / std_ret * np.sqrt(252)) if std_ret > 0.0 else 0.0)
-    sortino = calculate_sortino_ratio(net_returns)
-
-    # Maximum drawdown
-    running_max = net_equity.cummax()
-    drawdowns = (net_equity - running_max) / running_max
-    max_dd = float(abs(drawdowns.min())) if not drawdowns.empty else 0.0
-
-    ir = 0.0
-    if benchmark_returns is not None:
-        window_bench = benchmark_returns.loc[start:end]
-        ir = calculate_information_ratio(net_returns, window_bench)
-
-    return WindowReport(
-        start_date=start.strftime("%Y-%m-%d"),
-        end_date=end.strftime("%Y-%m-%d"),
-        annualized_return=ann_ret,
-        annualized_volatility=ann_vol,
-        sharpe_ratio=sharpe,
-        sortino_ratio=sortino,
-        max_drawdown=max_dd,
-        turnover=turnover,
-        information_ratio=ir,
-    )
-
-
-def aggregate_walk_forward(wf_reports: list[WindowReport]) -> WindowReport:
-    """Aggregate individual walk-forward window reports into a single summary.
-
-    Returns the mean of return/vol/Sharpe/Sortino/IR across all folds,
-    and the **worst-case** (maximum) drawdown and turnover, so that the
-    aggregate represents both central tendency and tail risk.
-
-    Args:
-        wf_reports: One ``WindowReport`` per walk-forward fold.
-
-    Returns:
-        A single ``WindowReport`` spanning the full in-sample period.
-
-    Raises:
-        ValueError: If ``wf_reports`` is empty.
-    """
-    if not wf_reports:
-        raise ValueError("At least one walk-forward window is required to compute in-sample metrics.")
-
-    n = len(wf_reports)
-
-    def _mean(attr: str) -> float:
-        return float(sum(getattr(r, attr) for r in wf_reports) / n)
-
-    def _max(attr: str) -> float:
-        return float(max(getattr(r, attr) for r in wf_reports))
-
-    return WindowReport(
-        start_date=wf_reports[0].start_date,
-        end_date=wf_reports[-1].end_date,
-        annualized_return=_mean("annualized_return"),
-        annualized_volatility=_mean("annualized_volatility"),
-        sharpe_ratio=_mean("sharpe_ratio"),
-        sortino_ratio=_mean("sortino_ratio"),
-        max_drawdown=_max("max_drawdown"),
-        turnover=_max("turnover"),
-        information_ratio=_mean("information_ratio"),
-    )
-
-
-def _run_walk_forward_windows(
-    prices: pd.DataFrame,
-    weights: pd.DataFrame,
-    wf_windows: list[tuple[pd.Timestamp, pd.Timestamp, pd.Timestamp, pd.Timestamp]],
-    bench_returns: pd.Series | None = None,
-    *,
-    asset_returns: pd.DataFrame | None = None,
-    borrow_cost_bps: float = 100.0,
-    adaptive_slippage: bool = False,
-    slippage_vol_window: int = 21,
-    slippage_vol_cap: float = 3.0,
-) -> list[WindowReport]:
-    """Run walk-forward window evaluations in parallel via thread pool.
-
-    Each window is fully independent (read-only access to ``prices`` /
-    ``weights``), so we evaluate them concurrently for a modest speedup
-    on multi-core machines.
-    """
-    n_windows = len(wf_windows)
-    if n_windows == 0:
-        return []
-
-    max_workers = min(4, n_windows)
-    reports: list[WindowReport | None] = [None] * n_windows
-
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_map: dict[Any, int] = {}
-        for i, (_, _, test_start, test_end) in enumerate(wf_windows):
-            future = executor.submit(
-                generate_window_report,
-                prices,
-                weights,
-                test_start,
-                test_end,
-                bench_returns,
-                asset_returns=asset_returns,
-                borrow_cost_bps=borrow_cost_bps,
-                adaptive_slippage=adaptive_slippage,
-                slippage_vol_window=slippage_vol_window,
-                slippage_vol_cap=slippage_vol_cap,
-            )
-            future_map[future] = i
-
-        for future in as_completed(future_map):
-            idx = future_map[future]
-            try:
-                reports[idx] = future.result()
-            except Exception as e:
-                raise RuntimeError(f"Walk-forward window {idx} failed: {e}") from e
-
-    return [r for r in reports if r is not None]
 
 
 def evaluate_strategy_detailed(
@@ -352,23 +65,7 @@ def evaluate_strategy_detailed(
     _eval_cache: _CacheProtocol | None = None,
     _strategy_code: str | None = None,
 ) -> tuple[EvaluationReport, pd.Series[Any]]:
-    """Run full deterministic walk-forward & holdout evaluation lifecycle.
-
-    Returns a tuple of (EvaluationReport, in_sample_net_returns Series).
-    The report carries ``holdout_net_returns`` for the holdout confirmation
-    gate; the second element is the in-sample basis used for the selection
-    DSR and diversity correlation checks.
-
-    Parameters prefixed with ``_`` are internal optimisations:
-
-    * ``_prices`` / ``_bench_returns`` — pre-fetched price data reused
-      across iterations within a single run.
-    * ``_eval_cache`` — memoization dict keyed by
-      ``hash((hash(strategy_code), hash(json(config))))``.  When the same
-      edit is proposed twice the full evaluation is skipped.
-    * ``_strategy_code`` — source text of the strategy being evaluated,
-      required for the eval cache key.
-    """
+    """Run full deterministic walk-forward & holdout evaluation lifecycle."""
     if isinstance(config, StrategyConfig):
         flat_config = config.to_flat_dict()
     else:
@@ -379,7 +76,7 @@ def evaluate_strategy_detailed(
                 if k not in flat_config:
                     flat_config[k] = v
 
-    # ---- Evaluation cache check (Opt 4) ----
+    # ---- Evaluation cache check ----
     if _eval_cache is not None and _strategy_code is not None:
         try:
             from autobacktest.strategy.normalization import normalize_python_code
@@ -420,11 +117,9 @@ def evaluate_strategy_detailed(
             raise ValueError(f"No price history returned for benchmark ticker: {benchmark_ticker}")
         bench_returns = benchmark_prices[benchmark_ticker].pct_change().fillna(0.0)
 
-        # Join benchmark to prices if not already present
         if benchmark_ticker not in prices.columns:
             prices = prices.join(benchmark_prices[[benchmark_ticker]], how="outer")
 
-        # Ensure we have the regime benchmark prices loaded
         if regime_bench_ticker == benchmark_ticker:
             regime_bench_prices = benchmark_prices
         else:
@@ -435,17 +130,12 @@ def evaluate_strategy_detailed(
         if regime_bench_ticker not in prices.columns:
             prices = prices.join(regime_bench_prices[[regime_bench_ticker]], how="outer")
 
-    # Pre-compute asset returns once — reused across all window evaluations (Opt 2)
     _asset_returns = prices.pct_change().fillna(0.0)
 
-    # Partition holdout data (configurable via AUTOBACKTEST_DEFAULT_HOLDOUT_YEARS)
     in_sample_idx, holdout_idx = partition_holdout_data(prices.index, holdout_years=settings.default_holdout_years)
     if in_sample_idx.empty or holdout_idx.empty:
         raise ValueError("In-sample or holdout period is empty. Ensure the backtest period is sufficiently long.")
 
-    # ------------------------------------------------------------------
-    # Causal walk-forward: generate signals per fold, concat test weights
-    # ------------------------------------------------------------------
     from autobacktest.strategy.contract import validate_output
 
     wf_windows = generate_walk_forward_windows(in_sample_idx, train_years=5, test_years=1)
@@ -465,11 +155,9 @@ def evaluate_strategy_detailed(
         test_segment = fold_weights.loc[test_start:test_end]
         wf_test_weights_list.append(test_segment)
 
-    # Concatenate all test-period weights into one continuous series
     wf_weights = pd.concat(wf_test_weights_list)
     wf_weights = wf_weights[~wf_weights.index.duplicated(keep="first")]
 
-    # Single continuous backtest on pooled walk-forward weights (shifted once across entire series)
     wf_portfolio_returns, _wf_equity, wf_daily_weights = run_vectorized_backtest(
         prices,
         wf_weights,
@@ -486,8 +174,6 @@ def evaluate_strategy_detailed(
         slippage_vol_cap=flat_config.get("slippage_vol_cap", 3.0),
     )
 
-    # Slice pooled returns to the contiguous walk-forward test-window span
-    # to avoid leading zeros (pre-first-window cash) and holdout leakage.
     wf_start = wf_windows[0][2]
     wf_end = wf_windows[-1][3]
     wf_net_returns = wf_net_returns.loc[wf_start:wf_end]
@@ -496,7 +182,6 @@ def evaluate_strategy_detailed(
     if wf_net_returns.empty:
         raise ValueError("Walk-forward test returns are empty after backtest.")
 
-    # --- Pooled metrics from the continuous walk-forward stream ---
     wf_mean = wf_net_returns.mean()
     wf_std = wf_net_returns.std(ddof=1) if len(wf_net_returns) >= 2 else 0.0
     wf_total_growth = wf_net_equity.iloc[-1] if not wf_net_equity.empty else 1.0
@@ -521,7 +206,6 @@ def evaluate_strategy_detailed(
         information_ratio=pooled_ir,
     )
 
-    # Per-fold sub-reports for diagnostics (on the pooled causal weights)
     wf_reports = _run_walk_forward_windows(
         prices,
         wf_weights,
@@ -534,15 +218,11 @@ def evaluate_strategy_detailed(
         slippage_vol_cap=flat_config.get("slippage_vol_cap", 3.0),
     )
 
-    # ------------------------------------------------------------------
-    # Full period signal generation for holdout + regime + MC evaluation
-    # ------------------------------------------------------------------
     weights = generate_signals_fn(prices, flat_config)
     ok, err = validate_output(weights, tickers, expected_index=prices.index)
     if not ok:
         raise ValueError(f"Strategy weights validation failed (full period): {err}")
 
-    # Holdout evaluation
     holdout_start = holdout_idx.min()
     holdout_end = holdout_idx.max()
     bench_holdout = bench_returns.loc[holdout_start:holdout_end]
@@ -577,7 +257,6 @@ def evaluate_strategy_detailed(
         slippage_vol_cap=flat_config.get("slippage_vol_cap", 3.0),
     )
 
-    # Full period evaluation for Monte Carlo and Regime tests
     full_returns, _, daily_weights = run_vectorized_backtest(
         prices,
         weights,
@@ -594,23 +273,13 @@ def evaluate_strategy_detailed(
         slippage_vol_cap=flat_config.get("slippage_vol_cap", 3.0),
     )
 
-    regime_drawdowns, regime_passed = evaluate_stress_regimes(
+    regime_drawdowns, regime_passed, mc_5th, mc_50th, mc_95th, mc_sharpes = run_stress_and_bootstrap_tests(
         net_returns,
         daily_weights=daily_weights,
         n_tickers=len(tickers),
-    )
-    mc_5th, mc_50th, mc_95th, mc_sharpes = run_block_bootstrap(
-        net_returns,
-        n_paths=1000,
-        seed=42,
-        method=flat_config.get("mc_bootstrap_method", "stationary"),
+        mc_bootstrap_method=flat_config.get("mc_bootstrap_method", "stationary"),
     )
 
-    # --- DSR accounting ---
-    # Selection DSR uses POOLED walk-forward returns (same basis as observed_sharpe)
-    # NOTE: effective_trials and historical_sharpes are intentionally NOT read
-    # from config — the only legitimate source is ledger transaction history
-    # via the orchestrator's _deflate() call. Standalone evaluate uses PSR.
     effective_trials = 1
     historical_sharpes = None
 
@@ -626,12 +295,10 @@ def evaluate_strategy_detailed(
         effective_trials=1,
     )
 
-    # Compute benchmark metrics for both periods
     benchmark_in_sample = _compute_returns_metrics(bench_returns, wf_start, wf_end)
     benchmark_holdout_m = _compute_returns_metrics(bench_returns, holdout_start, holdout_end)
 
-    # Calculate launch regime haircut and apply to strategy returns
-    haircut = calculate_regime_haircut(prices[regime_bench_ticker], holdout_start)
+    haircut = get_regime_haircut(prices[regime_bench_ticker], holdout_start)
     if haircut > 0.0:
         factor = 1.0 - haircut
         in_sample_metrics.annualized_return *= factor
@@ -645,7 +312,6 @@ def evaluate_strategy_detailed(
             r.sharpe_ratio *= factor
             r.sortino_ratio *= factor
 
-    # Generate complete stable dataset hash including date parameters
     dataset_hash = compute_dataset_hash(
         tickers,
         start_date=start_date,
@@ -653,7 +319,6 @@ def evaluate_strategy_detailed(
         holdout_years=settings.default_holdout_years,
     )
 
-    # Generate complete report
     report = EvaluationReport(
         strategy_name=strategy_name,
         dataset_hash=dataset_hash,
@@ -680,7 +345,6 @@ def evaluate_strategy_detailed(
         benchmark_holdout_metrics=benchmark_holdout_m,
     )
 
-    # Delegate standalone gate checks to backward-compat accept (hard constraints only)
     from autobacktest.gate import accept as gate_accept
 
     gate_accept(report, baseline=None, config=flat_config)
@@ -708,10 +372,7 @@ def evaluate_strategy(
     end_date: str = settings.default_end_date,
     **kwargs: Any,
 ) -> EvaluationReport:
-    """Run full deterministic walk-forward & holdout evaluation lifecycle.
-
-    Thin wrapper around evaluate_strategy_detailed that returns only the report.
-    """
+    """Run full deterministic walk-forward & holdout evaluation lifecycle."""
     report, _ = evaluate_strategy_detailed(
         strategy_name,
         generate_signals_fn,
