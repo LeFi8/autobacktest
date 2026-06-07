@@ -63,7 +63,7 @@ def _compute_run_max_tokens(
 
 
 def _extract_clean_json(content: str) -> str:
-    """Strip Markdown code fences and extract the first JSON object from *content*.
+    r"""Strip Markdown code fences and extract the first JSON object from *content*.
 
     Handles ``\`\`\`json``, bare ``\`\`\```, and brace-delimited fallback extraction.
 
