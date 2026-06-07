@@ -11,10 +11,8 @@ parameter importance analysis after each iteration.
 from __future__ import annotations
 
 import contextlib
-import importlib.util
 import logging
 import math
-import sys
 import threading
 import uuid
 from collections import OrderedDict
@@ -46,7 +44,18 @@ from autobacktest.ledger.event_log import EventLog
 from autobacktest.ledger.git_ops import GitLedger
 from autobacktest.ledger.store import LedgerStore
 from autobacktest.lessons import LessonStore
-from autobacktest.llm.base import AgentContext, AgentEdit, LLMError, LLMProvider
+from autobacktest.llm.base import AgentContext, AgentEdit, LLMProvider
+from autobacktest.optimization.candidate import (
+    generate_candidates,
+    process_and_repair_candidate,
+)
+from autobacktest.optimization.eval_manager import (
+    load_signals,
+)
+from autobacktest.optimization.persistence import (
+    deflate_holdout,
+    deflate_selection,
+)
 from autobacktest.program import parse_program
 from autobacktest.strategy.config_schema import StrategyConfig
 from autobacktest.strategy.diversity import (
@@ -550,116 +559,33 @@ def run_optimization(
                             if settings.enable_candidate_directives and ctx.mode == "explore"
                             else ""
                         )
-                        ev: dict[str, Any] = {"edit": edit, "directive": directive}
                         if edit is None:
-                            ev["llm_error"] = True
+                            candidate_results.append({"edit": None, "directive": directive, "llm_error": True})
                         else:
                             n_llm_ok += 1
-                            total_prompt_tokens += edit.prompt_tokens
-                            total_completion_tokens += edit.completion_tokens
-                            total_cost += edit.cost
-
                             # Immediately persist lessons from the edit
                             if edit.lessons_text is not None and edit.lessons_text.strip():
                                 lesson_store.ingest_markdown(edit.lessons_text, strategy_name)
                                 lessons_text = lesson_store.get_filtered_markdown(strategy_name)
 
-                            # Apply deterministic pandas codemod (repairs deprecated API calls)
-                            if settings.enable_codemod_repair:
-                                from autobacktest.strategy.codemod import repair_strategy_code
-
-                                repaired_code, applied_fixes = repair_strategy_code(edit.strategy_code)
-                                if applied_fixes:
-                                    import dataclasses as _dc
-
-                                    edit = _dc.replace(edit, strategy_code=repaired_code)
-                                    logger.info("codemod repaired candidate in iter %s: %s", k, applied_fixes)
-
-                            # Validate
-                            orig_ok, orig_err_code, orig_err_detail = _validate_candidate(
-                                strategy_name, edit, strategies_dir, configs_dir
+                            ev = process_and_repair_candidate(
+                                strategy_name=strategy_name,
+                                edit=edit,
+                                ctx=ctx,
+                                directive=directive,
+                                provider=provider,
+                                strategies_dir=strategies_dir,
+                                configs_dir=configs_dir,
+                                lessons_text=lessons_text,
+                                k=k,
+                                validate_fn=_validate_candidate,
                             )
+                            final_edit = ev["edit"]
+                            total_prompt_tokens += final_edit.prompt_tokens
+                            total_completion_tokens += final_edit.completion_tokens
+                            total_cost += final_edit.cost
 
-                            ok, err_code, err_detail = orig_ok, orig_err_code, orig_err_detail
-                            repair_applied = False
-
-                            if not ok and settings.enable_llm_repair:
-                                import dataclasses as _dc
-
-                                current_edit = edit
-                                for _attempt_idx in range(settings.max_repair_attempts):
-                                    repair_request = {
-                                        "failed_code": current_edit.strategy_code,
-                                        "failed_config_yaml": current_edit.config_yaml,
-                                        "error_code": err_code,
-                                        "error_detail": err_detail,
-                                    }
-                                    repair_ctx = _dc.replace(
-                                        ctx,
-                                        strategy_code=current_edit.strategy_code,
-                                        config_yaml=current_edit.config_yaml,
-                                        lessons_text=lessons_text,
-                                        repair_request=repair_request,
-                                        directive=ev.get("directive", ""),
-                                    )
-                                    try:
-                                        repair_edit = provider.generate_edit(repair_ctx)
-                                    except LLMError as e:
-                                        if not e.retryable:
-                                            raise
-                                        break
-
-                                    if repair_edit is not None:
-                                        total_prompt_tokens += repair_edit.prompt_tokens
-                                        total_completion_tokens += repair_edit.completion_tokens
-                                        total_cost += repair_edit.cost
-
-                                        edit = _dc.replace(
-                                            repair_edit,
-                                            prompt_tokens=edit.prompt_tokens + repair_edit.prompt_tokens,
-                                            completion_tokens=edit.completion_tokens + repair_edit.completion_tokens,
-                                            total_tokens=edit.total_tokens + repair_edit.total_tokens,
-                                            cost=edit.cost + repair_edit.cost,
-                                        )
-
-                                        if settings.enable_codemod_repair:
-                                            repaired_code, applied_fixes = repair_strategy_code(edit.strategy_code)
-                                            if applied_fixes:
-                                                edit = _dc.replace(edit, strategy_code=repaired_code)
-
-                                        rep_ok, rep_err_code, rep_err_detail = _validate_candidate(
-                                            strategy_name, edit, strategies_dir, configs_dir
-                                        )
-                                        if rep_ok:
-                                            ok, err_code, err_detail = rep_ok, rep_err_code, rep_err_detail
-                                            repair_applied = True
-                                            break
-                                        else:
-                                            current_edit = edit
-                                            err_code, err_detail = rep_err_code, rep_err_detail
-
-                                if not repair_applied:
-                                    ok, err_code, err_detail = orig_ok, orig_err_code, orig_err_detail
-
-                            ev["repair_applied"] = repair_applied
-                            if ok:
-                                ev["valid"] = True
-                                ev["strategy_code"] = edit.strategy_code
-                                ev["config_yaml"] = edit.config_yaml
-                                ev["prompt_tokens"] = edit.prompt_tokens
-                                ev["completion_tokens"] = edit.completion_tokens
-                                ev["total_tokens"] = edit.total_tokens
-                                ev["cost"] = edit.cost
-                                ev["edit"] = edit
-                            else:
-                                ev["valid"] = False
-                                ev["validation_stage"] = "validation"
-                                ev["detail"] = err_detail
-                                ev["error_code"] = err_code
-                                ev["strategy_code"] = edit.strategy_code
-                                ev["config_yaml"] = edit.config_yaml
-
-                        candidate_results.append(ev)
+                            candidate_results.append(ev)
 
                     # Config diversity gate (pre-backtest, main thread)
                     valid_candidates = []
@@ -1305,206 +1231,6 @@ def _audit_baseline(report: EvaluationReport, config: StrategyConfig) -> list[st
     return warnings
 
 
-def _load_signals(path: Path) -> Any:
-    """Dynamically import generate_signals from a strategy .py file."""
-    module_name = path.stem
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Cannot load strategy module from {path}")
-    module = importlib.util.module_from_spec(spec)
-    try:
-        spec.loader.exec_module(module)
-    finally:
-        # Only evict if the module registered itself — avoids clobbering a
-        # legitimate stdlib/third-party module that shares the same name.
-        if sys.modules.get(module_name) is module:
-            sys.modules.pop(module_name)
-    if not hasattr(module, "generate_signals"):
-        raise AttributeError(f"Strategy module {path} has no generate_signals function")
-    return module.generate_signals
-
-
-def _validate_candidate(
-    strategy_name: str,
-    edit: AgentEdit,
-    strategies_dir: Path,
-    configs_dir: Path,
-) -> tuple[bool, str | None, str | None]:
-    """Validate candidate edit via temp files (mirrors cli.py llm-test pattern)."""
-    temp_name = f"{strategy_name}_candidate_{uuid.uuid4().hex}"
-    temp_py = strategies_dir / f"{temp_name}.py"
-    temp_yaml = configs_dir / f"{temp_name}.yaml"
-    try:
-        temp_py.write_text(edit.strategy_code, encoding="utf-8")
-        temp_yaml.write_text(edit.config_yaml, encoding="utf-8")
-        result = preflight(temp_name, strategies_dir, configs_dir)
-        return (
-            result.passed,
-            str(result.error_code) if result.error_code else None,
-            str(result.detail) if result.detail else None,
-        )
-    finally:
-        if temp_py.exists():
-            temp_py.unlink()
-        if temp_yaml.exists():
-            temp_yaml.unlink()
-
-
-def _generate_candidates(
-    provider: LLMProvider,
-    ctx: AgentContext,
-    n: int,
-) -> list[AgentEdit | None]:
-    """Generate N candidate edits in parallel, returning None for transient failures.
-
-    Non-retryable errors (e.g. auth failures) are raised immediately.
-    """
-    import dataclasses
-
-    def _try(c: AgentContext) -> AgentEdit | None:
-        try:
-            return provider.generate_edit(c)
-        except LLMError as e:
-            if not e.retryable:
-                raise
-            return None
-
-    with ThreadPoolExecutor(max_workers=n) as pool:
-        futures = []
-        for i in range(n):
-            if settings.enable_candidate_directives and ctx.mode == "explore":
-                dir_str = CANDIDATE_DIRECTIVES[i % len(CANDIDATE_DIRECTIVES)]
-                c = dataclasses.replace(ctx, directive=dir_str)
-            else:
-                c = ctx
-            futures.append(pool.submit(_try, c))
-        return [f.result() for f in futures]
-
-
-def _eval_single_candidate(
-    strategy_name: str,
-    strategy_code: str,
-    config_yaml: str,
-    strategies_dir: Path,
-    configs_dir: Path,
-    start_date: str,
-    end_date: str,
-    _eval_cache: _CacheProtocol,
-) -> tuple[EvaluationReport | None, pd.Series[Any] | None, dict[str, Any] | None, str | None]:
-    """Evaluate one candidate via temp files.
-
-    Returns ``(report, returns, new_config, error_str)``.  When evaluation
-    fails all four values are ``None``.  Temp files are cleaned up.
-    """
-    temp_name = f"eval_{uuid.uuid4().hex}"
-    temp_py = strategies_dir / f"{temp_name}.py"
-    temp_yaml = configs_dir / f"{temp_name}.yaml"
-    try:
-        temp_py.write_text(strategy_code, encoding="utf-8")
-        temp_yaml.write_text(config_yaml, encoding="utf-8")
-        candidate_fn = _load_signals(temp_py)
-        new_config_obj = StrategyConfig.from_yaml(temp_yaml)
-        new_config = new_config_obj.model_dump()
-        report, returns = evaluate_strategy_detailed(
-            strategy_name,
-            candidate_fn,
-            new_config,
-            start_date=start_date,
-            end_date=end_date,
-            _eval_cache=_eval_cache,
-            _strategy_code=strategy_code,
-        )
-        return report, returns, new_config, None
-    except Exception as e:
-        return None, None, None, str(e)
-    finally:
-        for p in [temp_py, temp_yaml]:
-            if p.exists():
-                p.unlink()
-
-
-def _deflate(
-    report: EvaluationReport,
-    selection_returns: pd.Series[Any],
-    ledger: LedgerStore,
-    exclude_id: int | None = None,
-    cscv_blocks: int = 10,
-    embargo_days: int = 5,
-) -> None:
-    """Deflate the in-sample selection DSR using the ledger's multi-trial history.
-
-    The candidate is deliberately included in both the returns matrix and
-    the historical Sharpe list.  This is intentionally conservative:
-
-    * Including the candidate in ``hist_matrix`` increases the effective-
-      trials count, raising the multiple-testing bar.
-    * Including its Sharpe in the list inflates ``sigma_sr``, which
-      increases the expected-maximum Sharpe (``sr0``), making the DSR
-      harder to pass.
-
-    Excluding the candidate would give it an artificial advantage (no
-    self-penalty), which is inappropriate for a selection procedure where
-    every trial must be treated symmetrically.
-    """
-    hist_matrix, hist_sharpes = ledger.fetch_historical_returns(report.dataset_hash, exclude_id=exclude_id)
-
-    if hist_matrix.empty:
-        hist_matrix = pd.DataFrame({"candidate": selection_returns})
-    else:
-        hist_matrix = hist_matrix.copy()
-        hist_matrix["candidate"] = selection_returns
-
-    sharpes = list(hist_sharpes) if hist_sharpes is not None else []
-    sharpes.append(report.observed_sharpe)
-
-    n = max(1, calculate_effective_trials(hist_matrix))
-
-    report.effective_trials = n
-    report.deflated_sharpe = calculate_psr_dsr(selection_returns, sharpes, n)
-
-    # Compute and store PBO (Probability of Backtest Overfitting)
-    from autobacktest.evaluator.cscv import calculate_pbo
-
-    if len(hist_matrix) >= 2 * cscv_blocks:
-        report.pbo = calculate_pbo(hist_matrix, n_blocks=cscv_blocks, embargo_days=embargo_days)
-    else:
-        report.pbo = None
-
-
-def _deflate_holdout(
-    report: EvaluationReport,
-    ledger: LedgerStore,
-    exclude_id: int | None = None,
-) -> None:
-    """Deflate ``report.holdout_deflated_sharpe`` by the holdout-peek count.
-
-    Same conservative self-inclusion rationale as ``_deflate``: the candidate
-    is included in the returns matrix and Sharpe list to avoid giving it an
-    artificial advantage over prior holdout peeks.
-    """
-    hist_matrix, hist_sharpes = ledger.fetch_holdout_history(report.dataset_hash, exclude_id=exclude_id)
-
-    if report.holdout_net_returns is None or report.holdout_net_returns.empty:
-        return
-
-    if hist_matrix.empty:
-        hist_matrix = pd.DataFrame({"candidate": report.holdout_net_returns})
-    else:
-        hist_matrix = hist_matrix.copy()
-        hist_matrix["candidate"] = report.holdout_net_returns
-
-    sharpes = list(hist_sharpes) if hist_sharpes is not None else []
-    sharpes.append(report.holdout_metrics.sharpe_ratio)
-
-    n = max(1, calculate_effective_trials(hist_matrix))
-
-    report.holdout_deflated_sharpe = calculate_psr_dsr(
-        report.holdout_net_returns,
-        sharpes,
-        n,
-    )
-
-
 def _get_metric_value(report: EvaluationReport, metric: TargetMetric) -> float:
     """Extract the target metric value from the in-sample walk-forward aggregate."""
     if metric == TargetMetric.SHARPE:
@@ -1606,3 +1332,109 @@ def _summarize_all_failures(candidate_results: list[dict[str, Any]]) -> list[dic
                 }
             )
     return failures
+
+
+def _load_signals(path: Path) -> Any:
+    """Dynamically import generate_signals from a strategy .py file."""
+    return load_signals(path)
+
+
+def _validate_candidate(
+    strategy_name: str,
+    edit: AgentEdit,
+    strategies_dir: Path,
+    configs_dir: Path,
+) -> tuple[bool, str | None, str | None]:
+    """Validate candidate edit via temp files."""
+    temp_name = f"{strategy_name}_candidate_{uuid.uuid4().hex}"
+    temp_py = strategies_dir / f"{temp_name}.py"
+    temp_yaml = configs_dir / f"{temp_name}.yaml"
+    try:
+        temp_py.write_text(edit.strategy_code, encoding="utf-8")
+        temp_yaml.write_text(edit.config_yaml, encoding="utf-8")
+        result = preflight(temp_name, strategies_dir, configs_dir)
+        return (
+            result.passed,
+            str(result.error_code) if result.error_code else None,
+            str(result.detail) if result.detail else None,
+        )
+    finally:
+        if temp_py.exists():
+            temp_py.unlink()
+        if temp_yaml.exists():
+            temp_yaml.unlink()
+
+
+def _generate_candidates(
+    provider: LLMProvider,
+    ctx: AgentContext,
+    n: int,
+) -> list[AgentEdit | None]:
+    """Generate N candidate edits in parallel."""
+    return generate_candidates(provider, ctx, n)
+
+
+def _eval_single_candidate(
+    strategy_name: str,
+    strategy_code: str,
+    config_yaml: str,
+    strategies_dir: Path,
+    configs_dir: Path,
+    start_date: str,
+    end_date: str,
+    _eval_cache: _CacheProtocol,
+) -> tuple[EvaluationReport | None, pd.Series[Any] | None, dict[str, Any] | None, str | None]:
+    """Evaluate one candidate via temp files."""
+    temp_name = f"eval_{uuid.uuid4().hex}"
+    temp_py = strategies_dir / f"{temp_name}.py"
+    temp_yaml = configs_dir / f"{temp_name}.yaml"
+    try:
+        temp_py.write_text(strategy_code, encoding="utf-8")
+        temp_yaml.write_text(config_yaml, encoding="utf-8")
+        candidate_fn = _load_signals(temp_py)
+        new_config_obj = StrategyConfig.from_yaml(temp_yaml)
+        new_config = new_config_obj.model_dump()
+        report, returns = evaluate_strategy_detailed(
+            strategy_name,
+            candidate_fn,
+            new_config,
+            start_date=start_date,
+            end_date=end_date,
+            _eval_cache=_eval_cache,
+            _strategy_code=strategy_code,
+        )
+        return report, returns, new_config, None
+    except Exception as e:
+        return None, None, None, str(e)
+    finally:
+        for p in [temp_py, temp_yaml]:
+            if p.exists():
+                p.unlink()
+
+
+def _deflate(
+    report: EvaluationReport,
+    selection_returns: pd.Series[Any],
+    ledger: LedgerStore,
+    exclude_id: int | None = None,
+    cscv_blocks: int = 10,
+    embargo_days: int = 5,
+) -> None:
+    """Deflate selection metrics."""
+    deflate_selection(
+        report,
+        selection_returns,
+        ledger,
+        exclude_id=exclude_id,
+        cscv_blocks=cscv_blocks,
+        embargo_days=embargo_days,
+    )
+
+
+def _deflate_holdout(
+    report: EvaluationReport,
+    ledger: LedgerStore,
+    exclude_id: int | None = None,
+) -> None:
+    """Deflate holdout metrics."""
+    deflate_holdout(report, ledger, exclude_id=exclude_id)
