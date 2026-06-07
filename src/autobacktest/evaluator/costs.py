@@ -70,8 +70,8 @@ def calculate_turnover_and_costs(
 
     if adaptive_slippage:
         vol = asset_returns.rolling(slippage_vol_window, min_periods=slippage_vol_window).std()
-        vol_median = vol.median(axis=0)
-        mult = vol.div(vol_median.replace(0.0, np.nan), axis=1).clip(lower=1.0, upper=slippage_vol_cap).fillna(1.0)
+        vol_median = vol.expanding(min_periods=slippage_vol_window).median()
+        mult = vol.div(vol_median.replace(0.0, np.nan)).clip(lower=1.0, upper=slippage_vol_cap).fillna(1.0)
         spread_cost = (trades * spread_rate * mult).sum(axis=1)
         commission_cost = daily_trade_volume * commission_rate
         linear_costs = spread_cost + commission_cost

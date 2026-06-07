@@ -280,7 +280,7 @@ def test_adaptive_slippage_calculation() -> None:
 
     # 6. Cap/Floor honored check: let's verify that the multiplier is constrained
     vol = asset_returns.rolling(20, min_periods=20).std()
-    vol_median = vol.median(axis=0)
-    mult = vol.div(vol_median.replace(0.0, np.nan), axis=1).clip(lower=1.0, upper=3.0).fillna(1.0)
+    vol_median = vol.expanding(min_periods=20).median()
+    mult = vol.div(vol_median.replace(0.0, np.nan)).clip(lower=1.0, upper=3.0).fillna(1.0)
     assert (mult <= 3.0).all().all()
     assert (mult >= 1.0).all().all()

@@ -45,6 +45,10 @@ def test_calculate_hansen_spa_validation_errors() -> None:
     with pytest.raises(ValueError, match="Insufficient aligned trading days"):
         calculate_hansen_spa(bench_disjoint, alts_disjoint)
 
+    # Invalid n_paths
+    with pytest.raises(ValueError, match=r"Number of bootstrap paths.*must be at least 2"):
+        calculate_hansen_spa(bench, alts, n_paths=1)
+
 
 def test_calculate_hansen_spa_identical_returns() -> None:
     """When alternatives are identical to the benchmark, p-values are high and t_spa is 0."""

@@ -110,6 +110,8 @@ benchmark: HIGH
 momentum_lookback: 12
 max_drawdown_limit: 0.50
 turnover_limit: 5.0
+params:
+  mock_param: 10.0
 """
 
 # Improved config differs enough from STRATEGY_CONFIG to pass the diversity gate
@@ -122,6 +124,8 @@ benchmark: HIGH
 momentum_lookback: 1
 max_drawdown_limit: 0.30
 turnover_limit: 10.0
+params:
+  mock_param: 10.0
 """
 
 PROGRAM_MD = """\

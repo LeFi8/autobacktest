@@ -170,6 +170,9 @@ def jitter_config(
         "min_improvement",
         "select_min_return_ratio",
         "holdout_min_improvement",
+        "max_drawdown_limit",
+        "turnover_limit",
+        "dsr_floor",
     }
 
     for k, v in flat.items():

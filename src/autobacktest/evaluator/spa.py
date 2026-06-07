@@ -37,13 +37,15 @@ def calculate_hansen_spa(
         raise ValueError("No alternative returns provided for Hansen SPA test.")
     if benchmark_returns.empty:
         raise ValueError("Benchmark returns are empty.")
+    if n_paths < 2:
+        raise ValueError("Number of bootstrap paths (n_paths) must be at least 2.")
 
     # 1. Align dates of benchmark and alternative returns using an inner join
     aligned = pd.concat(
         [benchmark_returns.to_frame("benchmark"), alternative_returns],
         axis=1,
         join="inner",
-    )
+    ).dropna()
     if len(aligned) < 2:
         raise ValueError(f"Insufficient aligned trading days ({len(aligned)}) for Hansen SPA test.")
 

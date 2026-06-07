@@ -118,6 +118,8 @@ benchmark: SPY
 momentum_lookback: 1
 max_drawdown_limit: 0.20
 turnover_limit: 2.0
+params:
+  mock_param: 10.0
 """
     tried = [yaml_at_bound]
     jittered, _meta = jitter_config(yaml_at_bound, tried, 0.95, seed=42)
