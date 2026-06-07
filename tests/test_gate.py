@@ -13,6 +13,7 @@ def _create_mock_report(
     sortino: float = 2.0,
     information_ratio: float = 1.0,
     annualized_return: float = 0.15,
+    pbo: float | None = None,
 ) -> EvaluationReport:
     """Helper to mock EvaluationReport dataclass with parameter overrides."""
     window = WindowReport(
@@ -43,6 +44,7 @@ def _create_mock_report(
         observed_sharpe=sharpe,
         effective_trials=1,
         deflated_sharpe=deflated_sharpe,
+        pbo=pbo,
     )
 
 
@@ -427,3 +429,42 @@ def test_select_resolves_min_return_ratio_from_config() -> None:
     config2 = {"select_min_return_ratio": 0.5}
     res2 = select(cand, baseline=base, config=config2)
     assert res2.accepted
+
+
+def test_gate_pbo_constraints() -> None:
+    # 1. Passes when pbo is below limit
+    rep = _create_mock_report(pbo=0.3)
+    res = accept(rep, baseline=None, pbo_limit=0.5)
+    assert res.accepted
+    assert rep.gates_passed.get("pbo") is True
+
+    # 2. Rejects when pbo exceeds limit
+    rep_high = _create_mock_report(pbo=0.8)
+    res_high = accept(rep_high, baseline=None, pbo_limit=0.5)
+    assert not res_high.accepted
+    assert res_high.failed_gate == "pbo"
+    assert rep_high.gates_passed.get("pbo") is False
+
+    # 3. Disabled gate (no-op pass) when pbo_limit is None or report.pbo is None
+    rep_none_limit = _create_mock_report(pbo=0.9)
+    res_none_limit = accept(rep_none_limit, baseline=None, pbo_limit=None)
+    assert res_none_limit.accepted
+    assert rep_none_limit.gates_passed.get("pbo") is True
+
+    rep_none_pbo = _create_mock_report(pbo=None)
+    res_none_pbo = accept(rep_none_pbo, baseline=None, pbo_limit=0.5)
+    assert res_none_pbo.accepted
+    assert rep_none_pbo.gates_passed.get("pbo") is True
+
+    # 4. Reject NaN PBO
+    rep_nan_pbo = _create_mock_report(pbo=float("nan"))
+    res_nan_pbo = accept(rep_nan_pbo, baseline=None, pbo_limit=0.5)
+    assert not res_nan_pbo.accepted
+    assert res_nan_pbo.failed_gate == "pbo"
+    assert rep_nan_pbo.gates_passed.get("pbo") is False
+
+    # 5. Ordering test (turnover failure wins over pbo)
+    rep_both_fail = _create_mock_report(turnover=2.5, pbo=0.8)
+    res_ordering = accept(rep_both_fail, baseline=None, turnover_limit=1.0, pbo_limit=0.5)
+    assert not res_ordering.accepted
+    assert res_ordering.failed_gate == "turnover"  # turnover comes first lexicographically

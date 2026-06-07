@@ -268,9 +268,38 @@ def preflight(
 ```
 
 ### `StrategyConfig`
-Unified configuration validator inheriting from `pydantic.BaseModel`.
+Unified configuration validator inheriting from `pydantic.BaseModel` with ``extra="forbid"`` — strategy-specific custom parameters must be placed in the ``params`` dictionary to prevent injection of arbitrary top-level keys.
+
+**Fields:**
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `universe` | `list[str]` | (required) | List of asset tickers (min 1) |
+| `benchmark` | `str` | `"SPY"` | Benchmark index ticker |
+| `momentum_lookback` | `int` | `12` | Momentum lookback window (months, >= 1) |
+| `max_drawdown_limit` | `float` | `0.20` | Max permitted drawdown [0, 1] |
+| `turnover_limit` | `float` | `2.0` | Max annualized turnover (>= 0, <= 10) |
+| `borrow_cost_bps` | `float` | `100.0` | Annualized short borrowing cost in bps |
+| `cscv_blocks` | `int` | `10` | Blocks for CSCV PBO calculation (>= 4) |
+| `pbo_limit` | `float\|None` | `None` | PBO ceiling for select gate |
+| `cscv_embargo_days` | `int` | `5` | CSCV block embargo days |
+| `adaptive_slippage` | `bool` | `False` | Use volatility-adaptive slippage |
+| `slippage_vol_window` | `int` | `21` | Volatility window for adaptive slippage |
+| `slippage_vol_cap` | `float` | `3.0` | Volatility cap multiplier for adaptive slippage |
+| `mc_bootstrap_method` | `str` | `"stationary"` | Bootstrap method: ``"circular"`` or ``"stationary"`` |
+| `regime_benchmark` | `str\|None` | `None` | Alternative benchmark for launch-regime timing haircut |
+| `params` | `dict[str, Any]` | `{}` | Strategy-specific custom parameters |
+| `min_improvement` | `float` | `0.0` | Min target-metric improvement epsilon for select gate |
+| `select_min_return_ratio` | `float` | `0.5` | Min fraction of baseline return for select gate |
+| `require_dsr_non_degradation` | `bool` | `True` | Enforce DSR non-degradation in select gate |
+| `holdout_min_improvement` | `float` | `0.0` | Tolerance for holdout DSR non-degradation |
+| `enable_holdout_confirmation` | `bool` | `True` | If True, select-passing candidates confirmed on holdout |
+| `dsr_floor` | `float\|None` | `None` | Optional absolute DSR floor (reserved) |
+
+**Methods:**
 - `from_yaml(path: Path) -> StrategyConfig`: Parses YAML file and instantiates schema.
 - `to_flat_dict() -> dict[str, Any]`: Flattens configurations including sub-parameter schemas to single-depth dictionary.
+- `constraints_text() -> str`: Renders schema field constraints and default values as text for LLM prompt injection.
 
 ### Strategy Fingerprint & Diversity Validation (`autobacktest.strategy.diversity`)
 
@@ -305,12 +334,13 @@ def max_config_similarity(
 Normalizes unknown parameters by establishing dynamic sample-space boundaries across the entire set of compared configurations.
 
 #### `check_returns_correlation`
-Analyzes whether a strategy candidate produces returns that are functionally identical or highly correlated to any previous optimization trial.
+Analyzes whether a strategy candidate produces returns that are functionally identical or highly correlated to any previous optimization trial. Uses raw (signed) Pearson correlation — negatively correlated candidates (diversification benefit) pass the gate.
 ```python
 def check_returns_correlation(
     candidate_returns: pd.Series,
     historical_returns_matrix: pd.DataFrame,
     threshold: float = 0.90,
+    min_overlap_days: int = 60,
 ) -> tuple[bool, float]:
     """Check returns correlation against historical backtests.
 
@@ -318,7 +348,8 @@ def check_returns_correlation(
         candidate_returns: Daily net returns of the active strategy candidate.
         historical_returns_matrix: DataFrame containing daily return columns of past attempts.
         threshold: Maximum permitted Pearson correlation coefficient (default: 0.90).
-        min_overlap_days: Minimum overlapping trading days required to compute correlation.
+        min_overlap_days: Minimum overlapping trading days required to compute
+            a meaningful correlation (default: 60).
 
     Returns:
         tuple containing:
@@ -346,6 +377,7 @@ def select(
     min_improvement: float | None = None,
     require_dsr_non_degradation: bool | None = None,
     min_return_ratio: float | None = None,
+    pbo_limit: float | None = None,
     config: Any = None,
 ) -> GateResult:
     """In-sample selection gate.
@@ -354,11 +386,12 @@ def select(
     1. Max drawdown <= dd_limit (resolved from config or default 0.20)
     2. Regime stress tests: regime_passed is True
     3. Turnover <= turnover_limit (resolved from config or default 2.0)
+    4. PBO limit (when specified): report.pbo <= pbo_limit
 
     If all pass, tie-breaker (when baseline is present):
-    4. Target metric improvement: candidate > baseline + min_improvement
-    5. Annualized return >= baselines annualized return * min_return_ratio (default 0.5)
-    6. DSR non-degradation: candidate's in-sample DSR does not degrade below baseline's
+    5. Target metric improvement: candidate > baseline + min_improvement
+    6. Annualized return >= baselines annualized return * min_return_ratio (default 0.5)
+    7. DSR non-degradation: candidate's in-sample DSR does not degrade below baseline's
        (configurable via require_dsr_non_degradation, always-on by default)
     """
 ```
@@ -397,10 +430,12 @@ def accept(
     min_improvement: float | None = None,
     require_dsr_non_degradation: bool | None = None,
     min_return_ratio: float | None = None,
+    pbo_limit: float | None = None,
     config: Any = None,
 ) -> GateResult:
     """Backward-compatible wrapper: composes select + confirm.
-    The require_dsr_non_degradation and min_return_ratio parameters are propagated to select.
+    The require_dsr_non_degradation, min_return_ratio, and pbo_limit
+    parameters are propagated to select.
     """
 ```
 
@@ -547,10 +582,11 @@ def run_optimization(
     holdout_peek_limit: int = 20,
     early_stop_patience: int = settings.early_stop_patience,
     resume: str | None = None,
+    quiet: bool = False,
 ) -> OrchestratorResult:
     """Run the LLM-driven strategy optimization loop.
 
-    Generates 3 parallel LLM candidate edits per iteration, validates via
+    Generates N parallel LLM candidate edits per iteration, validates via
     preflight checks, diversity gates (config similarity + returns correlation),
     two-phase gate system (select + confirm), and commits winners to git.
 
@@ -574,13 +610,26 @@ def run_optimization(
             Configurable via ``AUTOBACKTEST_EARLY_STOP_PATIENCE`` env var.
             Set to 0 to disable.
         resume: Run ID to resume a previously interrupted optimization.
+        quiet: Suppress non-critical warnings and reduce terminal noise
+            during the optimization loop (default: False).
 
     Returns:
         OrchestratorResult: Summary of the final optimization run outcomes.
+        ``early_stopped`` is True when the loop exited early due to
+        ``early_stop_patience`` consecutive rejections or the holdout-peek
+        budget being exhausted.
     """
 ```
 
 ---
+
+### `_LRUCache` (internal)
+Thread-safe LRU cache used by the orchestrator to memoize expensive
+evaluation results.  Evicts the least-recently-used entry when the cache
+exceeds ``maxsize`` (default 36).  Provides the same ``__getitem__`` /
+``__setitem__`` / ``__contains__`` / ``get`` interface as a standard
+``dict`` so it can be passed transparently as ``_eval_cache`` to
+``evaluate_strategy_detailed``.
 
 ### `OrchestratorResult`
 Dataclass returned by ``run_optimization`` summarizing the full run outcome.
@@ -828,7 +877,8 @@ Calculates the Probability of Backtest Overfitting (PBO) using the CSCV methodol
 def calculate_pbo(
     returns_matrix: pd.DataFrame,
     n_blocks: int = 10,
-) -> float:
+    embargo_days: int = 0,
+) -> float | None:
     """Calculate the Probability of Backtest Overfitting (PBO).
 
     Partitions the returns matrix into n_blocks contiguous blocks, generates
@@ -840,15 +890,164 @@ def calculate_pbo(
         returns_matrix: DataFrame where each column is one trial's daily net
             returns, rows are trading dates.
         n_blocks: Number of blocks to split the data into (default: 10).
+        embargo_days: Number of trailing days to drop from each block to
+            avoid boundary autocorrelation (default: 0). Automatically
+            falls back to 0 if embargo consumes too much data.
 
     Returns:
-        float: PBO in [0, 1]. Higher values indicate greater overfitting risk.
+        float | None: PBO in [0, 1]. Higher values indicate greater
+        overfitting risk. Returns None when uncomputable (insufficient
+        trials or data).
     """
 ```
 
 ---
 
-## 16. Config Jitter System (`autobacktest.strategy.config_jitter`)
+## 16. SPA Test (`autobacktest.evaluator.spa`)
+
+### `calculate_hansen_spa`
+Calculates Hansen's Superior Predictive Ability (SPA) test p-values to audit
+whether the best-performing candidate significantly outperforms the baseline
+after correcting for data-snooping bias.
+```python
+def calculate_hansen_spa(
+    benchmark_returns: pd.Series,
+    alternative_returns: pd.DataFrame,
+    n_paths: int = 1000,
+    block_size: int = 21,
+    seed: int = 42,
+) -> dict[str, float]:
+    """Calculate Hansen's SPA test p-values.
+
+    Returns three p-value bounds (consistent, upper conservative, lower
+    liberal) and the observed test statistic T_SPA using the Politis-Romano
+    stationary bootstrap.
+
+    Args:
+        benchmark_returns: Daily returns of the benchmark strategy (iteration 0).
+        alternative_returns: Daily returns of alternative candidates (iterations > 0).
+        n_paths: Number of stationary bootstrap paths (default: 1000).
+        block_size: Expected block size for stationary bootstrap (default: 21).
+        seed: Random seed for reproducibility (default: 42).
+
+    Returns:
+        dict with keys:
+        - ``p_consistent``: Standard SPA p-value (threshold-centered).
+        - ``p_upper``: Conservative p-value (assumes all alternatives have zero mean).
+        - ``p_lower``: Liberal p-value (assumes underperforming alternatives have mean <= 0).
+        - ``t_spa``: Observed SPA test statistic.
+    """
+```
+
+---
+
+## 17. Launch Regime Timing Haircut (`autobacktest.evaluator.regime`)
+
+### `calculate_regime_haircut`
+Calculates the Liu timing haircut based on the benchmark's rolling 252-day
+return z-score at the strategy launch date. When the benchmark enters the
+holdout period at a cyclical peak (positive z-score), a proportional haircut
+of ``0.05 * z_score`` is applied to the strategy's performance metrics to
+penalise lucky launch timing.
+```python
+def calculate_regime_haircut(
+    benchmark_prices: pd.Series,
+    launch_date: pd.Timestamp,
+) -> float:
+    """Calculate the Liu timing haircut based on benchmark z-score at launch_date.
+
+    Args:
+        benchmark_prices: Historical daily prices of the benchmark (e.g. SPY).
+        launch_date: Strategy launch date (start of holdout).
+
+    Returns:
+        float: Haircut fraction [0, inf). 0.0 when no peak is detected,
+        insufficient history exists, or the z-score is non-positive.
+    """
+```
+
+---
+
+## 18. Identical-Behavior Guard (`autobacktest.strategy.validator`)
+
+### `compare_signals_to_incumbent`
+Compares a candidate strategy's output weights against the incumbent
+strategy on synthetic prices to guard against functionally identical signal
+outputs. Used by the orchestrator's pre-backtest guard.
+```python
+def compare_signals_to_incumbent(
+    _strategy_name: str,
+    candidate_code: str,
+    candidate_config_yaml: str,
+    incumbent_code: str,
+    strategies_dir: Path,
+    configs_dir: Path,
+    epsilon: float = 1e-6,
+) -> tuple[bool, float]:
+    """Compare candidate signals against incumbent on synthetic prices.
+
+    Args:
+        _strategy_name: Strategy name (for validation context).
+        candidate_code: Source code of the candidate strategy.
+        candidate_config_yaml: YAML config of the candidate.
+        incumbent_code: Source code of the incumbent strategy.
+        strategies_dir: Path to strategies directory.
+        configs_dir: Path to configs directory.
+        epsilon: Maximum absolute weight difference below which signals
+            are considered identical (default: 1e-6).
+
+    Returns:
+        tuple[bool, float]: (is_identical, max_abs_diff) where
+        is_identical is True when max_abs_diff < epsilon.
+    """
+```
+
+---
+
+## 19. Explored Space Summary (`autobacktest.strategy.diversity`)
+
+### `summarize_explored_space`
+Generates a markdown summary of previously explored parameter values to
+guide the LLM toward untried regions of the configuration space. Used with
+``AUTOBACKTEST_ENABLE_EXPLORED_CONFIG_INJECTION``.
+```python
+def summarize_explored_space(
+    historical_configs: list[str],
+    max_configs: int = 30,
+) -> str:
+    """Summarize explored configuration space as markdown.
+
+    Args:
+        historical_configs: Previously attempted config YAML strings.
+        max_configs: Maximum configs to include in the summary (default: 30).
+
+    Returns:
+        str: Markdown-formatted list of tried parameter values, or empty
+        string if no configs are provided.
+    """
+```
+
+---
+
+## 20. Security Constants (`autobacktest.strategy.constants`)
+
+### `FORBIDDEN_NAMES`
+A ``frozenset`` of approximately 73 Python identifiers that are strictly
+blocked during AST preflight scanning. Covers:
+- Dangerous builtins: ``exec``, ``eval``, ``compile``, ``open``, ``__import__``
+- Dunder attribute access: ``__builtins__``, ``__class__`` (detected via format strings and attribute chains)
+- NumPy file I/O: ``load``, ``save``, ``savez``, ``memmap``, ``fromfile``, ``tofile``
+- Pandas file I/O: ``read_csv``, ``to_csv``, ``read_parquet``, ``to_parquet``, ``read_sql``, ``to_pickle``,
+  ``read_html``, ``to_html``, ``read_excel``, ``to_excel``, ``read_json``, ``to_json``, and 25+ other methods
+- General sandbox escapes: ``io``, ``lib``, ``npyio``, ``HDFStore``, ``ExcelWriter``, ``ExcelFile``
+- I/O pattern aliases: ``get_handle``, ``DataSource``
+
+Any strategy code referencing these names — at import level, inside string
+constants, or as attribute chains — is rejected during preflight.
+
+---
+
+## 21. Config Jitter System (`autobacktest.strategy.config_jitter`)
 
 ### `jitter_config`
 Deterministically mutates numeric config parameters to satisfy the config diversity gate.

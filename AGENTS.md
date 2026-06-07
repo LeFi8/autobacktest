@@ -32,6 +32,7 @@ No `.pre-commit-config.yaml` exists — skip `pre-commit install`.
 - **Holdout**: 3 years default (`AUTOBACKTEST_DEFAULT_HOLDOUT_YEARS`). Walk-forward: 5y train / 1y test. All statistical simulations use seed=42.
 - **Config**: `.env` via `python-dotenv`. Copy `.env.dist` → `.env`. `src/autobacktest/config.py` → global `settings` singleton. All env vars prefixed `AUTOBACKTEST_`.
 - **Cache**: Parquet-backed (`data/cache/`). Run dir is `runs/` (SQLite ledger + event logs). All statistical simulations use seed=42.
+- **Ledger Comparability**: Changing `adaptive_slippage` settings (e.g. enabling it or changing its caps) invalidates comparability of historical metrics stored in the SQLite ledger. Start a fresh ledger (`ledger.db`) if changing these configurations to ensure consistent comparison baselines.
 
 ## Key files
 

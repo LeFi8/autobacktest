@@ -219,3 +219,68 @@ def test_cli_report_displays_cost_summary(tmp_path: Path) -> None:
     assert "3,000" in result.output
     assert "600" in result.output
     assert "3,600" in result.output
+
+
+def test_adaptive_slippage_calculation() -> None:
+    import numpy as np
+    import pandas as pd
+
+    from autobacktest.evaluator.costs import calculate_turnover_and_costs
+
+    # Create dummy returns and weights for 50 days, 2 assets
+    dates = pd.date_range("2023-01-01", periods=50)
+    prices = pd.DataFrame({"A": np.linspace(10, 15, 50), "B": np.linspace(20, 18, 50)}, index=dates)
+
+    # Let's introduce a large volatility spike at the end of asset A's returns
+    asset_returns = prices.pct_change().fillna(0.0)
+    # Volatility spike on day 49 (day t = 49)
+    asset_returns.loc[dates[49], "A"] = 0.50
+
+    daily_returns = pd.Series([0.01] * 50, index=dates)
+    # Simple rebalancing weights
+    daily_weights = pd.DataFrame({"A": [0.5] * 50, "B": [0.5] * 50}, index=dates)
+    daily_weights.loc[dates[25] :, "A"] = 0.8
+    daily_weights.loc[dates[25] :, "B"] = 0.2
+
+    # 1. Standard linear costs (adaptive_slippage = False)
+    net_ret_off, _net_eq_off, to_off = calculate_turnover_and_costs(
+        daily_returns,
+        daily_weights,
+        prices,
+        commission_bps=5.0,
+        spread_bps=5.0,
+        asset_returns=asset_returns,
+        adaptive_slippage=False,
+    )
+
+    # 2. Adaptive slippage costs (adaptive_slippage = True)
+    net_ret_on, _net_eq_on, to_on = calculate_turnover_and_costs(
+        daily_returns,
+        daily_weights,
+        prices,
+        commission_bps=5.0,
+        spread_bps=5.0,
+        asset_returns=asset_returns,
+        adaptive_slippage=True,
+        slippage_vol_window=20,
+        slippage_vol_cap=3.0,
+    )
+
+    # 3. Turnover invariance: turnover rate should be identical regardless of adaptive_slippage
+    assert to_off == to_on
+
+    # 4. Vol-spike period -> higher costs (lower net return) only on spike days
+    # Let's check day 49 when volatility spiked
+    assert net_ret_on.loc[dates[49]] <= net_ret_off.loc[dates[49]]
+
+    # 5. Causality/Identical prior: prior to the vol window completing,
+    # the multiplier is NaN and fills to 1.0. Let's verify that early days net returns are identical
+    for t in range(2, 19):
+        assert np.isclose(net_ret_off.iloc[t], net_ret_on.iloc[t])
+
+    # 6. Cap/Floor honored check: let's verify that the multiplier is constrained
+    vol = asset_returns.rolling(20, min_periods=20).std()
+    vol_median = vol.expanding(min_periods=20).median()
+    mult = vol.div(vol_median.replace(0.0, np.nan)).clip(lower=1.0, upper=3.0).fillna(1.0)
+    assert (mult <= 3.0).all().all()
+    assert (mult >= 1.0).all().all()

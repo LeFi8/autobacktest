@@ -119,7 +119,19 @@ def compute_dataset_hash(
 
 
 def calculate_sortino_ratio(net_returns: pd.Series) -> float:
-    """Calculate the Sortino Ratio of a daily net returns series."""
+    """Calculate the Sortino Ratio of a daily net returns series.
+
+    Uses a minimum acceptable return (MAR) of 0.0.  Downside deviation
+    is computed over the full sample size ``N`` (not ``N-1``) following
+    the Sortino framework.
+
+    Args:
+        net_returns: Daily portfolio net returns.
+
+    Returns:
+        float: Annualised Sortino ratio.  Returns ``inf`` when downside
+        deviation is zero but mean return is positive (risk-free profile).
+    """
     if net_returns.empty:
         return 0.0
     mean_ret = net_returns.mean()
@@ -133,7 +145,21 @@ def calculate_sortino_ratio(net_returns: pd.Series) -> float:
 
 
 def calculate_information_ratio(net_returns: pd.Series, benchmark_returns: pd.Series) -> float:
-    """Calculate the Information Ratio of daily returns relative to benchmark."""
+    """Calculate the Information Ratio of daily returns relative to benchmark.
+
+    Computed as the annualised ratio of active return (strategy minus
+    benchmark) mean to tracking error (std dev of active returns).
+    Dates are aligned via an inner join — only overlapping trading days
+    contribute to the ratio.
+
+    Args:
+        net_returns: Daily portfolio net returns.
+        benchmark_returns: Daily benchmark returns.
+
+    Returns:
+        float: Annualised Information Ratio.  Returns 0.0 when the series
+        are empty, have fewer than 2 observations, or tracking error is zero.
+    """
     if net_returns.empty or benchmark_returns.empty:
         return 0.0
     # Align dates
@@ -159,6 +185,9 @@ def generate_window_report(
     *,
     asset_returns: pd.DataFrame | None = None,
     borrow_cost_bps: float = 100.0,
+    adaptive_slippage: bool = False,
+    slippage_vol_window: int = 21,
+    slippage_vol_cap: float = 3.0,
 ) -> WindowReport:
     """Run backtest and cost assessment for a specific date window."""
     window_prices = prices.loc[start:end]
@@ -177,6 +206,9 @@ def generate_window_report(
         window_prices,
         asset_returns=asset_returns,
         borrow_cost_bps=borrow_cost_bps,
+        adaptive_slippage=adaptive_slippage,
+        slippage_vol_window=slippage_vol_window,
+        slippage_vol_cap=slippage_vol_cap,
     )
 
     # Standard performance metrics
@@ -263,6 +295,9 @@ def _run_walk_forward_windows(
     *,
     asset_returns: pd.DataFrame | None = None,
     borrow_cost_bps: float = 100.0,
+    adaptive_slippage: bool = False,
+    slippage_vol_window: int = 21,
+    slippage_vol_cap: float = 3.0,
 ) -> list[WindowReport]:
     """Run walk-forward window evaluations in parallel via thread pool.
 
@@ -289,6 +324,9 @@ def _run_walk_forward_windows(
                 bench_returns,
                 asset_returns=asset_returns,
                 borrow_cost_bps=borrow_cost_bps,
+                adaptive_slippage=adaptive_slippage,
+                slippage_vol_window=slippage_vol_window,
+                slippage_vol_cap=slippage_vol_cap,
             )
             future_map[future] = i
 
@@ -443,6 +481,9 @@ def evaluate_strategy_detailed(
         prices,
         asset_returns=_asset_returns,
         borrow_cost_bps=flat_config.get("borrow_cost_bps", 100.0),
+        adaptive_slippage=flat_config.get("adaptive_slippage", False),
+        slippage_vol_window=flat_config.get("slippage_vol_window", 21),
+        slippage_vol_cap=flat_config.get("slippage_vol_cap", 3.0),
     )
 
     # Slice pooled returns to the contiguous walk-forward test-window span
@@ -488,6 +529,9 @@ def evaluate_strategy_detailed(
         bench_returns,
         asset_returns=_asset_returns,
         borrow_cost_bps=flat_config.get("borrow_cost_bps", 100.0),
+        adaptive_slippage=flat_config.get("adaptive_slippage", False),
+        slippage_vol_window=flat_config.get("slippage_vol_window", 21),
+        slippage_vol_cap=flat_config.get("slippage_vol_cap", 3.0),
     )
 
     # ------------------------------------------------------------------
@@ -510,6 +554,9 @@ def evaluate_strategy_detailed(
         bench_returns,
         asset_returns=_asset_returns,
         borrow_cost_bps=flat_config.get("borrow_cost_bps", 100.0),
+        adaptive_slippage=flat_config.get("adaptive_slippage", False),
+        slippage_vol_window=flat_config.get("slippage_vol_window", 21),
+        slippage_vol_cap=flat_config.get("slippage_vol_cap", 3.0),
     )
 
     holdout_prices = prices.loc[holdout_start:holdout_end]
@@ -525,6 +572,9 @@ def evaluate_strategy_detailed(
         holdout_prices,
         asset_returns=_asset_returns,
         borrow_cost_bps=flat_config.get("borrow_cost_bps", 100.0),
+        adaptive_slippage=flat_config.get("adaptive_slippage", False),
+        slippage_vol_window=flat_config.get("slippage_vol_window", 21),
+        slippage_vol_cap=flat_config.get("slippage_vol_cap", 3.0),
     )
 
     # Full period evaluation for Monte Carlo and Regime tests
@@ -539,6 +589,9 @@ def evaluate_strategy_detailed(
         prices,
         asset_returns=_asset_returns,
         borrow_cost_bps=flat_config.get("borrow_cost_bps", 100.0),
+        adaptive_slippage=flat_config.get("adaptive_slippage", False),
+        slippage_vol_window=flat_config.get("slippage_vol_window", 21),
+        slippage_vol_cap=flat_config.get("slippage_vol_cap", 3.0),
     )
 
     regime_drawdowns, regime_passed = evaluate_stress_regimes(
@@ -546,7 +599,12 @@ def evaluate_strategy_detailed(
         daily_weights=daily_weights,
         n_tickers=len(tickers),
     )
-    mc_5th, mc_50th, mc_95th, mc_sharpes = run_block_bootstrap(net_returns, n_paths=1000, seed=42)
+    mc_5th, mc_50th, mc_95th, mc_sharpes = run_block_bootstrap(
+        net_returns,
+        n_paths=1000,
+        seed=42,
+        method=flat_config.get("mc_bootstrap_method", "stationary"),
+    )
 
     # --- DSR accounting ---
     # Selection DSR uses POOLED walk-forward returns (same basis as observed_sharpe)

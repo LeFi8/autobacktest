@@ -157,7 +157,27 @@ def jitter_config(
     # Map flat parameters to original paths
     flat = _parse_config_to_flat(config_yaml)
     all_paths: list[tuple[tuple[Any, ...], int | float]] = []
+
+    exclude_jitter_keys = {
+        "pbo_limit",
+        "cscv_embargo_days",
+        "adaptive_slippage",
+        "slippage_vol_window",
+        "slippage_vol_cap",
+        "mc_bootstrap_method",
+        "cscv_blocks",
+        "borrow_cost_bps",
+        "min_improvement",
+        "select_min_return_ratio",
+        "holdout_min_improvement",
+        "max_drawdown_limit",
+        "turnover_limit",
+        "dsr_floor",
+    }
+
     for k, v in flat.items():
+        if k in exclude_jitter_keys:
+            continue
         if isinstance(v, (int, float)) and not isinstance(v, bool):
             if k in orig_dict:
                 all_paths.append(((k,), v))

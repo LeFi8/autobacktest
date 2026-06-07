@@ -253,7 +253,24 @@ def preflight(
     strategies_dir: Path,
     configs_dir: Path,
 ) -> ValidationResult:
-    """Run all six pre-flight validations on a target strategy and config.
+    """Run all eight pre-flight validations on a target strategy and config.
+
+    Validation layers:
+    1. Path traversal security — verifies strategy/config files are within
+       their respective directories.
+    2. AST whitelist scan — blocks non-whitelisted imports, dangerous
+       builtins, dunder escapes, and ``FORBIDDEN_NAMES``.
+    3. Pydantic config validation — validates YAML against ``StrategyConfig``.
+    4. Dynamic import — compiles and imports the strategy module in an
+       isolated subprocess.
+    5. Signature verification — checks ``generate_signals(prices, config)``
+       contract.
+    6. Smoke test — runs the strategy on 756 days of synthetic prices.
+    7. Lookahead sniff test — compares signals with and without future
+       price data to detect lookahead bias.
+    8. Lookahead shift test — verifies signals shift consistently when the
+       price history is shifted by 1 day (only for frequently-rebalancing
+       strategies).
 
     Args:
         strategy_name: Name of the strategy to validate.
@@ -806,7 +823,7 @@ def _check_ast(content: str) -> ValidationResult:
                             detail=msg,
                         )
 
-    # Complexity and line-count check (second pass over function defs)
+    # Cyclomatic complexity and line-count check (second pass over function defs)
     for func_node in ast.walk(tree):
         if isinstance(func_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             line_count = _count_node_lines(func_node)
@@ -831,7 +848,8 @@ def _check_ast(content: str) -> ValidationResult:
                     ),
                 )
 
-    # Undefined-name pre-check
+    # Undefined-name pre-check — catches LLM hallucinations referencing
+    # out-of-scope variables, misspelled identifiers, etc.
     undefined_res = _check_undefined_names(tree)
     if undefined_res is not None:
         return undefined_res

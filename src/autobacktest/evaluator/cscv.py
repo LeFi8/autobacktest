@@ -7,22 +7,31 @@ import pandas as pd
 from scipy.stats import rankdata
 
 
-def calculate_pbo(returns_matrix: pd.DataFrame, n_blocks: int = 10) -> float:
+def calculate_pbo(returns_matrix: pd.DataFrame, n_blocks: int = 10, embargo_days: int = 0) -> float | None:
     """Calculate the Probability of Backtest Overfitting (PBO) using CSCV.
 
     Args:
         returns_matrix: DataFrame where each column is the daily net returns of a trial,
             and rows are trading dates.
         n_blocks: Number of blocks to split the returns matrix into (default 10).
+        embargo_days: Number of trailing days to drop from each block to avoid boundary autocorrelation.
 
     Returns:
-        float: The Probability of Backtest Overfitting (PBO) in [0, 1].
+        float | None: The Probability of Backtest Overfitting (PBO) in [0, 1], or None if uncomputable.
     """
     n_trials = returns_matrix.shape[1]
     n_days = len(returns_matrix)
 
-    if n_trials <= 1 or n_days < 2 * n_blocks:
-        return 0.0
+    if n_trials <= 1:
+        return None
+
+    # Tighten validity check: fallback to embargo_days=0 if embargo consumes too much data
+    effective_days = n_days - n_blocks * embargo_days
+    if effective_days < 2 * n_blocks:
+        embargo_days = 0
+        effective_days = n_days
+        if effective_days < 2 * n_blocks:
+            return None
 
     # Convert to numpy array for performance
     returns_arr = returns_matrix.values
@@ -30,6 +39,13 @@ def calculate_pbo(returns_matrix: pd.DataFrame, n_blocks: int = 10) -> float:
     # 1. Partition rows into n_blocks contiguous blocks using array_split
     #    to distribute remainder rows evenly (no single block absorbs all excess).
     blocks = np.array_split(returns_arr, n_blocks, axis=0)
+
+    if embargo_days > 0:
+        embargoed_blocks = []
+        for b in blocks:
+            keep = max(0, len(b) - embargo_days)
+            embargoed_blocks.append(b[:keep])
+        blocks = embargoed_blocks
 
     # 2. Generate all C(S, S/2) combinations of block splits
     is_size = n_blocks // 2

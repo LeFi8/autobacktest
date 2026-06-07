@@ -25,6 +25,12 @@ class StrategyConfig(BaseModel):
     turnover_limit: float = Field(2.0, gt=0.0, le=10.0, description="Max annualized turnover (capped at 10x)")
     borrow_cost_bps: float = Field(100.0, ge=0.0, description="Annualized short borrowing cost in bps")
     cscv_blocks: int = Field(10, ge=4, description="Number of blocks to partition returns for CSCV PBO calculation")
+    pbo_limit: float | None = Field(None, ge=0.0, le=1.0, description="PBO ceiling select gate limit")
+    cscv_embargo_days: int = Field(5, ge=0, description="CSCV block embargo days")
+    adaptive_slippage: bool = Field(False, description="Use volatility-adaptive slippage")
+    slippage_vol_window: int = Field(21, ge=1, description="Volatility window for adaptive slippage")
+    slippage_vol_cap: float = Field(3.0, ge=1.0, description="Volatility cap multiplier for adaptive slippage")
+    mc_bootstrap_method: str = Field("stationary", description="Bootstrap method: circular or stationary")
     regime_benchmark: str | None = Field(
         None, description="Alternative benchmark index for launch-regime timing haircut"
     )
@@ -44,6 +50,14 @@ class StrategyConfig(BaseModel):
     dsr_floor: float | None = Field(
         None, description="Optional absolute DSR floor (unused by gate currently, reserved)"
     )
+
+    @field_validator("mc_bootstrap_method")
+    @classmethod
+    def validate_mc_bootstrap_method(cls, v: str) -> str:
+        """Verify that mc_bootstrap_method is circular or stationary."""
+        if v not in ("circular", "stationary"):
+            raise ValueError("mc_bootstrap_method must be either 'circular' or 'stationary'")
+        return v
 
     @model_validator(mode="after")
     def validate_no_collisions(self) -> "StrategyConfig":

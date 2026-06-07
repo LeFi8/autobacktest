@@ -24,9 +24,9 @@ def test_cscv_pbo_calculation():
     # PBO should be a valid probability
     assert 0.0 <= pbo <= 1.0
 
-    # For single trial, PBO should be 0.0
+    # For single trial, PBO should be None
     pbo_single = calculate_pbo(returns_df[["trial_0"]], n_blocks=10)
-    assert pbo_single == 0.0
+    assert pbo_single is None
 
 
 def test_cscv_all_zero_returns():
@@ -62,10 +62,10 @@ def test_cscv_large_trial_count():
 
 
 def test_cscv_insufficient_days():
-    """Fewer than 2*n_blocks days → return 0.0 (early exit)."""
+    """Fewer than 2*n_blocks days → return None (early exit)."""
     dates = pd.date_range("2023-01-01", periods=15)
     df = pd.DataFrame({"a": [0.001] * 15, "b": [-0.001] * 15}, index=dates)
-    assert calculate_pbo(df, n_blocks=10) == 0.0
+    assert calculate_pbo(df, n_blocks=10) is None
 
 
 def test_cscv_highly_correlated_trials():
@@ -77,3 +77,32 @@ def test_cscv_highly_correlated_trials():
     df = pd.DataFrame(cols, index=dates)
     pbo = calculate_pbo(df, n_blocks=10)
     assert 0.0 <= pbo <= 1.0
+
+
+def test_cscv_embargo():
+    """Verify that applying an embargo drops the expected trailing rows and handles edge cases properly."""
+    np.random.seed(42)
+    dates = pd.date_range("2023-01-01", periods=200)
+    df = pd.DataFrame(
+        {"trial_0": np.random.normal(0.001, 0.02, 200), "trial_1": np.random.normal(0.0005, 0.005, 200)}, index=dates
+    )
+
+    # Calculate with embargo=0 and embargo=5
+    pbo_no_embargo = calculate_pbo(df, n_blocks=10, embargo_days=0)
+    pbo_embargo = calculate_pbo(df, n_blocks=10, embargo_days=5)
+
+    assert pbo_no_embargo is not None
+    assert pbo_embargo is not None
+    # Verify both are valid probabilities
+    assert 0.0 <= pbo_no_embargo <= 1.0
+    assert 0.0 <= pbo_embargo <= 1.0
+
+    # Test embargo fallback
+    # 30 days, 10 blocks -> 3 days/block. If embargo_days=2, effective_days = 30 - 20 = 10 < 20 (2*n_blocks).
+    # So it should fallback to embargo_days=0, which computes successfully.
+    df_short = pd.DataFrame(
+        {"trial_0": np.random.normal(0.001, 0.02, 30), "trial_1": np.random.normal(0.0005, 0.005, 30)},
+        index=pd.date_range("2023-01-01", periods=30),
+    )
+    pbo_fallback = calculate_pbo(df_short, n_blocks=10, embargo_days=2)
+    assert pbo_fallback is not None
