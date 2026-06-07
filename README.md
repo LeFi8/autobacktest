@@ -1,6 +1,6 @@
 # AutoBacktest
 
-[![CI](https://github.com/<ORG>/autobacktest/actions/workflows/ci.yml/badge.svg)](https://github.com/<ORG>/autobacktest/actions/workflows/ci.yml)
+[![CI](https://github.com/LeFi8/autobacktest/actions/workflows/ci.yml/badge.svg)](https://github.com/LeFi8/autobacktest/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python >=3.12](https://img.shields.io/badge/python-≥3.12-blue?logo=python)](pyproject.toml)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
@@ -19,13 +19,13 @@ LLM → code edit → preflight check → backtest → gate → commit or rollba
 
 - **Python 3.12+**
 - **uv** — install: `curl -LsSf https://astral.sh/uv/install.sh | sh`
-- **Git** — `git config --global user.name "Your Name"`
+- **Git**
 - **API key** — for an LLM provider (OpenAI, Anthropic, Google Gemini, etc.)
 
 ### 2. Setup
 
 ```bash
-git clone <repo-url> autobacktest
+git clone https://github.com/LeFi8/autobacktest.git
 cd autobacktest
 uv sync
 cp .env.dist .env
