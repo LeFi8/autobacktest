@@ -271,6 +271,67 @@ def plot_walk_forward_bars(
     return out_path
 
 
+def _tally_legacy_event(event: dict[str, object], summary: dict[str, object]) -> None:
+    """Accumulate failure counts from a legacy flat-key event schema.
+
+    Handles the schema produced before the ``candidates`` array was introduced.
+    Returns early after the first matching key to avoid double-counting.
+
+    Args:
+        event: Parsed event dict with optional top-level ``validation``, ``gate``,
+            ``diversity``, ``llm_error``, and ``evaluation`` keys.
+        summary: Running failure summary dict updated in-place.
+    """
+    val = event.get("validation")
+    if isinstance(val, dict) and val.get("passed") is False:
+        code = val.get("error_code", "unknown")
+        summary["Validation"][code] = summary["Validation"].get(code, 0) + 1  # type: ignore[index]
+        return
+    gate = event.get("gate")
+    if isinstance(gate, dict) and gate.get("accepted") is False:
+        fg = gate.get("failed_gate", "unknown")
+        summary["Gate"][fg] = summary["Gate"].get(fg, 0) + 1  # type: ignore[index]
+        return
+    div = event.get("diversity")
+    if isinstance(div, dict) and div.get("passed") is False:
+        tier = div.get("tier", "unknown")
+        summary["Diversity"][tier] = summary["Diversity"].get(tier, 0) + 1  # type: ignore[index]
+        return
+    if event.get("llm_error") is not None:
+        summary["LLM Error"] = summary["LLM Error"] + 1  # type: ignore[operator]
+        return
+    eval_err = event.get("evaluation")
+    if isinstance(eval_err, dict) and eval_err.get("error") is not None:
+        summary["Eval Error"] = summary["Eval Error"] + 1  # type: ignore[operator]
+
+
+def _tally_candidate(c: dict[str, object], summary: dict[str, object]) -> None:
+    """Accumulate failure counts from a single candidate dict in the modern schema.
+
+    Args:
+        c: Candidate dict with keys such as ``passed``, ``stage``, ``detail``,
+            ``failed_gate``, and ``llm_error``.
+        summary: Running failure summary dict updated in-place.
+    """
+    if c.get("passed") is True:
+        return
+    if c.get("llm_error"):
+        summary["LLM Error"] = summary["LLM Error"] + 1  # type: ignore[operator]
+        return
+    stage = c.get("stage", "")
+    if stage == "validation":
+        code = c.get("detail", "unknown")
+        summary["Validation"][code] = summary["Validation"].get(code, 0) + 1  # type: ignore[index]
+    elif stage == "gate":
+        fg = c.get("failed_gate") or "unknown"
+        summary["Gate"][fg] = summary["Gate"].get(fg, 0) + 1  # type: ignore[index]
+    elif stage in ("diversity_config", "diversity_returns"):
+        tier = stage.removeprefix("diversity_")
+        summary["Diversity"][tier] = summary["Diversity"].get(tier, 0) + 1  # type: ignore[index]
+    elif stage == "eval_error":
+        summary["Eval Error"] = summary["Eval Error"] + 1  # type: ignore[operator]
+
+
 def compile_failure_summary(run_dir: Path) -> dict[str, Any]:
     """Parse the events JSONL file and compile per-category failure statistics.
 
@@ -306,66 +367,20 @@ def compile_failure_summary(run_dir: Path) -> dict[str, Any]:
                 event = json.loads(line)
             except json.JSONDecodeError:
                 continue
-
             if not isinstance(event, dict):
                 continue
 
-            # Parse per-candidate failures from the candidates array.
-            # These cover all failure modes: preflight validation, gate,
-            # diversity, eval errors, and LLM errors.
             candidates = event.get("candidates")
             if not isinstance(candidates, list):
-                # Legacy fallback: parse top-level failure keys for events
-                # produced before the candidates array schema was introduced.
-                val = event.get("validation")
-                if isinstance(val, dict) and val.get("passed") is False:
-                    code = val.get("error_code", "unknown")
-                    summary["Validation"][code] = summary["Validation"].get(code, 0) + 1
-                    continue
-                gate = event.get("gate")
-                if isinstance(gate, dict) and gate.get("accepted") is False:
-                    fg = gate.get("failed_gate", "unknown")
-                    summary["Gate"][fg] = summary["Gate"].get(fg, 0) + 1
-                    continue
-                div = event.get("diversity")
-                if isinstance(div, dict) and div.get("passed") is False:
-                    tier = div.get("tier", "unknown")
-                    summary["Diversity"][tier] = summary["Diversity"].get(tier, 0) + 1
-                    continue
-                if event.get("llm_error") is not None:
-                    summary["LLM Error"] += 1
-                    continue
-                eval_err = event.get("evaluation")
-                if isinstance(eval_err, dict) and eval_err.get("error") is not None:
-                    summary["Eval Error"] += 1
+                _tally_legacy_event(event, summary)
                 continue
 
             for c in candidates:
-                if not isinstance(c, dict):
-                    continue
-                if c.get("passed") is True:
-                    continue
-                if c.get("llm_error"):
-                    summary["LLM Error"] += 1
-                    continue
-
-                stage = c.get("stage", "")
-                if stage == "validation":
-                    code = c.get("detail", "unknown")
-                    bucket = summary["Validation"]
-                    bucket[code] = bucket.get(code, 0) + 1
-                elif stage == "gate":
-                    fg = c.get("failed_gate") or "unknown"
-                    bucket = summary["Gate"]
-                    bucket[fg] = bucket.get(fg, 0) + 1
-                elif stage in ("diversity_config", "diversity_returns"):
-                    tier = stage.removeprefix("diversity_")
-                    bucket = summary["Diversity"]
-                    bucket[tier] = bucket.get(tier, 0) + 1
-                elif stage == "eval_error":
-                    summary["Eval Error"] += 1
+                if isinstance(c, dict):
+                    _tally_candidate(c, summary)
 
     return summary
+
 
 
 def compile_strategy_report(

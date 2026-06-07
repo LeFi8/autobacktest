@@ -77,6 +77,59 @@ def _flatten_config(config: dict[str, Any] | StrategyConfig) -> dict[str, Any]:
     return flat_config
 
 
+def _fetch_and_join_prices(
+    tickers: list[str],
+    benchmark_ticker: str,
+    regime_bench_ticker: str,
+    start_date: str,
+    end_date: str,
+) -> tuple[pd.DataFrame, pd.Series]:
+    """Download, validate, and join all required price series from YFinance.
+
+    Fetches the strategy universe, benchmark, and regime-benchmark prices,
+    raising ``ValueError`` when any required ticker returns no data.  The
+    benchmark and regime-benchmark columns are joined into the main frame
+    when they are not already present.
+
+    Args:
+        tickers: Strategy asset tickers.
+        benchmark_ticker: Benchmark ticker symbol.
+        regime_bench_ticker: Regime-benchmark ticker (may equal *benchmark_ticker*).
+        start_date: Start of the data range.
+        end_date: End of the data range.
+
+    Returns:
+        tuple: ``(prices, bench_returns)``.
+
+    Raises:
+        ValueError: When any required ticker returns an empty price series.
+    """
+    raw_provider = YFinanceProvider()
+    provider = CachedDataProvider(raw_provider, cache_dir=str(settings.cache_dir))
+    prices = provider.get_prices(tickers, start_date, end_date)
+    benchmark_prices = provider.get_prices([benchmark_ticker], start_date, end_date)
+    if prices.empty:
+        raise ValueError("No price history returned for requested strategy universe.")
+    if benchmark_prices.empty or benchmark_ticker not in benchmark_prices.columns:
+        raise ValueError(f"No price history returned for benchmark ticker: {benchmark_ticker}")
+    bench_returns = benchmark_prices[benchmark_ticker].pct_change().fillna(0.0)
+
+    if benchmark_ticker not in prices.columns:
+        prices = prices.join(benchmark_prices[[benchmark_ticker]], how="outer")
+
+    if regime_bench_ticker == benchmark_ticker:
+        regime_bench_prices = benchmark_prices
+    else:
+        regime_bench_prices = provider.get_prices([regime_bench_ticker], start_date, end_date)
+        if regime_bench_prices.empty or regime_bench_ticker not in regime_bench_prices.columns:
+            raise ValueError(f"No price history returned for regime benchmark ticker: {regime_bench_ticker}")
+
+    if regime_bench_ticker not in prices.columns:
+        prices = prices.join(regime_bench_prices[[regime_bench_ticker]], how="outer")
+
+    return prices, bench_returns
+
+
 def _load_evaluation_data(
     flat_config: dict[str, Any],
     start_date: str,
@@ -88,8 +141,7 @@ def _load_evaluation_data(
 
     When *_prices* and *_bench_returns* are provided, validates that all
     required tickers are present and returns them directly.  Otherwise
-    downloads data from YFinance, joining benchmark and regime-benchmark
-    tickers into the prices frame.
+    downloads data from YFinance via :func:`_fetch_and_join_prices`.
 
     Args:
         flat_config: Flat strategy configuration dict.
@@ -118,30 +170,8 @@ def _load_evaluation_data(
             raise ValueError(f"Cached prices missing regime benchmark ticker: {regime_bench_ticker}")
         return _prices, _bench_returns
 
-    raw_provider = YFinanceProvider()
-    provider = CachedDataProvider(raw_provider, cache_dir=str(settings.cache_dir))
-    prices = provider.get_prices(tickers, start_date, end_date)
-    benchmark_prices = provider.get_prices([benchmark_ticker], start_date, end_date)
-    if prices.empty:
-        raise ValueError("No price history returned for requested strategy universe.")
-    if benchmark_prices.empty or benchmark_ticker not in benchmark_prices.columns:
-        raise ValueError(f"No price history returned for benchmark ticker: {benchmark_ticker}")
-    bench_returns = benchmark_prices[benchmark_ticker].pct_change().fillna(0.0)
+    return _fetch_and_join_prices(tickers, benchmark_ticker, regime_bench_ticker, start_date, end_date)
 
-    if benchmark_ticker not in prices.columns:
-        prices = prices.join(benchmark_prices[[benchmark_ticker]], how="outer")
-
-    if regime_bench_ticker == benchmark_ticker:
-        regime_bench_prices = benchmark_prices
-    else:
-        regime_bench_prices = provider.get_prices([regime_bench_ticker], start_date, end_date)
-        if regime_bench_prices.empty or regime_bench_ticker not in regime_bench_prices.columns:
-            raise ValueError(f"No price history returned for regime benchmark ticker: {regime_bench_ticker}")
-
-    if regime_bench_ticker not in prices.columns:
-        prices = prices.join(regime_bench_prices[[regime_bench_ticker]], how="outer")
-
-    return prices, bench_returns
 
 
 def _generate_wf_weights(
@@ -215,6 +245,42 @@ def _apply_regime_haircut(
         r.sortino_ratio *= factor
 
 
+def _check_eval_cache(
+    flat_config: dict[str, Any],
+    _eval_cache: _CacheProtocol | None,
+    _strategy_code: str | None,
+) -> tuple[EvaluationReport, pd.Series] | None:
+    """Return a cached evaluation result when an identical edit was previously evaluated.
+
+    Normalises the strategy code, hashes both code and config, and checks the
+    memoisation dict.  Silently skips on any exception (e.g. missing normaliser).
+
+    Args:
+        flat_config: Flat strategy configuration dict.
+        _eval_cache: Memoisation dict keyed by ``(code_hash, config_hash)``.
+        _strategy_code: Raw strategy source used to compute the code hash.
+
+    Returns:
+        tuple ``(report, returns)`` on a cache hit, or ``None`` on a miss.
+    """
+    if _eval_cache is None or _strategy_code is None:
+        return None
+    try:
+        from autobacktest.strategy.normalization import normalize_python_code
+
+        _norm_code = normalize_python_code(_strategy_code)
+        _code_hash = hash(_norm_code)
+        _config_hash = hash(json.dumps(flat_config, sort_keys=True, default=str))
+        _ckey = hash((_code_hash, _config_hash))
+        cached = _eval_cache.get(_ckey)
+        if cached is not None:
+            cached_report, cached_returns = cached
+            return deepcopy(cached_report), cached_returns.copy()
+    except Exception as e:
+        logger.warning("Eval cache read failed: %s", e)
+    return None
+
+
 def evaluate_strategy_detailed(
     strategy_name: str,
     generate_signals_fn: Any,
@@ -259,21 +325,9 @@ def evaluate_strategy_detailed(
     """
     flat_config = _flatten_config(config)
 
-    # ---- Evaluation cache check ----
-    if _eval_cache is not None and _strategy_code is not None:
-        try:
-            from autobacktest.strategy.normalization import normalize_python_code
-
-            _norm_code = normalize_python_code(_strategy_code)
-            _code_hash = hash(_norm_code)
-            _config_hash = hash(json.dumps(flat_config, sort_keys=True, default=str))
-            _ckey = hash((_code_hash, _config_hash))
-            cached = _eval_cache.get(_ckey)
-            if cached is not None:
-                cached_report, cached_returns = cached
-                return deepcopy(cached_report), cached_returns.copy()
-        except Exception as e:
-            logger.warning("Eval cache read failed: %s", e)
+    cached = _check_eval_cache(flat_config, _eval_cache, _strategy_code)
+    if cached is not None:
+        return cached
 
     tickers = flat_config.get("universe", [])
     benchmark_ticker = flat_config.get("benchmark", "SPY")
