@@ -134,6 +134,11 @@ _BUILTIN_NAMES: frozenset[str] = frozenset(
 
 
 def _get_attribute_chain(node: ast.AST) -> str | None:
+    """Resolve a chained attribute access (e.g. ``pd.DataFrame.read_csv``) to a dotted string.
+
+    Recursively walks ``ast.Attribute`` and ``ast.Name`` nodes to reconstruct
+    the full dotted path. Returns ``None`` for non-traversable node types.
+    """
     if isinstance(node, ast.Name):
         return node.id
     elif isinstance(node, ast.Attribute):
@@ -144,7 +149,18 @@ def _get_attribute_chain(node: ast.AST) -> str | None:
 
 
 def _count_node_lines(node: ast.AST) -> int:
-    """Measure the line count of a parsed AST node."""
+    """Measure the line count of a parsed AST node.
+
+    Uses ``end_lineno`` and ``lineno`` attributes available on all nodes
+    in Python 3.8+.
+
+    Args:
+        node: AST node to measure.
+
+    Returns:
+        int: Number of source lines spanned by the node, or 0 if
+        position attributes are unavailable.
+    """
     end: int | None = getattr(node, "end_lineno", None)
     start: int | None = getattr(node, "lineno", None)
     if end is not None and start is not None:
@@ -157,6 +173,12 @@ def _calculate_complexity(node: ast.AST) -> int:
 
     Counts decision points (if/for/while/and/or/ternary/except-handler/comprehensions)
     and adds 1 for the base path.
+
+    Args:
+        node: A function or method AST node.
+
+    Returns:
+        int: Cyclomatic complexity score (minimum 1).
     """
     complexity = 1
     for child in ast.walk(node):
@@ -178,7 +200,18 @@ def _calculate_complexity(node: ast.AST) -> int:
 
 
 def _check_ast(content: str) -> "ValidationResult":
-    """Parse strategy code via AST and block non-whitelisted imports or unsafe calls."""
+    """Parse strategy code via AST and block non-whitelisted imports or unsafe calls.
+
+    Checks import whitelist, forbidden names/attributes, dunder escapes
+    in format strings, cyclomatic complexity, function line limits, and
+    undefined name references.
+
+    Args:
+        content: Raw Python source code of the strategy.
+
+    Returns:
+        ValidationResult: ``passed=True`` when all AST checks succeed.
+    """
     from autobacktest.strategy.validator import ValidationError, ValidationResult
 
     try:
@@ -325,6 +358,10 @@ def _extract_names(node: ast.AST | None, scope: set[str]) -> None:
     """Recursively extract variable names from *node* into *scope*.
 
     Handles simple ``ast.Name`` targets, tuple/list unpacking, and ``None``.
+
+    Args:
+        node: AST node to extract names from (may be ``None``).
+        scope: Mutable set to populate with extracted names.
     """
     if node is None:
         return
@@ -341,6 +378,10 @@ def _walk_body(body: list[ast.stmt], scope: set[str]) -> None:
     Traverses compound-statement bodies (``if``, ``for``, ``while``,
     ``try``, ``with``) but stops at ``FunctionDef`` / ``AsyncFunctionDef``
     boundaries — nested function bodies are not walked.
+
+    Args:
+        body: List of AST statement nodes to traverse.
+        scope: Mutable set to populate with defined names.
     """
     for stmt in body:
         if isinstance(stmt, ast.Assign):
@@ -378,7 +419,17 @@ def _walk_body(body: list[ast.stmt], scope: set[str]) -> None:
 
 
 def _build_function_scope(func_node: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
-    """Build a ``set`` of locally defined names within *func_node*'s body."""
+    """Build a ``set`` of locally defined names within *func_node*'s body.
+
+    Includes parameter names and any names defined via assignments, ``for``
+    targets, ``with`` variables, and named expressions within the body.
+
+    Args:
+        func_node: The function definition AST node.
+
+    Returns:
+        set[str]: Locally defined names.
+    """
     scope: set[str] = set()
 
     for arg in func_node.args.args:
@@ -397,7 +448,18 @@ def _build_function_scope(func_node: ast.FunctionDef | ast.AsyncFunctionDef) -> 
 
 
 def _is_descendant(child: ast.AST, ancestor: ast.AST, parent_map: dict[int, ast.AST]) -> bool:
-    """Return True if child is a descendant of ancestor node in the AST."""
+    """Return True if child is a descendant of ancestor node in the AST.
+
+    Walks the parent_map upward from *child* to root looking for *ancestor*.
+
+    Args:
+        child: Node to check for descent.
+        ancestor: Potential ancestor node.
+        parent_map: Mapping of ``id(node) -> parent`` built by AST traversal.
+
+    Returns:
+        bool: True when *ancestor* appears between *child* and the root.
+    """
     curr: ast.AST | None = child
     while curr is not None:
         if curr == ancestor:
@@ -411,6 +473,16 @@ def _check_undefined_names(tree: ast.Module) -> "ValidationResult | None":
 
     name that is not defined in the function body, the module scope, or among
     builtins.
+
+    Handles closure scopes (walking ``parent_map`` for enclosing function
+    defs), comprehension generators, and lambda parameter names.
+
+    Args:
+        tree: Parsed AST module to validate.
+
+    Returns:
+        ValidationResult | None: ``None`` when no undefined names are found,
+        or a failed ``ValidationResult`` with ``UNDEFINED_NAME`` code.
     """
     from autobacktest.strategy.validator import ValidationError, ValidationResult
 

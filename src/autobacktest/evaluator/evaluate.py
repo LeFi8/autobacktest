@@ -65,7 +65,36 @@ def evaluate_strategy_detailed(
     _eval_cache: _CacheProtocol | None = None,
     _strategy_code: str | None = None,
 ) -> tuple[EvaluationReport, pd.Series[Any]]:
-    """Run full deterministic walk-forward & holdout evaluation lifecycle."""
+    """Run full deterministic walk-forward & holdout evaluation lifecycle.
+
+    Evaluates a strategy by running walk-forward windows (5y train / 1y test)
+    on an in-sample period, then running a holdout window on the out-of-sample
+    tail.  Regime haircuts, Monte Carlo bootstrap, and stress tests are applied
+    automatically.
+
+    Args:
+        strategy_name: Name of the strategy being evaluated.
+        generate_signals_fn: The strategy's ``generate_signals(prices, config)`` function.
+        config: Strategy configuration as dict or ``StrategyConfig`` instance.
+        start_date: Start of the full evaluation period (inclusive).
+        end_date: End of the full evaluation period (exclusive).
+
+    Keyword Args:
+        _prices: Pre-fetched price DataFrame (skips YFinance download).
+        _bench_returns: Pre-fetched benchmark return series.
+        _eval_cache: Memoisation dict to skip re-evaluation of identical edits.
+        _strategy_code: Source text required for the eval cache key.
+
+    Returns:
+        tuple[EvaluationReport, pd.Series]: ``(report, in_sample_net_returns)``.
+        The report carries all aggregated metrics, holdout returns, and
+        robustness diagnostics.  The returns series is used for DSR deflation
+        and diversity correlation checks.
+
+    Raises:
+        ValueError: When prices are empty, in-sample/holdout periods are
+            empty, or walk-forward windows cannot be generated.
+    """
     if isinstance(config, StrategyConfig):
         flat_config = config.to_flat_dict()
     else:
@@ -372,7 +401,22 @@ def evaluate_strategy(
     end_date: str = settings.default_end_date,
     **kwargs: Any,
 ) -> EvaluationReport:
-    """Run full deterministic walk-forward & holdout evaluation lifecycle."""
+    """Run full deterministic walk-forward & holdout evaluation lifecycle.
+
+    Thin wrapper around ``evaluate_strategy_detailed`` that discards the
+    in-sample returns series and returns only the ``EvaluationReport``.
+
+    Args:
+        strategy_name: Name of the strategy being evaluated.
+        generate_signals_fn: The strategy's ``generate_signals`` function.
+        config: Strategy configuration (dict or ``StrategyConfig``).
+        start_date: Start of the backtest period.
+        end_date: End of the backtest period.
+        **kwargs: Passed through to ``evaluate_strategy_detailed``.
+
+    Returns:
+        EvaluationReport: Full evaluation report with all metrics.
+    """
     report, _ = evaluate_strategy_detailed(
         strategy_name,
         generate_signals_fn,

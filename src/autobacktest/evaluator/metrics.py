@@ -13,7 +13,20 @@ def _compute_returns_metrics(
     start: pd.Timestamp,
     end: pd.Timestamp,
 ) -> WindowReport:
-    """Compute standard performance metrics directly from a return series."""
+    """Compute standard performance metrics directly from a return series.
+
+    Used for benchmark metrics (no turnover, no costs applied).  Metrics
+    include annualised return, volatility, Sharpe, Sortino, and max drawdown.
+
+    Args:
+        returns: Daily returns series (may extend beyond the window).
+        start: Start of the evaluation window (inclusive).
+        end: End of the evaluation window (inclusive).
+
+    Returns:
+        WindowReport: Performance metrics for the window.  Turnover is
+        set to 0.0 (not applicable to benchmarks).
+    """
     period_returns = returns.loc[start:end]
     if period_returns.empty:
         return WindowReport(
@@ -58,7 +71,18 @@ def _compute_returns_metrics(
 
 
 def calculate_sortino_ratio(net_returns: pd.Series) -> float:
-    """Calculate the Sortino Ratio of a daily net returns series."""
+    """Calculate the Sortino Ratio of a daily net returns series.
+
+    Uses downside deviation (semi-standard deviation of negative returns)
+    instead of total volatility as the risk denominator.
+
+    Args:
+        net_returns: Daily net returns series.
+
+    Returns:
+        float: Annualised Sortino Ratio. Returns ``inf`` when mean return
+        is positive and downside std is zero.
+    """
     if net_returns.empty:
         return 0.0
     mean_ret = net_returns.mean()
@@ -70,7 +94,19 @@ def calculate_sortino_ratio(net_returns: pd.Series) -> float:
 
 
 def calculate_information_ratio(net_returns: pd.Series, benchmark_returns: pd.Series) -> float:
-    """Calculate the Information Ratio of daily returns relative to benchmark."""
+    """Calculate the Information Ratio of daily returns relative to benchmark.
+
+    Computes active returns (portfolio - benchmark) divided by tracking
+    error (standard deviation of active returns), annualised.
+
+    Args:
+        net_returns: Daily portfolio net returns.
+        benchmark_returns: Daily benchmark returns.
+
+    Returns:
+        float: Annualised Information Ratio. Returns 0.0 when tracking
+        error is zero or data is insufficient.
+    """
     if net_returns.empty or benchmark_returns.empty:
         return 0.0
     aligned = pd.concat([net_returns, benchmark_returns], axis=1, sort=True).dropna()
@@ -87,7 +123,20 @@ def calculate_information_ratio(net_returns: pd.Series, benchmark_returns: pd.Se
 
 
 def aggregate_walk_forward(wf_reports: list[WindowReport]) -> WindowReport:
-    """Aggregate individual walk-forward window reports into a single summary."""
+    """Aggregate individual walk-forward window reports into a single summary.
+
+    Averages return-based metrics (Sharpe, Sortino, IR, vol) and takes the
+    maximum drawdown and turnover across all windows.
+
+    Args:
+        wf_reports: List of per-window ``WindowReport`` instances.
+
+    Returns:
+        WindowReport: Aggregated summary spanning the full period.
+
+    Raises:
+        ValueError: If ``wf_reports`` is empty.
+    """
     if not wf_reports:
         raise ValueError("At least one walk-forward window is required to compute in-sample metrics.")
 

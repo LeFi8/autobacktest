@@ -24,6 +24,15 @@ def deflate_selection(
 
     The candidate is deliberately included in both the returns matrix and
     the historical Sharpe list. This is intentionally conservative.
+    Also computes PBO via CSCV when sufficient data exists.
+
+    Args:
+        report: EvaluationReport to mutate in-place.
+        selection_returns: In-sample walk-forward net returns series.
+        ledger: Ledger store for fetching historical returns.
+        exclude_id: Optional attempt ID to exclude from the historical set.
+        cscv_blocks: Number of blocks for CSCV PBO calculation.
+        embargo_days: Block embargo days to avoid boundary autocorrelation.
     """
     hist_matrix, hist_sharpes = ledger.fetch_historical_returns(report.dataset_hash, exclude_id=exclude_id)
 
@@ -56,6 +65,12 @@ def deflate_holdout(
     """Deflate ``report.holdout_deflated_sharpe`` by the holdout-peek count.
 
     Same conservative self-inclusion rationale as ``deflate_selection``.
+    No-op when ``report.holdout_net_returns`` is ``None`` or empty.
+
+    Args:
+        report: EvaluationReport to mutate in-place.
+        ledger: Ledger store for fetching holdout return history.
+        exclude_id: Optional attempt ID to exclude.
     """
     hist_matrix, hist_sharpes = ledger.fetch_holdout_history(report.dataset_hash, exclude_id=exclude_id)
 

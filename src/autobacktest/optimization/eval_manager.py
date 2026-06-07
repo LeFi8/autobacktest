@@ -16,7 +16,22 @@ from autobacktest.strategy.config_schema import StrategyConfig
 
 
 def load_signals(path: Path) -> Any:
-    """Dynamically import generate_signals from a strategy .py file."""
+    """Dynamically import generate_signals from a strategy .py file.
+
+    Uses ``importlib.util.spec_from_file_location`` to load the module,
+    then evicts it from ``sys.modules`` to prevent namespace pollution
+    (only if the module was newly registered).
+
+    Args:
+        path: Path to the strategy ``.py`` file.
+
+    Returns:
+        Any: The module's ``generate_signals`` function.
+
+    Raises:
+        ImportError: When the module cannot be loaded.
+        AttributeError: When the module has no ``generate_signals`` function.
+    """
     module_name = path.stem
     spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:
@@ -46,8 +61,24 @@ def eval_single_candidate(
 ) -> tuple[EvaluationReport | None, pd.Series[Any] | None, dict[str, Any] | None, str | None]:
     """Evaluate one candidate via temp files.
 
-    Returns ``(report, returns, new_config, error_str)``.  When evaluation
-    fails all four values are ``None``.  Temp files are cleaned up.
+    Writes the candidate code and config to temporary files, loads signals
+    dynamically, runs the full walk-forward + holdout evaluation, and cleans
+    up.  Uses the provided eval cache to skip redundant evaluations.
+
+    Args:
+        strategy_name: The target strategy name.
+        strategy_code: Source code of the candidate.
+        config_yaml: YAML configuration of the candidate.
+        strategies_dir: Path to strategies directory.
+        configs_dir: Path to configs directory.
+        start_date: Start of the backtest period.
+        end_date: End of the backtest period.
+        eval_cache: Memoization cache (dict-like) keyed by code+config hash.
+
+    Returns:
+        tuple[EvaluationReport | None, pd.Series | None, dict[str, Any] | None, str | None]:
+        ``(report, in_sample_returns, flat_config, error_str)``.
+        When evaluation fails all four values are ``None``.
     """
     temp_name = f"eval_{uuid.uuid4().hex}"
     temp_py = strategies_dir / f"{temp_name}.py"

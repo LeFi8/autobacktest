@@ -29,7 +29,20 @@ def validate_candidate(
     strategies_dir: Path,
     configs_dir: Path,
 ) -> tuple[bool, str | None, str | None]:
-    """Validate candidate edit via temp files."""
+    """Validate candidate edit via temp files.
+
+    Writes the candidate's code and config to temporary files, runs the
+    full preflight validation suite, and cleans up the temp files.
+
+    Args:
+        strategy_name: The target strategy name.
+        edit: ``AgentEdit`` containing strategy code and config YAML.
+        strategies_dir: Directory for temporary strategy ``.py`` files.
+        configs_dir: Directory for temporary config ``.yaml`` files.
+
+    Returns:
+        tuple[bool, str | None, str | None]: ``(passed, error_code, error_detail)``.
+    """
     temp_name = f"{strategy_name}_candidate_{uuid.uuid4().hex}"
     temp_py = strategies_dir / f"{temp_name}.py"
     temp_yaml = configs_dir / f"{temp_name}.yaml"
@@ -56,7 +69,19 @@ def generate_candidates(
 ) -> list[AgentEdit | None]:
     """Generate N candidate edits in parallel, returning None for transient failures.
 
-    Non-retryable errors (e.g. auth failures) are raised immediately.
+    In explore mode, each candidate receives a unique diversity directive
+    to encourage structurally different mutations.  Non-retryable errors
+    (e.g. auth failures) are raised immediately; transient LLM errors
+    return ``None`` for that slot.
+
+    Args:
+        provider: LLM provider used to generate edits.
+        ctx: Shared ``AgentContext`` passed to each candidate.
+        n: Number of parallel candidates to generate.
+
+    Returns:
+        list[AgentEdit | None]: One entry per slot. ``None`` indicates a
+        transient failure in that slot.
     """
 
     def _try(c: AgentContext) -> AgentEdit | None:
@@ -91,7 +116,38 @@ def process_and_repair_candidate(
     k: int,
     validate_fn: Any = None,
 ) -> dict[str, Any]:
-    """Process, validate, and optionally repair a generated candidate edit."""
+    """Process, validate, and optionally repair a generated candidate edit.
+
+    Applies deterministic codemod repair first (pandas deprecation fixes),
+    then runs preflight validation.  When validation fails and LLM repair is
+    enabled, launches up to ``max_repair_attempts`` LLM-based repair rounds.
+
+    Args:
+        strategy_name: The target strategy name.
+        edit: The initial ``AgentEdit`` from the LLM.
+        ctx: The ``AgentContext`` used for repair rounds.
+        directive: The diversity directive assigned to this candidate.
+        provider: LLM provider for repair calls.
+        strategies_dir: Path to strategies directory.
+        configs_dir: Path to configs directory.
+        lessons_text: Curated lessons text for the repair context.
+        k: Iteration number (for log correlation).
+        validate_fn: Override for ``validate_candidate`` (test injection).
+
+    Returns:
+        dict with keys:
+        - ``valid`` (bool): Whether the candidate passed all checks.
+        - ``strategy_code`` (str): Final strategy source code.
+        - ``config_yaml`` (str): Final config YAML.
+        - ``prompt_tokens``, ``completion_tokens``, ``total_tokens``, ``cost``
+          (int/int/int/float): Accumulated token/cost usage.
+        - ``edit`` (AgentEdit): The final edit object.
+        - ``repair_applied`` (bool): Whether an LLM repair was applied.
+        When invalid, additionally:
+        - ``validation_stage`` (str): ``"validation"`` or ``"codemod"``.
+        - ``detail`` (str | None): Error details.
+        - ``error_code`` (str | None): Error code string.
+    """
     if validate_fn is None:
         validate_fn = validate_candidate
     ev: dict[str, Any] = {"edit": edit, "directive": directive}

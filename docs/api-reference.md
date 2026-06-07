@@ -1086,5 +1086,320 @@ def jitter_config(
     """
 ```
 
+---
 
+## 22. Calculated Effective Trials (`autobacktest.evaluator.deflated_sharpe`)
 
+### `calculate_effective_trials`
+Estimates the effective number of independent trials from a returns matrix using
+the eigenvalue-based method from Bailey et al. Used to deflate the DSR for
+multiple-testing bias.
+
+```python
+def calculate_effective_trials(
+    returns_matrix: pd.DataFrame,
+    threshold: float = 0.5,
+) -> int:
+    """Estimate number of effective independent trials from returns matrix.
+
+    Args:
+        returns_matrix: DataFrame where each column corresponds to the daily
+            returns of one trial/strategy, rows are trading dates.
+        threshold: Eigenvalue ratio threshold for counting principal
+            components (default: ``0.5``).
+
+    Returns:
+        int: Estimated effective number of independent trials.
+    """
+```
+
+---
+
+## 23. Validation Error Types & Sandbox (`autobacktest.strategy.validator`, `autobacktest.strategy.sandbox_runner`)
+
+### `ValidationError` (StrEnum)
+Enumeration of all pre-flight validation error types.
+
+| Member | Value | Description |
+|---|---|---|
+| `AST_BLOCKED_IMPORT` | `"ast_blocked_import"` | Non-whitelisted import or forbidden name |
+| `AST_LINE_LIMIT_EXCEEDED` | `"ast_line_limit_exceeded"` | Function exceeds max line count |
+| `AST_CYCLOMATIC_COMPLEXITY_EXCEEDED` | `"ast_cyclomatic_complexity_exceeded"` | Function exceeds complexity limit |
+| `CONFIG_SCHEMA_INVALID` | `"config_schema_invalid"` | YAML fails Pydantic `StrategyConfig` validation |
+| `IMPORT_FAILED` | `"import_failed"` | File not found, dynamic import failure, or path traversal |
+| `SIGNATURE_MISMATCH` | `"signature_mismatch"` | `generate_signals` signature does not match `(prices, config)` |
+| `SMOKE_TEST_FAILED` | `"smoke_test_failed"` | Synthetic price execution failed or timed out |
+| `LOOKAHEAD_DETECTED` | `"lookahead_detected"` | Signals changed when future data was appended |
+| `UNDEFINED_NAME` | `"undefined_name"` | AST scan found an out-of-scope variable reference |
+
+### `ValidationResult` (Dataclass)
+```python
+@dataclass
+class ValidationResult:
+    passed: bool
+    error_code: ValidationError | None = None
+    detail: Any = None
+```
+
+### `SandboxTimeoutError`
+Exception raised when strategy execution in the sandboxed subprocess exceeds the configured timeout limit.
+
+---
+
+## 24. Optimization Candidate Module (`autobacktest.optimization.candidate`)
+
+### `validate_candidate`
+Writes the candidate edit to temporary files and runs the full preflight validation suite.
+```python
+def validate_candidate(
+    strategy_name: str,
+    edit: AgentEdit,
+    strategies_dir: Path,
+    configs_dir: Path,
+) -> tuple[bool, str | None, str | None]:
+    """Validate candidate edit via temp files.
+
+    Returns:
+        tuple[bool, str | None, str | None]: (passed, error_code, error_detail).
+    """
+```
+
+### `generate_candidates`
+Generates N candidate edits in parallel via a ``ThreadPoolExecutor``. In explore mode,
+each candidate receives a unique directive to encourage diverse mutation strategies.
+```python
+def generate_candidates(
+    provider: LLMProvider,
+    ctx: AgentContext,
+    n: int,
+) -> list[AgentEdit | None]:
+    """Generate N candidate edits in parallel.
+
+    Non-retryable errors (auth failures, etc.) are raised immediately.
+    Transient failures return ``None`` for that slot.
+    """
+```
+
+### `process_and_repair_candidate`
+Processes, validates, and optionally repairs a generated candidate edit. Applies deterministic
+codemod repair first (pandas deprecation fixes), then runs validation; if validation fails
+and LLM repair is enabled, launches up to ``max_repair_attempts`` LLM repair rounds.
+```python
+def process_and_repair_candidate(
+    strategy_name: str,
+    edit: AgentEdit,
+    ctx: AgentContext,
+    directive: str,
+    provider: LLMProvider,
+    strategies_dir: Path,
+    configs_dir: Path,
+    lessons_text: str,
+    k: int,
+    validate_fn: Any = None,
+) -> dict[str, Any]:
+    """Process, validate, and optionally repair a generated candidate edit.
+
+    Returns:
+        dict with keys: ``valid``, ``strategy_code``, ``config_yaml``,
+        ``prompt_tokens``, ``completion_tokens``, ``total_tokens``, ``cost``,
+        ``edit``, and when invalid additionally ``validation_stage``,
+        ``detail``, and ``error_code``.
+    """
+```
+
+---
+
+## 25. Optimization Eval Manager (`autobacktest.optimization.eval_manager`)
+
+### `load_signals`
+Dynamically imports ``generate_signals`` from a strategy ``.py`` file, cleaning
+the module from ``sys.modules`` after import to prevent namespace pollution.
+```python
+def load_signals(path: Path) -> Any:
+    """Dynamically import generate_signals from a strategy .py file.
+
+    Raises:
+        ImportError: When the module cannot be loaded.
+        AttributeError: When the module has no ``generate_signals`` function.
+    """
+```
+
+### `eval_single_candidate`
+Evaluates one candidate by writing its code and config to temporary files,
+loading signals dynamically, running ``evaluate_strategy_detailed``, and
+cleaning up the temp files.
+```python
+def eval_single_candidate(
+    strategy_name: str,
+    strategy_code: str,
+    config_yaml: str,
+    strategies_dir: Path,
+    configs_dir: Path,
+    start_date: str,
+    end_date: str,
+    eval_cache: _CacheProtocol,
+) -> tuple[EvaluationReport | None, pd.Series[Any] | None, dict[str, Any] | None, str | None]:
+    """Evaluate one candidate via temp files.
+
+    Returns:
+        (report, returns, new_config, error_str). When evaluation fails all
+        four values are ``None``.
+    """
+```
+
+---
+
+## 26. Optimization Persistence (`autobacktest.optimization.persistence`)
+
+### `deflate_selection`
+Deflates the in-sample selection DSR using the ledger's multi-trial history.
+The candidate is deliberately included in both the returns matrix and the
+historical Sharpe list (conservative self-inclusion). Also computes PBO via CSCV.
+```python
+def deflate_selection(
+    report: EvaluationReport,
+    selection_returns: pd.Series[Any],
+    ledger: LedgerStore,
+    exclude_id: int | None = None,
+    cscv_blocks: int = 10,
+    embargo_days: int = 5,
+) -> None:
+    """Deflate in-sample DSR using ledger multi-trial history. Mutates report in-place."""
+```
+
+### `deflate_holdout`
+Deflates the holdout DSR by the holdout-peek count. Same conservative self-inclusion
+rationale as ``deflate_selection``.
+```python
+def deflate_holdout(
+    report: EvaluationReport,
+    ledger: LedgerStore,
+    exclude_id: int | None = None,
+) -> None:
+    """Deflate holdout DSR by holdout-peek count. Mutates report in-place."""
+```
+
+---
+
+## 27. Evaluator Engine (`autobacktest.evaluator.engine`)
+
+### `_CacheProtocol`
+Protocol class defining the minimal eval-result cache interface, satisfied by
+both ``dict`` and the orchestrator's ``_LRUCache``.
+```python
+class _CacheProtocol(Protocol):
+    def get(self, key: int, default: Any = None) -> Any: ...
+    def __getitem__(self, key: int) -> Any: ...
+    def __setitem__(self, key: int, value: Any) -> None: ...
+```
+
+### `compute_dataset_hash`
+Computes a stable SHA-256 hash from the universe tickers and backtest date
+parameters, used for dataset-level caching and ledger correlation.
+```python
+def compute_dataset_hash(
+    tickers: list[str],
+    start_date: str = "",
+    end_date: str = "",
+    holdout_years: int = 3,
+) -> str:
+    """Compute a stable dataset hash from universe tickers and date parameters."""
+```
+
+### `generate_window_report`
+Runs a full backtest and cost assessment for a specific date window, returning
+a structured ``WindowReport`` with all key metrics.
+```python
+def generate_window_report(
+    prices: pd.DataFrame,
+    weights: pd.DataFrame,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    benchmark_returns: pd.Series | None = None,
+    *,
+    asset_returns: pd.DataFrame | None = None,
+    borrow_cost_bps: float = 100.0,
+    adaptive_slippage: bool = False,
+    slippage_vol_window: int = 21,
+    slippage_vol_cap: float = 3.0,
+) -> WindowReport:
+    """Run backtest and cost assessment for a specific date window."""
+```
+
+### `_run_walk_forward_windows`
+Runs walk-forward window evaluations in parallel using a ``ThreadPoolExecutor``.
+```python
+def _run_walk_forward_windows(
+    prices: pd.DataFrame,
+    weights: pd.DataFrame,
+    wf_windows: list[tuple[pd.Timestamp, pd.Timestamp, pd.Timestamp, pd.Timestamp]],
+    bench_returns: pd.Series | None = None,
+    *,
+    asset_returns: pd.DataFrame | None = None,
+    borrow_cost_bps: float = 100.0,
+    adaptive_slippage: bool = False,
+    slippage_vol_window: int = 21,
+    slippage_vol_cap: float = 3.0,
+) -> list[WindowReport]:
+    """Run walk-forward window evaluations in parallel."""
+```
+
+---
+
+## 28. Evaluator Metrics (`autobacktest.evaluator.metrics`)
+
+### `calculate_sortino_ratio`
+Calculates the Sortino Ratio of a daily net returns series (downside deviation
+instead of total volatility).
+```python
+def calculate_sortino_ratio(net_returns: pd.Series) -> float:
+    """Calculate the Sortino Ratio of a daily net returns series.
+    Returns ``inf`` when mean return is positive and downside std is zero.
+    """
+```
+
+### `calculate_information_ratio`
+Calculates the Information Ratio of daily returns relative to a benchmark.
+```python
+def calculate_information_ratio(net_returns: pd.Series, benchmark_returns: pd.Series) -> float:
+    """Calculate the Information Ratio of daily returns relative to benchmark."""
+```
+
+### `aggregate_walk_forward`
+Aggregates individual walk-forward window reports into a single summary report
+by averaging returns/ratios and taking the max drawdown/turnover across windows.
+```python
+def aggregate_walk_forward(wf_reports: list[WindowReport]) -> WindowReport:
+    """Aggregate individual walk-forward window reports into a single summary.
+
+    Raises:
+        ValueError: If ``wf_reports`` is empty.
+    """
+```
+
+---
+
+## 29. Evaluator Stress Testing (`autobacktest.evaluator.stress_testing`)
+
+### `run_stress_and_bootstrap_tests`
+Runs stress regime evaluation and Monte Carlo bootstrap simulations in a single call.
+```python
+def run_stress_and_bootstrap_tests(
+    net_returns: pd.Series,
+    daily_weights: pd.DataFrame,
+    n_tickers: int,
+    mc_bootstrap_method: str = "stationary",
+) -> tuple[dict[str, float], bool, float, float, float, np.ndarray]:
+    """Run stress regime and bootstrap simulations.
+
+    Returns:
+        tuple: (regime_drawdowns, regime_passed, mc_5th, mc_50th, mc_95th, mc_sharpes).
+    """
+```
+
+### `get_regime_haircut`
+Convenience wrapper around ``calculate_regime_haircut``.
+```python
+def get_regime_haircut(benchmark_prices: pd.Series, holdout_start: pd.Timestamp) -> float:
+    """Calculate the launch regime haircut based on benchmark prices."""
+```

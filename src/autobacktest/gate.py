@@ -28,7 +28,13 @@ from autobacktest.evaluator.report import EvaluationReport
 
 
 class TargetMetric(StrEnum):
-    """Optimization objective metrics for target strategy optimization."""
+    """Optimization objective metric used as the primary gating criterion.
+
+    Members:
+        SHARPE: Annualised Sharpe ratio (default).
+        SORTINO: Sortino ratio (downside deviation only).
+        INFORMATION_RATIO: Active return over tracking error vs. benchmark.
+    """
 
     SHARPE = "sharpe"
     SORTINO = "sortino"
@@ -37,7 +43,14 @@ class TargetMetric(StrEnum):
 
 @dataclass
 class GateResult:
-    """The outcome result of a lexicographic gate evaluation."""
+    """The outcome result of a gate evaluation (select, confirm, or accept).
+
+    Attributes:
+        accepted: Whether the candidate passed the gate.
+        reason: Human-readable explanation of the outcome.
+        failed_gate: Identifier of the specific gate check that failed
+            (e.g. ``"dd_limit"``, ``"turnover_limit"``, ``"dsr_degradation"``).
+    """
 
     accepted: bool
     reason: str | None = None

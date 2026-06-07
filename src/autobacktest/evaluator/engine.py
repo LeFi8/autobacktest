@@ -16,7 +16,12 @@ from autobacktest.evaluator.report import WindowReport
 
 
 class _CacheProtocol(Protocol):
-    """Minimal eval-result cache interface — satisfies both ``dict`` and ``_LRUCache``."""
+    """Minimal eval-result cache interface — satisfies both ``dict`` and ``_LRUCache``.
+
+    Provides dict-like ``__getitem__`` / ``__setitem__`` access to enable
+    transparent use as the ``_eval_cache`` parameter in
+    ``evaluate_strategy_detailed``.
+    """
 
     def get(self, key: int, default: Any = None) -> Any: ...
 
@@ -31,7 +36,20 @@ def compute_dataset_hash(
     end_date: str = "",
     holdout_years: int = 3,
 ) -> str:
-    """Compute a stable dataset hash from universe tickers and date parameters."""
+    """Compute a stable dataset hash from universe tickers and date parameters.
+
+    Used as the ``dataset_hash`` key in the SQLite ledger for correlating
+    attempts across runs against the same universe.
+
+    Args:
+        tickers: List of ticker symbols in the universe.
+        start_date: Start date (YYYY-MM-DD) of the backtest period.
+        end_date: End date (YYYY-MM-DD) of the backtest period.
+        holdout_years: Number of holdout years.
+
+    Returns:
+        str: First 16 hex characters of the SHA-256 hash.
+    """
     data = "|".join(
         [
             ",".join(sorted(tickers)),
@@ -56,7 +74,27 @@ def generate_window_report(
     slippage_vol_window: int = 21,
     slippage_vol_cap: float = 3.0,
 ) -> WindowReport:
-    """Run backtest and cost assessment for a specific date window."""
+    """Run backtest and cost assessment for a specific date window.
+
+    Executes the vectorized backtest, applies transaction costs
+    (commissions, spreads, impact, borrowing), and computes all
+    performance metrics for the window.
+
+    Args:
+        prices: Daily close prices DataFrame (DatetimeIndex).
+        weights: Portfolio weights DataFrame (DatetimeIndex).
+        start: Window start date (inclusive).
+        end: Window end date (inclusive).
+        benchmark_returns: Benchmark returns for Information Ratio.
+        asset_returns: Pre-computed daily asset returns (optimisation).
+        borrow_cost_bps: Annualised short borrowing cost in bps.
+        adaptive_slippage: Use volatility-adaptive slippage.
+        slippage_vol_window: Volatility estimation window.
+        slippage_vol_cap: Volatility cap multiplier.
+
+    Returns:
+        WindowReport: All performance metrics for this window.
+    """
     window_prices = prices.loc[start:end]
     window_weights = weights.loc[start:end]
 
@@ -123,7 +161,25 @@ def _run_walk_forward_windows(
     slippage_vol_window: int = 21,
     slippage_vol_cap: float = 3.0,
 ) -> list[WindowReport]:
-    """Run walk-forward window evaluations in parallel via thread pool."""
+    """Run walk-forward window evaluations in parallel via thread pool.
+
+    Distributes each test window to a ``ThreadPoolExecutor`` (max 4 workers)
+    for concurrent backtest and cost assessment.
+
+    Args:
+        prices: Full-period price DataFrame.
+        weights: Full-period weight DataFrame.
+        wf_windows: List of (train_start, train_end, test_start, test_end) tuples.
+        bench_returns: Benchmark return series for Information Ratio calculation.
+        asset_returns: Pre-computed daily asset returns (optimisation).
+        borrow_cost_bps: Annualised short borrowing cost in basis points.
+        adaptive_slippage: Use volatility-adaptive slippage model.
+        slippage_vol_window: Rolling window for volatility estimation.
+        slippage_vol_cap: Cap multiplier for volatility-adaptive slippage.
+
+    Returns:
+        list[WindowReport]: One report per walk-forward window.
+    """
     n_windows = len(wf_windows)
     if n_windows == 0:
         return []

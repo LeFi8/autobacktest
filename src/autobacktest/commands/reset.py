@@ -22,6 +22,19 @@ def reset_impl(
     git_ledger_class: type[DefaultGitLedger] = DefaultGitLedger,
     settings_obj: Any = default_settings,
 ) -> None:
+    """Reset strategy baseline files, clear lessons, and delete the runs directory.
+
+    Attempts git-based restoration first, falling back to writing a default
+    template for ``lessons.md`` when the git operation fails or when running
+    in a mock/test context.
+
+    Args:
+        strategy: Strategy name to reset (``None`` resets all).
+        run_dir: Path to the run artifacts directory to delete.
+        path_class: Path class (injected for testability).
+        git_ledger_class: Git ledger class (injected for testability).
+        settings_obj: Settings object (injected for testability).
+    """
     cleanup_failures: list[str] = []
 
     try:

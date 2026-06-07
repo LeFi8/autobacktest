@@ -28,7 +28,16 @@ _SANITIZE_PATTERNS = [
 
 
 def _sanitize_detail(text: str) -> str:
-    """Redact potential API keys and credentials from error messages."""
+    """Redact potential API keys and credentials from error messages.
+
+    Applies regex patterns to mask OpenAI-style ``sk-...`` keys.
+
+    Args:
+        text: Raw error message text.
+
+    Returns:
+        str: Sanitised text with keys replaced by ``sk-***REDACTED***``.
+    """
     if not text:
         return text
     for pattern, replacement in _SANITIZE_PATTERNS:
@@ -47,7 +56,19 @@ def timeout_sandbox(
     seconds: int = 15,
     memory_limit_bytes: int = 1 * 1024 * 1024 * 1024,
 ) -> Generator[None, None, None]:
-    """Lightweight execution timeout and memory sandbox context manager."""
+    """Lightweight execution timeout and memory sandbox context manager.
+
+    Uses ``SIGALRM`` (main thread only) for timeout enforcement and
+    ``resource.RLIMIT_AS`` for virtual memory hard limits.  Falls back
+    gracefully when ``resource`` is unavailable (non-POSIX platforms).
+
+    Args:
+        seconds: Execution timeout in seconds (default: 15).
+        memory_limit_bytes: Virtual memory soft limit (default: 1 GB).
+
+    Yields:
+        None: Context in which the wrapped code executes under sandbox.
+    """
     import threading
 
     resource: Any = None
@@ -94,7 +115,19 @@ def timeout_sandbox(
 
 
 def _generate_synthetic_prices(tickers: list[str], n_days: int, seed: int = 42) -> pd.DataFrame:
-    """Helper to generate geometric random walk price DataFrame."""
+    """Helper to generate geometric random walk price DataFrame.
+
+    Creates business-day-indexed prices starting from 2023-01-01 with
+    daily drift 0.02% and volatility 1%.
+
+    Args:
+        tickers: List of ticker symbols.
+        n_days: Number of trading days to generate.
+        seed: Random seed for reproducibility (default: 42).
+
+    Returns:
+        pd.DataFrame: Synthetic close prices with DatetimeIndex.
+    """
     rng = np.random.default_rng(seed)
     dates = pd.date_range("2023-01-01", periods=n_days, freq="B")
     prices = pd.DataFrame(index=dates)
@@ -110,7 +143,27 @@ def _run_validation_in_subprocess(
     config: StrategyConfig,
     incumbent_code: str | None = None,
 ) -> "ValidationResult":
-    """Run dynamic import, signature, smoke, and lookahead tests in a sandboxed subprocess."""
+    """Run dynamic import, signature, smoke, and lookahead tests in a sandboxed subprocess.
+
+    Spawns a separate Python process with a restricted ``PATH``/``PYTHONPATH``
+    to sandbox the strategy code.  The subprocess runner (defined inline as
+    ``runner_code``) performs:
+    1. Dynamic import from the strategy file.
+    2. Signature verification (``generate_signals(prices, config)``).
+    3. Smoke test (756 days synthetic prices).
+    4. Optional incumbent comparison for identical-behavior guard.
+    5. Lookahead sniff test (compare signals with vs. without future data).
+    6. Lookahead shift test (shift prices by 1 day, verify signal shift).
+
+    Args:
+        strategy_name: The strategy name.
+        strategy_path: Path to the strategy ``.py`` file.
+        config: Pydantic-validated ``StrategyConfig``.
+        incumbent_code: Incumbent strategy source for identical-behavior comparison.
+
+    Returns:
+        ValidationResult: Pass/fail with error code and detail.
+    """
     from autobacktest.strategy.validator import ValidationError, ValidationResult
 
     payload = {

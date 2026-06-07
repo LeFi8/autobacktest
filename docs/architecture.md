@@ -8,10 +8,14 @@ AutoBacktest decouples strategy creation (generative AI) from evaluation (determ
 graph TD
     subgraph CLI / Interface
         CLI[cli.py]
+        CMDS[commands/]
     end
 
     subgraph Core Orchestration
         ORCH[orchestrator.py]
+        CAND[optimization/candidate.py]
+        EVALMGR[optimization/eval_manager.py]
+        PERSIST[optimization/persistence.py]
         GATE[gate.py]
         PROG[program.py]
         CONFIG[config.py]
@@ -20,6 +24,8 @@ graph TD
     subgraph Strategy & Config Validation
         SCHEM[strategy/config_schema.py]
         VAL[strategy/validator.py]
+        ASTL[strategy/ast_linter.py]
+        SANDBOX[strategy/sandbox_runner.py]
         CONT[strategy/contract.py]
         DIV[strategy/diversity.py]
         NORM[strategy/normalization.py]
@@ -31,6 +37,9 @@ graph TD
 
     subgraph Evaluation Pipeline
         EVAL[evaluator/evaluate.py]
+        ENG[evaluator/engine.py]
+        METR[evaluator/metrics.py]
+        STEST[evaluator/stress_testing.py]
         RPRT[evaluator/report.py]
         CSCV[evaluator/cscv.py]
         BACK[evaluator/backtest.py]
@@ -71,8 +80,12 @@ graph TD
         STRAT[strategies/*.py]
     end
 
-    CLI --> ORCH
-    CLI --> REP
+    CLI --> CMDS
+    CMDS --> ORCH
+    CMDS --> REP
+    ORCH --> CAND
+    ORCH --> EVALMGR
+    ORCH --> PERSIST
     ORCH --> EVAL
     ORCH --> GATE
     ORCH --> LEDG
@@ -85,10 +98,15 @@ graph TD
     ORCH --> PI
     ORCH --> CJITTER
     ORCH --> CONFIG
+    VAL --> ASTL
+    VAL --> SANDBOX
     VAL --> CONT
     VAL --> CODEMOD
     VAL --> CNST
     ORCH --> CODEMOD
+    EVAL --> ENG
+    EVAL --> METR
+    EVAL --> STEST
     EVAL --> BACK
     EVAL --> COST
     EVAL --> DSR
@@ -108,13 +126,15 @@ graph TD
 
 ## Module Definitions
 
-### 1. Command-Line Interface (`cli.py`)
-Provides user subcommands utilizing `typer` and formats leaderboard responses via `rich`.
+### 1. Command-Line Interface (`cli.py` + `commands/`)
+Provides user subcommands utilizing `typer` and formats leaderboard responses via `rich`. Subcommand implementations live in the `commands/` package and are registered in `cli.py`.
 - `run`: Executes the iterative LLM optimization loop. Supports rendering a side-by-side Rich console summary comparison of baseline vs. optimized metrics, or falling back to raw JSON printout using the `--json` option.
 - `report`: Displays runs leaderboard from SQLite tracking ledger.
 - `reset`: Reverts strategy codes to baseline states and purges run logs.
 - `evaluate`: Evaluates a standalone strategy directly without the optimization loop.
 - `init-strategy`: Interactive wizard that scaffolds a new strategy. Prompts for universe, benchmark, risk limits, and custom parameters, validates via `StrategyConfig`, and generates `configs/{name}.yaml` and `strategies/{name}.py` boilerplate.
+- `spa`: Runs Hansen's Superior Predictive Ability (SPA) test against the ledger to determine whether any candidate significantly outperforms the baseline after correcting for data-snooping bias.
+- `llm-test`: Tests an LLM prompt against preflight checks without running the full optmization loop.
 
 ### 2. LLM Driver (`llm/`)
 Provides the abstract contract and concrete implementations for LLM-powered strategy mutation.
@@ -171,7 +191,24 @@ Enforces code correctness, type-safety, and logic uniqueness constraints on cand
 - `config_jitter.py`: Deterministic config parameter mutation system. When a candidate fails the Tier 1 config diversity gate, `jitter_config()` perturbs numeric parameters within bounded ranges and revalidates against the schema, salvaging candidates by reducing config similarity below threshold.
 - `constants.py`: Security-critical constants including `FORBIDDEN_NAMES` — a list of ~70 blocked identifiers (dangerous builtins, dunder methods, I/O functions) that the AST scanner uses to reject unsafe code patterns.
 
-### 10. Program Parser (`program.py`)
+### 10. Optimization Sub-package (`optimization/`)
+Refactored orchestrator helpers for candidate generation, evaluation, and persistence.
+- `candidate.py`: `generate_candidates` — spawns N parallel LLM edits via `ThreadPoolExecutor`. `validate_candidate` — writes candidate to temp files and runs preflight. `process_and_repair_candidate` — chains codemod repair, validation, and optional LLM-based repair attempts.
+- `eval_manager.py`: `load_signals` — dynamically imports `generate_signals` from a strategy `.py` file. `eval_single_candidate` — evaluates one candidate by writing temp files, loading signals, running `evaluate_strategy_detailed`, and cleaning up.
+- `persistence.py`: `deflate_selection` — deflates the in-sample DSR using the ledger's multi-trial history (including PBO computation via CSCV). `deflate_holdout` — deflates the holdout DSR by the holdout-peek count.
+
+### 11. Strategy Module Extraction (`ast_linter.py`, `sandbox_runner.py`)
+Core strategy validation logic extracted from `validator.py` for modularity.
+- `ast_linter.py`: AST-based static validation. `_check_ast` — parses strategy code and blocks non-whitelisted imports, dunder escapes, oversized functions, excessive cyclomatic complexity, and undefined variable names. `_check_undefined_names` — catches LLM hallucinations (misspelled identifiers, out-of-scope variables) by walking function scopes.
+- `sandbox_runner.py`: Sandboxed subprocess execution. `_run_validation_in_subprocess` — runs dynamic import, signature verification, smoke testing (756-day synthetic prices), lookahead sniff test, and lookahead shift test inside a subprocess with memory limits and timeout protection. `timeout_sandbox` — context manager wrapping `SIGALRM` and `RLIMIT_AS` for resource sandboxing.
+
+### 12. Evaluator Module Extraction (`engine.py`, `metrics.py`, `stress_testing.py`)
+Refactored evaluator helpers extracted from `evaluate.py`.
+- `engine.py`: Vectorized window execution and caching. `generate_window_report` — runs backtest + cost assessment for a specific date window. `_run_walk_forward_windows` — parallel walk-forward evaluation via thread pool. `compute_dataset_hash` — stable SHA-256 hash from universe tickers and date parameters for caching.
+- `metrics.py`: Isolated metrics calculations. `calculate_sortino_ratio`, `calculate_information_ratio` — standard risk-adjusted return measures. `aggregate_walk_forward` — merges per-window reports into a summary. `_compute_returns_metrics` — computes full metrics from a return series slice.
+- `stress_testing.py`: Wraps regime stress tests and Monte Carlo bootstrap for reuse. `run_stress_and_bootstrap_tests` — runs `evaluate_stress_regimes` + `run_block_bootstrap` in a single call. `get_regime_haircut` — convenience wrapper for `calculate_regime_haircut`.
+
+### 13. Program Parser (`program.py`)
 Parses and validates the markdown program file (`program.md`), extracting `# Objective` and `# Constraints` sections. Returns a `ProgramSpec` dataclass with structured objectives, constraints, and raw text (passed to the LLM as-is).
 
 ---

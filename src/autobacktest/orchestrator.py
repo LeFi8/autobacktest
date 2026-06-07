@@ -1232,7 +1232,15 @@ def _audit_baseline(report: EvaluationReport, config: StrategyConfig) -> list[st
 
 
 def _get_metric_value(report: EvaluationReport, metric: TargetMetric) -> float:
-    """Extract the target metric value from the in-sample walk-forward aggregate."""
+    """Extract the target metric value from the in-sample walk-forward aggregate.
+
+    Args:
+        report: Evaluation report containing in-sample metrics.
+        metric: The target metric to extract (Sharpe, Sortino, or IR).
+
+    Returns:
+        float: The metric value, or 0.0 for IR when None.
+    """
     if metric == TargetMetric.SHARPE:
         return report.in_sample_metrics.sharpe_ratio
     elif metric == TargetMetric.SORTINO:
@@ -1242,7 +1250,19 @@ def _get_metric_value(report: EvaluationReport, metric: TargetMetric) -> float:
 
 
 def _extract_best_failure(candidate_results: list[dict[str, Any]]) -> dict[str, Any]:
-    """Select the most descriptive failure from parallel candidate results to present as feedback."""
+    """Select the most descriptive failure from parallel candidate results to present as feedback.
+
+    Prioritises failures by stage precedence (validation > eval_error >
+    identical_behavior > gate > diversity_returns > diversity_config).
+    Falls back to ``"all_candidates_failed"`` when no failure is found.
+
+    Args:
+        candidate_results: List of candidate evaluation result dicts.
+
+    Returns:
+        dict: The best failure with keys ``stage``, ``detail``, and
+        optionally ``error_code``, ``candidate_metrics``, etc.
+    """
     stages_priority = [
         "validation",
         "eval_error",
@@ -1302,7 +1322,17 @@ def _extract_best_failure(candidate_results: list[dict[str, Any]]) -> dict[str, 
 
 
 def _summarize_all_failures(candidate_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Summarize all failures observed across parallel candidates in an iteration."""
+    """Summarize all failures observed across parallel candidates in an iteration.
+
+    Extracts stage, error code, detail (truncated to 120 chars), and
+    numeric parameter fingerprints for each failed candidate.
+
+    Args:
+        candidate_results: List of candidate evaluation result dicts.
+
+    Returns:
+        list[dict]: Each with keys ``stage``, ``error_code``, ``detail``, ``params``.
+    """
     failures = []
     for ev in candidate_results:
         if not ev.get("valid") or ev.get("llm_error"):
@@ -1335,7 +1365,16 @@ def _summarize_all_failures(candidate_results: list[dict[str, Any]]) -> list[dic
 
 
 def _load_signals(path: Path) -> Any:
-    """Dynamically import generate_signals from a strategy .py file."""
+    """Dynamically import generate_signals from a strategy .py file.
+
+    Delegates to ``optimization.eval_manager.load_signals``.
+
+    Args:
+        path: Path to the strategy ``.py`` file.
+
+    Returns:
+        Any: The ``generate_signals`` function.
+    """
     return load_signals(path)
 
 
@@ -1345,7 +1384,21 @@ def _validate_candidate(
     strategies_dir: Path,
     configs_dir: Path,
 ) -> tuple[bool, str | None, str | None]:
-    """Validate candidate edit via temp files."""
+    """Validate candidate edit via temp files.
+
+    Writes the candidate's code and config to temporary files, runs
+    ``preflight()``, and cleans up.  Duplicates ``candidate.validate_candidate``
+    for local reasoning.
+
+    Args:
+        strategy_name: The target strategy name.
+        edit: ``AgentEdit`` containing strategy code and config YAML.
+        strategies_dir: Directory for temporary strategy files.
+        configs_dir: Directory for temporary config files.
+
+    Returns:
+        tuple[bool, str | None, str | None]: (passed, error_code, error_detail).
+    """
     temp_name = f"{strategy_name}_candidate_{uuid.uuid4().hex}"
     temp_py = strategies_dir / f"{temp_name}.py"
     temp_yaml = configs_dir / f"{temp_name}.yaml"
@@ -1370,7 +1423,18 @@ def _generate_candidates(
     ctx: AgentContext,
     n: int,
 ) -> list[AgentEdit | None]:
-    """Generate N candidate edits in parallel."""
+    """Generate N candidate edits in parallel.
+
+    Delegates to ``optimization.candidate.generate_candidates``.
+
+    Args:
+        provider: LLM provider.
+        ctx: Shared ``AgentContext``.
+        n: Number of parallel candidates.
+
+    Returns:
+        list[AgentEdit | None]: One entry per slot.
+    """
     return generate_candidates(provider, ctx, n)
 
 
@@ -1384,7 +1448,25 @@ def _eval_single_candidate(
     end_date: str,
     _eval_cache: _CacheProtocol,
 ) -> tuple[EvaluationReport | None, pd.Series[Any] | None, dict[str, Any] | None, str | None]:
-    """Evaluate one candidate via temp files."""
+    """Evaluate one candidate via temp files.
+
+    Duplicates ``optimization.eval_manager.eval_single_candidate`` for local
+    reasoning.  Writes temp files, loads signals, evaluates, cleans up.
+
+    Args:
+        strategy_name: The target strategy name.
+        strategy_code: Source code of the candidate.
+        config_yaml: YAML config of the candidate.
+        strategies_dir: Path to strategies directory.
+        configs_dir: Path to configs directory.
+        start_date: Start of backtest period.
+        end_date: End of backtest period.
+        _eval_cache: Memoisation cache for evaluation results.
+
+    Returns:
+        tuple: ``(report, in_sample_returns, flat_config, error_str)``.
+        All ``None`` when evaluation fails.
+    """
     temp_name = f"eval_{uuid.uuid4().hex}"
     temp_py = strategies_dir / f"{temp_name}.py"
     temp_yaml = configs_dir / f"{temp_name}.yaml"
@@ -1420,7 +1502,18 @@ def _deflate(
     cscv_blocks: int = 10,
     embargo_days: int = 5,
 ) -> None:
-    """Deflate selection metrics."""
+    """Deflate selection metrics via the ledger's multi-trial history.
+
+    Delegates to ``optimization.persistence.deflate_selection``.
+
+    Args:
+        report: EvaluationReport to mutate in-place.
+        selection_returns: In-sample walk-forward net returns.
+        ledger: Ledger store.
+        exclude_id: Optional attempt ID to exclude.
+        cscv_blocks: CSCV block count for PBO computation.
+        embargo_days: Block embargo days.
+    """
     deflate_selection(
         report,
         selection_returns,
@@ -1436,5 +1529,13 @@ def _deflate_holdout(
     ledger: LedgerStore,
     exclude_id: int | None = None,
 ) -> None:
-    """Deflate holdout metrics."""
+    """Deflate holdout DSR by the holdout-peek count.
+
+    Delegates to ``optimization.persistence.deflate_holdout``.
+
+    Args:
+        report: EvaluationReport to mutate in-place.
+        ledger: Ledger store.
+        exclude_id: Optional attempt ID to exclude.
+    """
     deflate_holdout(report, ledger, exclude_id=exclude_id)

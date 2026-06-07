@@ -34,7 +34,18 @@ def _render_rich_summary(
     report_path: Path | None,
     config_path: Path | None = None,
 ) -> None:
-    """Render a detailed Rich summary dashboard for the completed run."""
+    """Render a detailed Rich summary dashboard for the completed run.
+
+    Displays strategy info, baseline vs. final metrics comparison table,
+    gate outcomes, and portfolio/equity chart.  Outputs to stdout via
+    the ``rich`` console.
+
+    Args:
+        result: Orchestrator result with final report and metadata.
+        iterations: Total requested iterations.
+        report_path: Path to the generated strategy report (shown in info).
+        config_path: Optional path to the final config YAML (shown in info).
+    """
     console = Console()
     report = result.final_report
 

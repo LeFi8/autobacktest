@@ -17,6 +17,16 @@ def init_strategy_impl(
     overwrite: bool,
     settings_obj: Any = default_settings,
 ) -> None:
+    """Interactively scaffold a new strategy with Pydantic-validated boilerplate.
+
+    Prompts for universe tickers, benchmark, risk limits, and custom parameters,
+    generates validated ``configs/{name}.yaml`` and ``strategies/{name}.py`` files.
+
+    Args:
+        name: Strategy name in snake_case. Prompts interactively if ``None``.
+        overwrite: Overwrite existing files without prompting.
+        settings_obj: Settings object (injected for testability).
+    """
     if not name:
         name = typer.prompt("Enter a unique name for your strategy (snake_case)")
 

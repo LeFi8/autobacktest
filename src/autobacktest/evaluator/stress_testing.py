@@ -15,7 +15,21 @@ def run_stress_and_bootstrap_tests(
     n_tickers: int,
     mc_bootstrap_method: str = "stationary",
 ) -> tuple[dict[str, float], bool, float, float, float, np.ndarray]:
-    """Run stress regime and bootstrap simulations."""
+    """Run stress regime and bootstrap simulations.
+
+    Evaluates drawdowns during historical crash regimes (2008 GFC, 2020
+    COVID, 2022 bear) and computes Monte Carlo Sharpe percentiles via
+    stationary block bootstrap.
+
+    Args:
+        net_returns: Daily net returns series.
+        daily_weights: Daily asset weights DataFrame.
+        n_tickers: Number of tickers in the universe.
+        mc_bootstrap_method: Bootstrap method (``"stationary"`` or ``"circular"``).
+
+    Returns:
+        tuple: ``(regime_drawdowns, regime_passed, mc_5th, mc_50th, mc_95th, mc_sharpes)``.
+    """
     regime_drawdowns, regime_passed = evaluate_stress_regimes(
         net_returns,
         daily_weights=daily_weights,
@@ -34,5 +48,17 @@ def get_regime_haircut(
     benchmark_prices: pd.Series,
     holdout_start: pd.Timestamp,
 ) -> float:
-    """Calculate the launch regime haircut based on benchmark prices."""
+    """Calculate the launch regime haircut based on benchmark prices.
+
+    Convenience wrapper around ``calculate_regime_haircut``.  Applies a
+    proportional penalty to performance metrics when the strategy launches
+    at a cyclical peak in the benchmark.
+
+    Args:
+        benchmark_prices: Historical daily prices of the benchmark.
+        holdout_start: Strategy launch date (start of holdout period).
+
+    Returns:
+        float: Haircut fraction (0.0 when no peak detected).
+    """
     return calculate_regime_haircut(benchmark_prices, holdout_start)

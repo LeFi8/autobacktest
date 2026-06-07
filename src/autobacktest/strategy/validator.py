@@ -87,7 +87,23 @@ def preflight(
     strategies_dir: Path,
     configs_dir: Path,
 ) -> ValidationResult:
-    """Run all eight pre-flight validations on a target strategy and config."""
+    """Run all eight pre-flight validations on a target strategy and config.
+
+    Validates path traversal safety, AST import whitelist, Pydantic config
+    schema, dynamic import, function signature, synthetic-price smoke test,
+    lookahead bias sniff test, and lookahead shift test.  The runtime checks
+    (import, smoke, lookahead) execute inside a sandboxed subprocess with
+    memory limits and timeout protection.
+
+    Args:
+        strategy_name: The strategy name (stem, without ``.py`` or ``.yaml``).
+        strategies_dir: Directory containing strategy ``.py`` files.
+        configs_dir: Directory containing strategy ``.yaml`` config files.
+
+    Returns:
+        ValidationResult: ``passed=True`` when all checks succeed; contains
+        the specific error code and detail when a check fails.
+    """
     # 1. Path traversal check (Finding 2)
     try:
         strategy_path = strategies_dir / f"{strategy_name}.py"
@@ -165,7 +181,18 @@ def preflight(
 
 
 def _check_config(path: Path) -> ValidationResult:
-    """Validate YAML configuration schema against the unified Pydantic model."""
+    """Validate YAML configuration schema against the unified Pydantic model.
+
+    Parses the YAML file and validates it against ``StrategyConfig``,
+    which enforces parameter boundaries, types, and ``extra="forbid"``.
+
+    Args:
+        path: Path to the YAML configuration file.
+
+    Returns:
+        ValidationResult: ``passed=True`` with the ``StrategyConfig``
+        instance stored in ``detail`` when valid; error detail on failure.
+    """
     try:
         cfg = StrategyConfig.from_yaml(path)
         return ValidationResult(passed=True, detail=cfg)
