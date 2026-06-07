@@ -115,62 +115,89 @@ class LedgerStore:
             conn = self._local[tid]
 
             if not self._schema_initialized:
-                conn.execute(_CREATE_RUNS)
-                conn.execute(_CREATE_ATTEMPTS)
-                conn.execute("CREATE INDEX IF NOT EXISTS idx_attempts_run_id ON attempts(run_id)")
-                conn.execute("CREATE INDEX IF NOT EXISTS idx_attempts_strategy_name ON attempts(strategy_name)")
-                conn.execute("CREATE INDEX IF NOT EXISTS idx_attempts_dataset_hash ON attempts(dataset_hash)")
-                conn.commit()
-
-                # Schema migration for older databases missing target_metric/value columns
-                cursor = conn.cursor()
-                cursor.execute("PRAGMA table_info(attempts)")
-                columns = [row[1] for row in cursor.fetchall()]
-                if columns:
-                    migrated = False
-                    if "target_metric" not in columns:
-                        conn.execute("ALTER TABLE attempts ADD COLUMN target_metric TEXT NOT NULL DEFAULT 'sharpe'")
-                        migrated = True
-                    if "target_metric_value" not in columns:
-                        conn.execute("ALTER TABLE attempts ADD COLUMN target_metric_value REAL NOT NULL DEFAULT 0.0")
-                        migrated = True
-                    if "prompt_tokens" not in columns:
-                        conn.execute("ALTER TABLE attempts ADD COLUMN prompt_tokens INTEGER NOT NULL DEFAULT 0")
-                        migrated = True
-                    if "completion_tokens" not in columns:
-                        conn.execute("ALTER TABLE attempts ADD COLUMN completion_tokens INTEGER NOT NULL DEFAULT 0")
-                        migrated = True
-                    if "total_tokens" not in columns:
-                        conn.execute("ALTER TABLE attempts ADD COLUMN total_tokens INTEGER NOT NULL DEFAULT 0")
-                        migrated = True
-                    if "cost" not in columns:
-                        conn.execute("ALTER TABLE attempts ADD COLUMN cost REAL NOT NULL DEFAULT 0.0")
-                        migrated = True
-                    if "holdout_evaluated" not in columns:
-                        conn.execute("ALTER TABLE attempts ADD COLUMN holdout_evaluated INTEGER NOT NULL DEFAULT 0")
-                        migrated = True
-                    if "holdout_observed_sharpe" not in columns:
-                        conn.execute("ALTER TABLE attempts ADD COLUMN holdout_observed_sharpe REAL")
-                        migrated = True
-                    if "holdout_returns_blob" not in columns:
-                        conn.execute("ALTER TABLE attempts ADD COLUMN holdout_returns_blob BLOB")
-                        migrated = True
-                    if migrated:
-                        conn.execute(
-                            "UPDATE attempts SET target_metric_value = observed_sharpe WHERE target_metric = 'sharpe'"
-                        )
-                        conn.commit()
-
-                    if "holdout_max_drawdown" in columns and "in_sample_max_drawdown" not in columns:
-                        conn.execute(
-                            "ALTER TABLE attempts RENAME COLUMN holdout_max_drawdown TO in_sample_max_drawdown"
-                        )
-                    if "holdout_turnover" in columns and "in_sample_turnover" not in columns:
-                        conn.execute("ALTER TABLE attempts RENAME COLUMN holdout_turnover TO in_sample_turnover")
-
+                self._init_schema(conn)
                 self._schema_initialized = True
 
         return conn
+
+    def _init_schema(self, conn: sqlite3.Connection) -> None:
+        """Initialize table schema and run migrations."""
+        conn.execute(_CREATE_RUNS)
+        conn.execute(_CREATE_ATTEMPTS)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_attempts_run_id ON attempts(run_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_attempts_strategy_name ON attempts(strategy_name)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_attempts_dataset_hash ON attempts(dataset_hash)")
+        conn.commit()
+
+        # Schema migration for older databases missing target_metric/value columns
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(attempts)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if columns:
+            column_specs = [
+                ("target_metric", "TEXT NOT NULL DEFAULT 'sharpe'"),
+                ("target_metric_value", "REAL NOT NULL DEFAULT 0.0"),
+                ("prompt_tokens", "INTEGER NOT NULL DEFAULT 0"),
+                ("completion_tokens", "INTEGER NOT NULL DEFAULT 0"),
+                ("total_tokens", "INTEGER NOT NULL DEFAULT 0"),
+                ("cost", "REAL NOT NULL DEFAULT 0.0"),
+                ("holdout_evaluated", "INTEGER NOT NULL DEFAULT 0"),
+                ("holdout_observed_sharpe", "REAL"),
+                ("holdout_returns_blob", "BLOB"),
+            ]
+            if self._ensure_columns(conn, "attempts", column_specs):
+                conn.execute(
+                    "UPDATE attempts SET target_metric_value = observed_sharpe WHERE target_metric = 'sharpe'"
+                )
+                conn.commit()
+
+            if "holdout_max_drawdown" in columns and "in_sample_max_drawdown" not in columns:
+                conn.execute(
+                    "ALTER TABLE attempts RENAME COLUMN holdout_max_drawdown TO in_sample_max_drawdown"
+                )
+            if "holdout_turnover" in columns and "in_sample_turnover" not in columns:
+                conn.execute("ALTER TABLE attempts RENAME COLUMN holdout_turnover TO in_sample_turnover")
+
+    def _ensure_columns(self, conn: sqlite3.Connection, table: str, column_specs: list[tuple[str, str]]) -> bool:
+        """Ensure that the specified columns exist in the table, adding them if missing."""
+        cursor = conn.cursor()
+        cursor.execute(f"PRAGMA table_info({table})")
+        columns = [row[1] for row in cursor.fetchall()]
+        if not columns:
+            return False
+
+        migrated = False
+        for col_name, col_def in column_specs:
+            if col_name not in columns:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_def}")
+                migrated = True
+        return migrated
+
+    def _marshal_row(self, row: tuple[Any, ...], schema: list[tuple[str, Any]]) -> dict[str, Any]:
+        """Helper to marshal a database row tuple into a typed dict."""
+        res: dict[str, Any] = {}
+        for i, (name, cast_fn) in enumerate(schema):
+            val = row[i]
+            if val is None:
+                res[name] = None
+            else:
+                res[name] = cast_fn(val)
+        return res
+
+    def _parse_fingerprint(self, config_yaml: str) -> dict[str, Any]:
+        try:
+            parsed = yaml.safe_load(config_yaml)
+            if isinstance(parsed, dict):
+                fingerprint: dict[str, Any] = {}
+                if "universe" in parsed:
+                    fingerprint["universe"] = parsed["universe"]
+                if "params" in parsed:
+                    fingerprint["params"] = parsed["params"]
+                return fingerprint
+        except Exception:
+            pass
+        return {}
+
 
     def create_run(
         self,
@@ -495,44 +522,32 @@ class LedgerStore:
             rows = rows[-limit:]
 
         results: list[dict[str, Any]] = []
+        schema = [
+            ("iteration", int),
+            ("accepted", bool),
+            ("committed", bool),
+            ("target_metric_value", float),
+            ("observed_sharpe", float),
+            ("deflated_sharpe", float),
+            ("regime_passed", bool),
+            ("rejection_reason", lambda x: str(x) if x is not None else None),
+            ("config_yaml", str),
+            ("holdout_evaluated", bool),
+        ]
         for row in rows:
-            (
-                iteration,
-                accepted,
-                committed,
-                target_metric_value,
-                observed_sharpe,
-                deflated_sharpe,
-                regime_passed,
-                rejection_reason,
-                config_yaml,
-                holdout_evaluated,
-            ) = row
-
-            try:
-                parsed = yaml.safe_load(config_yaml)
-                if isinstance(parsed, dict):
-                    fingerprint: dict[str, Any] = {}
-                    if "universe" in parsed:
-                        fingerprint["universe"] = parsed["universe"]
-                    if "params" in parsed:
-                        fingerprint["params"] = parsed["params"]
-                else:
-                    fingerprint = {}
-            except yaml.YAMLError:
-                fingerprint = {}
-
+            m = self._marshal_row(row, schema)
+            fingerprint = self._parse_fingerprint(m["config_yaml"])
             results.append(
                 {
-                    "iteration": int(iteration),
-                    "accepted": bool(accepted),
-                    "committed": bool(committed),
-                    "target_metric_value": float(target_metric_value),
-                    "observed_sharpe": float(observed_sharpe),
-                    "deflated_sharpe": float(deflated_sharpe),
-                    "regime_passed": bool(regime_passed),
-                    "rejection_reason": rejection_reason,
-                    "holdout_confirmed": bool(holdout_evaluated) and bool(committed),
+                    "iteration": m["iteration"],
+                    "accepted": m["accepted"],
+                    "committed": m["committed"],
+                    "target_metric_value": m["target_metric_value"],
+                    "observed_sharpe": m["observed_sharpe"],
+                    "deflated_sharpe": m["deflated_sharpe"],
+                    "regime_passed": m["regime_passed"],
+                    "rejection_reason": m["rejection_reason"],
+                    "holdout_confirmed": bool(m["holdout_evaluated"]) and bool(m["committed"]),
                     "config_fingerprint": fingerprint,
                 }
             )
@@ -662,30 +677,26 @@ class LedgerStore:
             .fetchall()
         )
 
-        results: list[dict[str, object]] = []
-        for row in rows:
-            results.append(
-                {
-                    "strategy_name": row[0],
-                    "run_id": row[1],
-                    "iteration": row[2],
-                    "observed_sharpe": row[3],
-                    "deflated_sharpe": row[4],
-                    "in_sample_max_drawdown": row[5],
-                    "in_sample_turnover": row[6],
-                    "created_at": row[7],
-                    "target_metric": row[8],
-                    "target_metric_value": row[9],
-                    "accepted": bool(row[10]),
-                    "committed": bool(row[11]),
-                    "rejection_reason": row[12],
-                    "prompt_tokens": int(row[13] or 0),
-                    "completion_tokens": int(row[14] or 0),
-                    "total_tokens": int(row[15] or 0),
-                    "cost": float(row[16] or 0.0),
-                }
-            )
-        return results
+        schema = [
+            ("strategy_name", str),
+            ("run_id", str),
+            ("iteration", int),
+            ("observed_sharpe", float),
+            ("deflated_sharpe", float),
+            ("in_sample_max_drawdown", float),
+            ("in_sample_turnover", float),
+            ("created_at", str),
+            ("target_metric", str),
+            ("target_metric_value", float),
+            ("accepted", bool),
+            ("committed", bool),
+            ("rejection_reason", lambda x: str(x) if x is not None else None),
+            ("prompt_tokens", lambda x: int(x) if x is not None else 0),
+            ("completion_tokens", lambda x: int(x) if x is not None else 0),
+            ("total_tokens", lambda x: int(x) if x is not None else 0),
+            ("cost", lambda x: float(x) if x is not None else 0.0),
+        ]
+        return [self._marshal_row(row, schema) for row in rows]
 
     def leaderboard(
         self,
@@ -748,23 +759,19 @@ class LedgerStore:
             .fetchall()
         )
 
-        results: list[dict[str, object]] = []
-        for row in rows:
-            results.append(
-                {
-                    "strategy_name": row[0],
-                    "run_id": row[1],
-                    "iteration": row[2],
-                    "observed_sharpe": row[3],
-                    "deflated_sharpe": row[4],
-                    "in_sample_max_drawdown": row[5],
-                    "in_sample_turnover": row[6],
-                    "created_at": row[7],
-                    "target_metric": row[8],
-                    "target_metric_value": row[9],
-                }
-            )
-        return results
+        schema = [
+            ("strategy_name", str),
+            ("run_id", str),
+            ("iteration", int),
+            ("observed_sharpe", float),
+            ("deflated_sharpe", float),
+            ("in_sample_max_drawdown", float),
+            ("in_sample_turnover", float),
+            ("created_at", str),
+            ("target_metric", str),
+            ("target_metric_value", float),
+        ]
+        return [self._marshal_row(row, schema) for row in rows]
 
     def list_runs(self) -> list[dict[str, object]]:
         """Return metadata for all recorded runs."""
@@ -776,22 +783,18 @@ class LedgerStore:
             ORDER BY started_at DESC
         """
         rows = self._conn().execute(query).fetchall()
-        results: list[dict[str, object]] = []
-        for row in rows:
-            results.append(
-                {
-                    "run_id": row[0],
-                    "strategy_name": row[1],
-                    "program_path": row[2],
-                    "provider": row[3],
-                    "model": row[4],
-                    "branch": row[5],
-                    "dataset_hash": row[6],
-                    "iterations": row[7],
-                    "started_at": row[8],
-                }
-            )
-        return results
+        schema = [
+            ("run_id", str),
+            ("strategy_name", str),
+            ("program_path", str),
+            ("provider", str),
+            ("model", str),
+            ("branch", str),
+            ("dataset_hash", str),
+            ("iterations", int),
+            ("started_at", str),
+        ]
+        return [self._marshal_row(row, schema) for row in rows]
 
     def close(self) -> None:
         """Close all per-thread database connections."""

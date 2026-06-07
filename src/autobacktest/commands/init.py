@@ -188,21 +188,3 @@ def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFra
     typer.echo(f"  Config:   {config_file.resolve()}")
     typer.echo(f"  Strategy: {strategy_file.resolve()}")
 
-
-def register_command(app: typer.Typer) -> None:
-    @app.command(name="init-strategy")
-    def init_strategy(
-        name: str = typer.Option(
-            None,
-            "--name",
-            "-n",
-            help="Strategy name (snake_case). Prompts interactively if omitted.",
-        ),
-        overwrite: bool = typer.Option(
-            False,
-            "--overwrite",
-            help="Overwrite existing strategy/config files without prompting.",
-        ),
-    ) -> None:
-        """Interactively set up a new backtesting strategy config and boilerplate code."""
-        init_strategy_impl(name, overwrite)

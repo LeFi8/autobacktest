@@ -118,22 +118,3 @@ def reset_impl(
         raise typer.Exit(code=1)
 
     typer.echo("Reset completed.")
-
-
-def register_command(app: typer.Typer) -> None:
-    @app.command()
-    def reset(
-        strategy: str | None = typer.Option(
-            None,
-            "--strategy",
-            "-s",
-            help="Strategy name to reset. Resets all if not specified.",
-        ),
-        run_dir: str = typer.Option(
-            str(default_settings.run_dir),
-            "--run-dir",
-            help="Path to runs directory to be deleted.",
-        ),
-    ) -> None:
-        """Restore strategy baseline files, clear lessons, and delete the runs directory."""
-        reset_impl(strategy, run_dir)
