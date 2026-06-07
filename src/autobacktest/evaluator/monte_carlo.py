@@ -1,4 +1,16 @@
-"""Monte Carlo stationary/block bootstrap of return series."""
+"""Monte Carlo bootstrap of return series for Sharpe ratio significance.
+
+Supports two bootstrapping methods:
+
+- **circular** — circular block bootstrap (default).  Pads the return
+  array with its first ``block_size`` elements so every position has
+  equal probability of being a block start.
+- **stationary** — Politis-Romano stationary bootstrap with geometrically
+  distributed block lengths.
+
+Returns 5th, 50th, and 95th percentile Sharpe ratios along with the
+full array of bootstrapped Sharpes for histogram plotting.
+"""
 
 import numpy as np
 import pandas as pd

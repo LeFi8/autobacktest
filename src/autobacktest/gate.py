@@ -1,4 +1,23 @@
-"""Improvement gate rules checks and comparison of strategy metrics."""
+"""Two-phase strategy improvement gate (select + confirm).
+
+The gate system is split into two distinct phases to prevent holdout
+overfitting:
+
+- **select** — in-sample walk-forward aggregate checks (drawdown, turnover,
+  regime stress, PBO, target-metric improvement, DSR non-degradation).
+  Evaluated on **every** candidate.
+- **confirm** — holdout checks (drawdown, turnover, DSR non-degradation).
+  Only reached when ``select`` passes.  Each call consumes one holdout
+  peek (budgeted).
+
+A backward-compatible ``accept()`` wrapper composes both gates for the
+standalone evaluation path.
+
+Edge cases handled:
+- NaN / Inf in any metric causes a hard rejection with a descriptive reason.
+- Config resolution follows a priority chain: explicit arg → Pydantic
+  model attribute → dict key → ``params`` sub-dict → schema default.
+"""
 
 import math
 from dataclasses import dataclass
@@ -26,7 +45,22 @@ class GateResult:
 
 
 def _get_config_val(config: Any, key: str, default: Any) -> Any:
-    """Safely retrieve configuration key from Pydantic model or dict."""
+    """Safely retrieve a configuration value from a Pydantic model or dict.
+
+    Resolution priority:
+    1. Pydantic model attribute (via ``getattr``).
+    2. Top-level dict key.
+    3. ``params`` sub-dict key.
+    4. Fallback to ``default``.
+
+    Args:
+        config: A ``StrategyConfig`` instance, a flat dict, or ``None``.
+        key: The configuration key to look up.
+        default: Value returned when *config* is ``None`` or *key* is not found.
+
+    Returns:
+        The resolved value or *default*.
+    """
     if config is None:
         return default
     if hasattr(config, key):

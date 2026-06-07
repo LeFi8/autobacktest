@@ -1,4 +1,16 @@
-"""Strategy signature and output contract verification."""
+"""Strategy signature and output contract verification.
+
+Ensures that dynamically-imported strategy modules conform to the
+expected ``generate_signals(prices, config)`` interface and that their
+output weights pass six validation checks:
+
+1. Returns a ``pd.DataFrame`` with ``DatetimeIndex``.
+2. No NaN values.
+3. Long-only: all weights >= -1e-7.
+4. Leverage: row sum <= 1.0 + 1e-5 tolerance.
+5. Columns are a subset of the config universe.
+6. Index dates are in the price history.
+"""
 
 import inspect
 from types import ModuleType

@@ -1,4 +1,10 @@
-"""Vectorized portfolio backtest engine."""
+"""Vectorized portfolio backtest engine with lookahead-bias protection.
+
+Computes daily portfolio returns from price data and rebalanced weights.
+Weights are shifted by 1 trading day so that a position decided at
+close-of-t-1 captures the return of day-t, preventing lookahead bias.
+Unallocated cash earns 0% interest.
+"""
 
 import pandas as pd
 

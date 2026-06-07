@@ -1,6 +1,6 @@
 """AutoBacktest CLI — Typer-based command-line interface.
 
-Provides eight subcommands:
+Provides seven subcommands:
 - ``run``          — full optimization loop
 - ``report``       — leaderboard from SQLite ledger
 - ``reset``        — restore baseline files and wipe run data

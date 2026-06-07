@@ -1,3 +1,11 @@
+"""Program specification parser for LLM objective/constraint files.
+
+Parses ``program.md`` (or equivalent) extracting ``# Objective`` and
+``# Constraints`` sections.  Fenced code blocks are skipped so that
+example comments inside code fences are not mistaken for section headers.
+Returns a ``ProgramSpec`` dataclass passed verbatim to the LLM provider.
+"""
+
 from __future__ import annotations
 
 import re

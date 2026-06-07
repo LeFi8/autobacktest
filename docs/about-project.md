@@ -34,14 +34,15 @@ graph TD
 ### Detailed Flow Steps
 1. **Initiate Loop**: User defines constraints (e.g. max drawdown limit, maximum turnover, benchmark) in a configuration file and target strategy (`strategies/haa.py`).
 2. **Multi-Candidate Generation**: The orchestrator requests **3 candidate edits in parallel** from the LLM, each containing proposed code changes, a YAML config, and updated lessons text. Candidates are deduplicated by the LessonStore (SQLite-backed, keyed by `(strategy, type, body_hash)`).
-3. **Pre-Flight Verification** (per candidate):
+3. **Pre-Flight Verification** (per candidate, 8 checks):
     - Path traversal security check.
-    - AST whitelist scan blocking unsafe imports and I/O operations.
+    - AST whitelist scan blocking unsafe imports, I/O operations, dunder escapes, cyclomatic complexity, and function size limits.
     - Pydantic config validation via `StrategyConfig`.
     - Dynamic compilation and isolated import.
-    - Smoke testing with synthetic prices.
-    - Sub-window rebalance stability (lookahead-bias sniffing).
-    - Cyclomatic complexity and function size limits enforced.
+    - Signature verification (`generate_signals(prices, config)` contract).
+    - Smoke testing with 756 days of synthetic prices.
+    - Lookahead sniff test: compares signals with vs. without future price data appended.
+    - Lookahead shift test: shifts price history by 1 day and verifies consistent signal shift (for frequently-rebalancing strategies).
 4. **Tier 1 Diversity Gate (Config Similarity)** — active only in **explore mode**:
    - Compares the candidate's proposed configuration fingerprint with all historical configs using min-max normalized parameters.
     - If similarity exceeds `DIVERSITY_CONFIG_THRESHOLD = 0.95` (configurable via `AUTOBACKTEST_DIVERSITY_CONFIG_THRESHOLD`), the candidate is rejected with a bounded retry (up to 2).

@@ -119,7 +119,19 @@ def compute_dataset_hash(
 
 
 def calculate_sortino_ratio(net_returns: pd.Series) -> float:
-    """Calculate the Sortino Ratio of a daily net returns series."""
+    """Calculate the Sortino Ratio of a daily net returns series.
+
+    Uses a minimum acceptable return (MAR) of 0.0.  Downside deviation
+    is computed over the full sample size ``N`` (not ``N-1``) following
+    the Sortino framework.
+
+    Args:
+        net_returns: Daily portfolio net returns.
+
+    Returns:
+        float: Annualised Sortino ratio.  Returns ``inf`` when downside
+        deviation is zero but mean return is positive (risk-free profile).
+    """
     if net_returns.empty:
         return 0.0
     mean_ret = net_returns.mean()
@@ -133,7 +145,21 @@ def calculate_sortino_ratio(net_returns: pd.Series) -> float:
 
 
 def calculate_information_ratio(net_returns: pd.Series, benchmark_returns: pd.Series) -> float:
-    """Calculate the Information Ratio of daily returns relative to benchmark."""
+    """Calculate the Information Ratio of daily returns relative to benchmark.
+
+    Computed as the annualised ratio of active return (strategy minus
+    benchmark) mean to tracking error (std dev of active returns).
+    Dates are aligned via an inner join — only overlapping trading days
+    contribute to the ratio.
+
+    Args:
+        net_returns: Daily portfolio net returns.
+        benchmark_returns: Daily benchmark returns.
+
+    Returns:
+        float: Annualised Information Ratio.  Returns 0.0 when the series
+        are empty, have fewer than 2 observations, or tracking error is zero.
+    """
     if net_returns.empty or benchmark_returns.empty:
         return 0.0
     # Align dates

@@ -1,4 +1,18 @@
-"""Deflated Sharpe Ratio (DSR) using hierarchical returns clustering."""
+"""Deflated Sharpe Ratio (DSR) and effective-trial count estimation.
+
+Implements:
+
+- **DSR** (Deflated Sharpe Ratio) — corrects the observed Sharpe ratio
+  for multiple testing / data-snooping bias using Extreme Value Theory
+  (EVT) asymptotic approximations.  When ``effective_trials=1`` this
+  reduces to the Probabilistic Sharpe Ratio (PSR).
+- **Effective trials** — uses hierarchical clustering (complete linkage
+  on Ledoit-Wolf shrunk correlation distances) with Silhouette-optimised
+  threshold selection to estimate independent strategy trials.
+
+The Ledoit-Wolf shrinkage estimator stabilises the correlation matrix
+when the number of trials approaches the number of observations.
+"""
 
 import numpy as np
 import pandas as pd

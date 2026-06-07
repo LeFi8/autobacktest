@@ -200,13 +200,15 @@ graph TD
 ```
 
 ### 1. Pre-Flight Protection Gate
-Every LLM-generated code/config edit is validated via **6 checks** in a sandboxed subprocess before executing on real financial datasets:
+Every LLM-generated code/config edit is validated via **8 checks** in a sandboxed subprocess before executing on real financial datasets:
 - **Path Traversal Security**: Verifies no path escape attacks in strategy/config file names.
-- **AST Scan**: Prevents importing arbitrary third-party modules or subprocessing. Only `pandas`, `numpy`, `math`, `typing`, `scipy`, `dataclasses`, `collections`, `itertools`, `functools`, `decimal`, `statistics`, `numbers`, `json` are whitelisted. Also blocks dangerous I/O operations (`open`, `exec`, `eval`, `compile`, pandas I/O methods).
+- **AST Scan**: Prevents importing arbitrary third-party modules or subprocessing. Only `pandas`, `numpy`, `math`, `typing`, `scipy`, `dataclasses`, `collections`, `itertools`, `functools`, `decimal`, `statistics`, `numbers`, `json` are whitelisted. Also blocks dangerous I/O operations (`open`, `exec`, `eval`, `compile`, pandas I/O methods), dunder escapes, and checks cyclomatic complexity / function line limits.
 - **Pydantic Config Validation**: Validates YAML against the `StrategyConfig` Pydantic schema before execution.
 - **Dynamic Compilation & Import**: Runs within isolated execution blocks to catch standard syntax and runtime errors.
-- **Smoke Test**: Generates synthetic prices and verifies the strategy executes without errors.
-- **Sub-Window Stability & Lookahead Sniffing**: Evaluates on synthetic prices with a shifted offset to guarantee future values are not leaked during calculations.
+- **Signature Verification**: Verifies `generate_signals` accepts the required `(prices, config)` positional parameters and has no undeclared required parameters beyond the first two.
+- **Smoke Test**: Generates synthetic prices (756 days) and verifies the strategy executes without errors.
+- **Sub-Window Stability & Lookahead Sniffing**: Evaluates on synthetic prices with and without future price data appended. If signals change when future data is visible, the strategy is flagged for lookahead bias.
+- **Lookahead Shift Test**: Shifts the entire price history by 1 trading day and verifies that signals shift consistently (only applies to frequently-rebalancing strategies where >15% of days trigger rebalancing).
 
 ### 2. Tier 1 - Config Similarity Gate (Pre-Backtest)
 To prevent the LLM from executing identical parameter configurations repeatedly, the orchestrator parses candidates into normalized fingerprints:
@@ -236,7 +238,7 @@ The gate system is split into two distinct phases to prevent holdout overfitting
 - Holdout DSR non-degradation against the baseline.
 - Each successful `confirm` call consumes one **holdout peek** (default budget: `20`). Once exhausted, the optimization loop terminates early to preserve the integrity of the OOS estimate.
 
-The legacy `accept()` function composes `select` + `confirm` as a single call for the standalone evaluation path.
+The legacy `accept()` function composes `select` + `confirm` as a single call for the standalone evaluation path. It also accepts the ``pbo_limit`` parameter (propagated to ``select``) for PBO-based rejection.
 
 ### 5. Multi-Candidate Parallel Generation
 Each iteration produces **3 candidate edits in parallel** via a `ThreadPoolExecutor`:
