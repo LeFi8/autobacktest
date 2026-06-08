@@ -268,11 +268,23 @@ def _check_soft_gates(
     tradeoff_coeff: float = 0.0,
     metric_floor: float | None = None,
 ) -> GateResult:
-    """Check soft constraints: metric improvement, return floor, DSR non-degradation."""
+    """Check soft constraints: metric improvement, return floor, DSR non-degradation.
+
+    The absolute ``metric_floor`` is enforced unconditionally (no baseline required).
+    """
+    if metric_floor is not None:
+        candidate_val = _get_in_sample_metric_val(report, target_metric)
+        if math.isnan(candidate_val) or candidate_val <= metric_floor:
+            msg = (
+                f"Candidate {target_metric.value} ({candidate_val:.4f}) is below the"
+                f" required floor of {metric_floor:.4f}."
+            )
+            report.is_accepted = False
+            report.rejection_reason = msg
+            return GateResult(accepted=False, reason=msg, failed_gate="metric_floor")
+
     if baseline is not None:
-        result = _check_metric_improvement(
-            report, baseline, target_metric, min_improvement, tradeoff_coeff, metric_floor
-        )
+        result = _check_metric_improvement(report, baseline, target_metric, min_improvement, tradeoff_coeff)
         if not result.accepted:
             return result
 
@@ -294,9 +306,12 @@ def _check_metric_improvement(
     target_metric: TargetMetric,
     min_improvement: float,
     tradeoff_coeff: float = 0.0,
-    metric_floor: float | None = None,
 ) -> GateResult:
-    """Check candidate metric improves over baseline, incorporating trade-off and floor."""
+    """Check candidate metric improves over baseline, incorporating trade-off.
+
+    The absolute ``metric_floor`` is NOT checked here — it is enforced by the
+    caller (``_check_soft_gates``) before this function is reached.
+    """
     candidate_val = _get_in_sample_metric_val(report, target_metric)
     baseline_val = _get_in_sample_metric_val(baseline, target_metric)
 
@@ -313,33 +328,22 @@ def _check_metric_improvement(
     if tradeoff_coeff > 0.0:
         required_metric -= tradeoff_coeff * (cand_ret - base_ret) * 100
 
-    is_below_hurdle = candidate_val <= required_metric
-    is_below_floor = metric_floor is not None and candidate_val <= metric_floor
-
-    if math.isnan(candidate_val) or math.isnan(baseline_val) or is_below_hurdle or is_below_floor:
-        if is_below_floor:
+    if math.isnan(candidate_val) or math.isnan(baseline_val) or candidate_val <= required_metric:
+        msg = (
+            f"Candidate in-sample {target_metric.value} ({candidate_val:.4f}) does not "
+            f"improve upon baseline in-sample {target_metric.value} ({baseline_val:.4f}) "
+            f"by at least {min_improvement:.4f}."
+        )
+        if tradeoff_coeff > 0.0:
             msg = (
-                f"Candidate {target_metric.value} ({candidate_val:.4f}) is below the"
-                f" required floor of {metric_floor:.4f}."
+                f"Candidate {target_metric.value} ({candidate_val:.4f}) is below "
+                f"the adjusted hurdle of {required_metric:.4f} "
+                f"(baseline: {baseline_val:.4f}, return diff: {cand_ret - base_ret:+.2%})."
             )
-            failed_gate = "metric_floor"
-        else:
-            msg = (
-                f"Candidate in-sample {target_metric.value} ({candidate_val:.4f}) does not "
-                f"improve upon baseline in-sample {target_metric.value} ({baseline_val:.4f}) "
-                f"by at least {min_improvement:.4f}."
-            )
-            if tradeoff_coeff > 0.0:
-                msg = (
-                    f"Candidate {target_metric.value} ({candidate_val:.4f}) is below "
-                    f"the adjusted hurdle of {required_metric:.4f} "
-                    f"(baseline: {baseline_val:.4f}, return diff: {cand_ret - base_ret:+.2%})."
-                )
-            failed_gate = "target_metric_improvement"
 
         report.is_accepted = False
         report.rejection_reason = msg
-        return GateResult(accepted=False, reason=msg, failed_gate=failed_gate)
+        return GateResult(accepted=False, reason=msg, failed_gate="target_metric_improvement")
     return GateResult(accepted=True)
 
 
