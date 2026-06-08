@@ -162,7 +162,9 @@ def select(
     if not result.accepted:
         return result
 
-    result = _check_soft_gates(report, baseline, target_metric, min_improvement, min_return_ratio, require_dsr)
+    result = _check_soft_gates(
+        report, baseline, target_metric, min_improvement, min_return_ratio, require_dsr, config=config
+    )
     if not result.accepted:
         return result
 
@@ -259,10 +261,11 @@ def _check_soft_gates(
     min_improvement: float,
     min_return_ratio: float,
     require_dsr: bool,
+    config: Any = None,
 ) -> GateResult:
     """Check soft constraints: metric improvement, return floor, DSR non-degradation."""
     if baseline is not None:
-        result = _check_metric_improvement(report, baseline, target_metric, min_improvement)
+        result = _check_metric_improvement(report, baseline, target_metric, min_improvement, config=config)
         if not result.accepted:
             return result
 
@@ -283,19 +286,49 @@ def _check_metric_improvement(
     baseline: EvaluationReport,
     target_metric: TargetMetric,
     min_improvement: float,
+    config: Any = None,
 ) -> GateResult:
-    """Check candidate metric improves over baseline by at least min_improvement."""
+    """Check candidate metric improves over baseline, incorporating trade-off and floor."""
     candidate_val = _get_in_sample_metric_val(report, target_metric)
     baseline_val = _get_in_sample_metric_val(baseline, target_metric)
-    if math.isnan(candidate_val) or math.isnan(baseline_val) or candidate_val <= baseline_val + min_improvement:
-        msg = (
-            f"Candidate in-sample {target_metric.value} ({candidate_val:.4f}) does not "
-            f"improve upon baseline in-sample {target_metric.value} ({baseline_val:.4f}) "
-            f"by at least {min_improvement:.4f}."
-        )
+
+    cand_ret = report.in_sample_metrics.annualized_return
+    base_ret = baseline.in_sample_metrics.annualized_return
+
+    tradeoff_coeff = _get_config_val(config, "sharpe_return_tradeoff", 0.0)
+    metric_floor = _get_config_val(config, "min_metric_floor", None)
+
+    required_metric = baseline_val + min_improvement
+    if tradeoff_coeff > 0.0:
+        required_metric -= tradeoff_coeff * (cand_ret - base_ret)
+
+    is_below_hurdle = candidate_val <= required_metric
+    is_below_floor = metric_floor is not None and candidate_val < metric_floor
+
+    if math.isnan(candidate_val) or math.isnan(baseline_val) or is_below_hurdle or is_below_floor:
+        if is_below_floor:
+            msg = (
+                f"Candidate {target_metric.value} ({candidate_val:.4f}) is below the"
+                f" minimum required floor of {metric_floor:.4f}."
+            )
+            failed_gate = "min_metric_floor"
+        else:
+            msg = (
+                f"Candidate in-sample {target_metric.value} ({candidate_val:.4f}) does not "
+                f"improve upon baseline in-sample {target_metric.value} ({baseline_val:.4f}) "
+                f"by at least {min_improvement:.4f}."
+            )
+            if tradeoff_coeff > 0.0:
+                msg = (
+                    f"Candidate {target_metric.value} ({candidate_val:.4f}) is below "
+                    f"the adjusted hurdle of {required_metric:.4f} "
+                    f"(baseline: {baseline_val:.4f}, return diff: {cand_ret - base_ret:+.2%})."
+                )
+            failed_gate = "target_metric_improvement"
+
         report.is_accepted = False
         report.rejection_reason = msg
-        return GateResult(accepted=False, reason=msg, failed_gate="target_metric_improvement")
+        return GateResult(accepted=False, reason=msg, failed_gate=failed_gate)
     return GateResult(accepted=True)
 
 

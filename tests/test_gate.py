@@ -468,3 +468,37 @@ def test_gate_pbo_constraints() -> None:
     res_ordering = accept(rep_both_fail, baseline=None, turnover_limit=1.0, pbo_limit=0.5)
     assert not res_ordering.accepted
     assert res_ordering.failed_gate == "turnover"  # turnover comes first lexicographically
+
+
+def test_gate_hybrid_tradeoff() -> None:
+    """Verifies that the gate allows target metric degradation in exchange for return."""
+    base = _create_mock_report(sharpe=1.14, annualized_return=0.10)
+    cand = _create_mock_report(sharpe=0.70, annualized_return=0.15)
+
+    # 1. With no tradeoff configured -> Fails (standard strict check)
+    config_none = {"sharpe_return_tradeoff": 0.0}
+    res_none = accept(cand, baseline=base, config=config_none)
+    assert not res_none.accepted
+    assert res_none.failed_gate == "target_metric_improvement"
+
+    # 2. With tradeoff configured -> Passes (hurdle is 1.14 - 10.0 * 0.05 = 0.64 < 0.70)
+    config_tradeoff = {"sharpe_return_tradeoff": 10.0}
+    res_tradeoff = accept(cand, baseline=base, config=config_tradeoff)
+    assert res_tradeoff.accepted
+
+
+def test_gate_hybrid_floor() -> None:
+    """Verifies that the hybrid gate enforces the absolute metric floor constraint."""
+    base = _create_mock_report(sharpe=1.14, annualized_return=0.10)
+    cand = _create_mock_report(sharpe=0.70, annualized_return=0.15)
+
+    # With tradeoff = 10.0 and floor = 0.80 -> Fails due to absolute floor breach
+    config_floor_fail = {"sharpe_return_tradeoff": 10.0, "min_metric_floor": 0.80}
+    res_floor_fail = accept(cand, baseline=base, config=config_floor_fail)
+    assert not res_floor_fail.accepted
+    assert res_floor_fail.failed_gate == "min_metric_floor"
+
+    # With tradeoff = 10.0 and floor = 0.60 -> Passes (floor is 0.60, hurdle is 0.64)
+    config_floor_pass = {"sharpe_return_tradeoff": 10.0, "min_metric_floor": 0.60}
+    res_floor_pass = accept(cand, baseline=base, config=config_floor_pass)
+    assert res_floor_pass.accepted

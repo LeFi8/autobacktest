@@ -28,6 +28,8 @@ KNOWN_RANGES: dict[str, tuple[float, float]] = {
     "offensive_rebalance_months": (1.0, 12.0),
     "max_drawdown_limit": (0.0, 0.5),
     "turnover_limit": (0.1, 10.0),
+    "sharpe_return_tradeoff": (0.0, 100.0),
+    "min_metric_floor": (0.0, 5.0),
 }
 
 
