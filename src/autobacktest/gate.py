@@ -138,11 +138,17 @@ def select(
     3. Turnover: ``in_sample_metrics.turnover <= turnover_limit``
     4. PBO limit: ``report.pbo <= pbo_limit`` (if set)
 
-    If all pass, tie-breaker (only when baseline is present):
-    5. Target metric improvement on the in-sample aggregate
-       (``candidate > baseline + min_improvement``)
-    6. Annualized return must be at least ``min_return_ratio`` of baseline return.
-    7. DSR non-degradation: always-on when baseline is present
+    Unconditional soft check (always, no baseline needed):
+    5. Absolute metric floor: ``candidate_val > metric_floor``
+       (config key ``metric_floor``, default ``None`` = disabled).
+
+    Tie-breaker (only when baseline is present):
+    6. Target metric improvement (config key ``min_improvement``),
+       optionally adjusted by ``metric_return_tradeoff``:
+       ``candidate > baseline + min_improvement - tradeoff_coeff * (cand_ret - base_ret) * 100``
+       where ``tradeoff_coeff`` is per-1pp (0.01) return increase.
+    7. Annualized return must be at least ``min_return_ratio`` of baseline return.
+    8. DSR non-degradation: always-on when baseline is present
        (config can disable via ``require_dsr_non_degradation: false``).
 
     Returns:
@@ -497,6 +503,9 @@ def accept(
     The ``require_dsr_non_degradation`` parameter is propagated to the
     underlying ``select`` gate.  When ``None`` the value is resolved
     from the ``config`` (default ``True``).
+
+    The ``config`` may also carry ``metric_return_tradeoff`` and
+    ``metric_floor`` for hybrid gating (see :func:`select`).
     """
     sel = select(
         report,
