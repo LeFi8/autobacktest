@@ -417,6 +417,7 @@ print("__RESULT__" + json.dumps(result))
         for k, v in os.environ.items()
         if k in {"PATH", "PYTHONPATH", "HOME", "USER"} or k.startswith("AUTOBACKTEST_")
     }
+    safe_env["PYTHONPATH"] = os.pathsep.join(sys.path)
 
     try:
         proc = subprocess.run(

@@ -211,12 +211,12 @@ def _apply_sign_and_bounds(
         v_new = max(1 if is_int else 1e-6, v_new)
     elif v < 0:
         v_new = min(-1 if is_int else -1e-6, v_new)
+    if is_int:
+        v_new = round(v_new)
     if min_val is not None:
         v_new = max(min_val, v_new)
     if max_val is not None:
         v_new = min(max_val, v_new)
-    if is_int:
-        v_new = round(v_new)
     return v_new
 
 

@@ -115,7 +115,7 @@ def _fetch_and_join_prices(
     bench_returns = benchmark_prices[benchmark_ticker].pct_change().fillna(0.0)
 
     if benchmark_ticker not in prices.columns:
-        prices = prices.join(benchmark_prices[[benchmark_ticker]], how="outer")
+        prices = prices.join(benchmark_prices[[benchmark_ticker]], how="left")
 
     if regime_bench_ticker == benchmark_ticker:
         regime_bench_prices = benchmark_prices
@@ -125,7 +125,7 @@ def _fetch_and_join_prices(
             raise ValueError(f"No price history returned for regime benchmark ticker: {regime_bench_ticker}")
 
     if regime_bench_ticker not in prices.columns:
-        prices = prices.join(regime_bench_prices[[regime_bench_ticker]], how="outer")
+        prices = prices.join(regime_bench_prices[[regime_bench_ticker]], how="left")
 
     return prices, bench_returns
 
