@@ -18,7 +18,7 @@ This document describes how to set up the development environment, execute the t
 
 1. **Clone the Repository**:
    ```bash
-   git clone <repository_url>
+   git clone https://github.com/LeFi8/autobacktest.git
    cd autobacktest
    ```
 

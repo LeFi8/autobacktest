@@ -221,19 +221,18 @@ The Orchestrator coordinates the recursive LLM strategy mutation process under s
 graph TD
     A[Start Iteration] --> B[Generate 3 Candidates in Parallel]
     B --> C[Pre-Flight Verification]
-    C -- Fail --> D[Revert & Record Failure]
+    C -- Fail --> D[Revert and Record Failure]
     C -- Pass --> E[Tier 1 Config Similarity *]
-    E -- Fail → Retry --> B
+    E -- Fail Retry --> B
     E -- Pass --> F[Vectorized Backtest Engine]
     F --> G[Tier 2 Returns Correlation *]
     G -- Fail --> D
-    G -- Pass --> H[select Gate (in-sample)]
+    G -- Pass --> H[Select Gate - In-Sample]
     H -- Fail --> D
-    H -- Pass --> I[confirm Gate (holdout)]
+    H -- Pass --> I[Confirm Gate - Holdout]
     I -- Fail --> D
-    I -- Pass --> J[Git Commit & Update Incumbent]
+    I -- Pass --> J[Git Commit and Update Incumbent]
     J --> K[Iteration Loop Complete]
-    * — only active in EXPLORE mode
 ```
 
 ### 1. Pre-Flight Protection Gate

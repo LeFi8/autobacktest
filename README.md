@@ -175,6 +175,19 @@ autobacktest/
 
 ---
 
+## Documentation
+
+Detailed documentation is available in [`docs/`](docs/):
+
+| File | Description |
+|---|---|
+| [`docs/about-project.md`](docs/about-project.md) | Project overview, goals, and primary interaction flows |
+| [`docs/architecture.md`](docs/architecture.md) | System architecture and component design |
+| [`docs/api-reference.md`](docs/api-reference.md) | Full API reference for CLI and core modules |
+| [`docs/developer-setup.md`](docs/developer-setup.md) | Environment setup and development workflow |
+
+---
+
 ## Caveats
 
 - **yfinance data quality**: corporate actions, dividend timing, survivorship bias.

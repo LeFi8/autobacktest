@@ -17,18 +17,18 @@ graph TD
     A[Start Optimization Loop] --> B[Generate Strategy Baseline]
     B --> C[Generate 3 Candidates in Parallel]
     C --> D[Preflight Validation]
-    D -- Fail --> F[Rollback & Feedback to LLM]
-    D -- Pass --> E[Config Diversity Gate (explore mode)]
+    D -- Fail --> F[Rollback and Feedback to LLM]
+    D -- Pass --> E[Config Diversity Gate - Explore]
     E -- Fail --> F
     E -- Pass --> G[Vectorized Backtest Engine]
-    G --> H[Returns Correlation Gate (explore mode)]
+    G --> H[Returns Correlation Gate - Explore]
     H -- Fail --> F
-    H -- Pass --> I[select Gate (in-sample)]
+    H -- Pass --> I[Select Gate - In-Sample]
     I -- Fail --> F
-    I -- Pass --> J[confirm Gate (holdout)]
+    I -- Pass --> J[Confirm Gate - Holdout]
     J -- Fail --> F
-    J -- Pass --> K[Git Commit & Update Incumbent]
-    K --> L[End Iterations / Report Leaders]
+    J -- Pass --> K[Git Commit and Update Incumbent]
+    K --> L[End Iterations - Report Leaders]
 ```
 
 ### Detailed Flow Steps
