@@ -34,7 +34,11 @@ def calculate_turnover_and_costs(
         commission_bps: Commission fee in basis points (1 bp = 0.0001).
         spread_bps: Bid-ask spread in basis points.
         impact_coef: Market impact parameter (quadratic/linear cost).
+        asset_returns: Pre-computed daily asset returns (skips pct_change()).
         borrow_cost_bps: Short borrowing cost in basis points annualized.
+        adaptive_slippage: Use volatility-adaptive slippage model (default: False).
+        slippage_vol_window: Rolling window for volatility estimation (default: 21).
+        slippage_vol_cap: Cap multiplier for volatility-adaptive slippage (default: 3.0).
 
     Returns:
         tuple containing:

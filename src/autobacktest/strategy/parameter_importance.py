@@ -86,34 +86,55 @@ def compute_parameter_importance(
 
     results: dict[str, dict[str, float]] = {}
     for name in sorted(param_names):
-        values: list[float] = []
-        metrics: list[float] = []
-        for i in range(len(config_yamls)):
-            if name in all_params[i]:
-                v = all_params[i][name]
-                if not np.isnan(v) and not np.isinf(v):
-                    values.append(v)
-                    metrics.append(metric_values[i])
-
-        n = len(values)
-        if n < min_attempts or len(set(values)) < 3:
-            continue
-
-        if len(set(metrics)) < 2:
-            continue
-
-        rho, p_value = spearmanr(values, metrics)
-        if np.isnan(rho):
-            continue
-
-        results[name] = {
-            "rho": round(float(rho), 4),
-            "p_value": round(float(p_value), 4),
-            "n": n,
-            "significant": bool(p_value < p_threshold),
-        }
+        result = _compute_single_param_importance(
+            name,
+            all_params,
+            config_yamls,
+            metric_values,
+            min_attempts,
+            p_threshold,
+        )
+        if result is not None:
+            results[name] = result
 
     return results
+
+
+def _compute_single_param_importance(
+    name: str,
+    all_params: list[dict[str, float]],
+    config_yamls: list[str],
+    metric_values: list[float],
+    min_attempts: int,
+    p_threshold: float,
+) -> dict[str, float] | None:
+    """Compute Spearman correlation for a single parameter."""
+    values: list[float] = []
+    metrics: list[float] = []
+    for i in range(len(config_yamls)):
+        if name in all_params[i]:
+            v = all_params[i][name]
+            if not np.isnan(v) and not np.isinf(v):
+                values.append(v)
+                metrics.append(metric_values[i])
+
+    n = len(values)
+    if n < min_attempts or len(set(values)) < 3:
+        return None
+
+    if len(set(metrics)) < 2:
+        return None
+
+    rho, p_value = spearmanr(values, metrics)
+    if np.isnan(rho):
+        return None
+
+    return {
+        "rho": round(float(rho), 4),
+        "p_value": round(float(p_value), 4),
+        "n": n,
+        "significant": bool(p_value < p_threshold),
+    }
 
 
 def format_importance_lessons(

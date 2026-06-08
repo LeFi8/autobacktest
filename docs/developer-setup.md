@@ -64,7 +64,11 @@ We use `pytest` with `hypothesis` (property-based testing) and `vcrpy` (HTTP con
   ```
 - **Run tests with coverage statistics**:
   ```bash
-  uv run pytest --cov=src/autobacktest
+  uv run pytest -x --cov=src/autobacktest
+  ```
+- **Run a single test file or test**:
+  ```bash
+  uv run pytest tests/test_gate.py -x -k "test_name"
   ```
 
 ### 4. Running the CLI application
@@ -85,6 +89,13 @@ uv run autobacktest llm-test \
 Generate a new strategy with Pydantic-validated boilerplate:
 ```bash
 uv run autobacktest init-strategy --name my_strategy
+```
+
+### 7. Hansen's SPA Test
+Audit whether optimized strategies significantly outperform the baseline after
+correcting for data-snooping bias:
+```bash
+uv run autobacktest spa --run-id <run_id> --accepted-only
 ```
 
 

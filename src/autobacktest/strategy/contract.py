@@ -82,6 +82,33 @@ def validate_signature(module: ModuleType) -> tuple[bool, str | None]:
     return True, None
 
 
+def _validate_basic_structure(weights: pd.DataFrame) -> tuple[bool, str] | None:
+    """Check basic DataFrame structure: type, empty, duplicates, numeric cols."""
+    if not isinstance(weights, pd.DataFrame):
+        return (False, f"Expected pandas DataFrame from signals generator, got {type(weights)}.")
+    if weights.empty:
+        return (False, "Weights DataFrame is empty.")
+    if weights.columns.duplicated().any():
+        duplicated_cols = list(set(weights.columns[weights.columns.duplicated()]))
+        return (False, f"Strategy weights contain duplicate columns: {duplicated_cols}")
+    for col in weights.columns:
+        if not pd.api.types.is_numeric_dtype(weights[col]):
+            return (False, f"Strategy weights column '{col}' must be numeric, got {weights[col].dtype}.")
+    return None
+
+
+def _validate_weights_content(weights: pd.DataFrame, tickers: list[str]) -> tuple[bool, str] | None:
+    """Check weights content: NaN, permitted columns, non-negative, non-zero."""
+    if weights.isna().any().any():
+        return (False, "Strategy weights must not contain NaN values.")
+    invalid_cols = [col for col in weights.columns if col not in tickers]
+    if invalid_cols:
+        return (False, f"Strategy weights contain tickers outside config universe: {invalid_cols}")
+    if (weights < -1e-7).any().any():
+        return (False, "Strategy weights must be non-negative (long-only).")
+    return None
+
+
 def validate_output(
     weights: pd.DataFrame, tickers: list[str], expected_index: pd.Index | None = None
 ) -> tuple[bool, str | None]:
@@ -103,44 +130,13 @@ def validate_output(
     Returns:
         tuple[bool, str | None]: (True, None) if valid, (False, error_msg) otherwise.
     """
-    if not isinstance(weights, pd.DataFrame):
-        return (
-            False,
-            f"Expected pandas DataFrame from signals generator, got {type(weights)}.",
-        )
+    result = _validate_basic_structure(weights)
+    if result is not None:
+        return result
 
-    if weights.empty:
-        return False, "Weights DataFrame is empty."
-
-    # Check for duplicate columns
-    if weights.columns.duplicated().any():
-        duplicated_cols = list(set(weights.columns[weights.columns.duplicated()]))
-        return False, f"Strategy weights contain duplicate columns: {duplicated_cols}"
-
-    # Check that all columns are numeric
-    for col in weights.columns:
-        if not pd.api.types.is_numeric_dtype(weights[col]):
-            return (
-                False,
-                f"Strategy weights column '{col}' must be numeric, got {weights[col].dtype}.",
-            )
-
-    # 1. No NaNs allowed
-    if weights.isna().any().any():
-        return False, "Strategy weights must not contain NaN values."
-
-    # 2. Check permitted columns (columns must be a subset of tickers)
-    invalid_cols = [col for col in weights.columns if col not in tickers]
-    if invalid_cols:
-        return (
-            False,
-            f"Strategy weights contain tickers outside config universe: {invalid_cols}",
-        )
-
-    # 3. Long-only constraint: all weights >= 0
-    # Allow a tiny negative tolerance for float precision issues (e.g. -1e-7)
-    if (weights < -1e-7).any().any():
-        return False, "Strategy weights must be non-negative (long-only)."
+    result = _validate_weights_content(weights, tickers)
+    if result is not None:
+        return result
 
     # 4. Leverage constraint: row sums <= 1.0 (plus tiny float tolerance)
     row_sums = weights.sum(axis=1)
@@ -155,12 +151,23 @@ def validate_output(
         return False, ("Strategy weights must not be all zeros (must have at least one non-zero weight).")
 
     # 6. Index validation (Finding 14)
+    idx_result = _check_weights_index(weights, expected_index)
+    if idx_result is not None:
+        return idx_result
+
+    return True, None
+
+
+def _check_weights_index(
+    weights: pd.DataFrame,
+    expected_index: pd.Index | None,
+) -> tuple[bool, str] | None:
+    """Validate weights index is DatetimeIndex and subset of expected dates."""
     if not isinstance(weights.index, pd.DatetimeIndex):
         return (
             False,
             f"Expected DatetimeIndex for weights DataFrame, got {type(weights.index)}.",
         )
-
     if expected_index is not None:
         invalid_dates = weights.index.difference(expected_index)
         if not invalid_dates.empty:
@@ -168,5 +175,4 @@ def validate_output(
                 False,
                 (f"Strategy weights index contains dates not in the price history: {list(invalid_dates[:5])}"),
             )
-
-    return True, None
+    return None

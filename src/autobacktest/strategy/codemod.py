@@ -111,92 +111,96 @@ class _PandasDeprecationTransformer(ast.NodeTransformer):
         if name in _PERIOD_FREQ_KW_FUNCS:
             self._remap_freq_kwarg(node, _FREQ_REVERSE_MAP, "Period")
 
-    def visit_Call(self, node: ast.Call) -> ast.AST:
-        # Visit children first (bottom-up)
-        self.generic_visit(node)
+    def _try_fix_groupby_axis(self, node: ast.Call) -> bool:
+        """Drop ``axis=`` keyword from ``.groupby()``. Returns True if matched."""
+        if _get_call_name(node) != "groupby" or not isinstance(node.func, ast.Attribute):
+            return False
+        new_keywords = [kw for kw in node.keywords if kw.arg != "axis"]
+        if len(new_keywords) < len(node.keywords):
+            node.keywords = new_keywords
+            self.fixes_applied.append("Removed deprecated axis= argument from .groupby()")
+        return True
 
+    def _try_fix_fillna_method(self, node: ast.Call) -> ast.AST | None:
+        """Replace ``.fillna(method=...)`` with ``.ffill()`` / ``.bfill()``."""
+        if _get_call_name(node) != "fillna" or not isinstance(node.func, ast.Attribute):
+            return None
+        method_value = None
+        for kw in node.keywords:
+            if kw.arg == "method" and isinstance(kw.value, ast.Constant):
+                method_value = kw.value.value
+                break
+        if method_value in ("ffill", "pad"):
+            new_keywords = [kw for kw in node.keywords if kw.arg != "method"]
+            new_call = ast.Call(
+                func=ast.Attribute(value=node.func.value, attr="ffill", ctx=ast.Load()),
+                args=node.args,
+                keywords=new_keywords,
+            )
+            ast.copy_location(new_call, node)
+            ast.fix_missing_locations(new_call)
+            self.fixes_applied.append("Replaced .fillna(method='ffill') with .ffill()")
+            return new_call
+        if method_value in ("bfill", "backfill"):
+            new_keywords = [kw for kw in node.keywords if kw.arg != "method"]
+            new_call = ast.Call(
+                func=ast.Attribute(value=node.func.value, attr="bfill", ctx=ast.Load()),
+                args=node.args,
+                keywords=new_keywords,
+            )
+            ast.copy_location(new_call, node)
+            ast.fix_missing_locations(new_call)
+            self.fixes_applied.append("Replaced .fillna(method='bfill') with .bfill()")
+            return new_call
+        return None
+
+    def _try_fix_level_agg(self, node: ast.Call) -> ast.AST | None:
+        """Rewrite ``.mean/sum/std/min/max(level=L)`` → ``.groupby(level=L).func()``."""
+        name = _get_call_name(node)
+        if name not in _LEVEL_AGG_FUNCS or not isinstance(node.func, ast.Attribute):
+            return None
+        level_kw = None
+        other_kwargs = []
+        for kw in node.keywords:
+            if kw.arg == "level":
+                level_kw = kw
+            else:
+                other_kwargs.append(kw)
+        if level_kw is None:
+            return None
+        groupby_call = ast.Call(
+            func=ast.Attribute(value=node.func.value, attr="groupby", ctx=ast.Load()),
+            args=[],
+            keywords=[level_kw],
+        )
+        new_call = ast.Call(
+            func=ast.Attribute(value=groupby_call, attr=name, ctx=ast.Load()),
+            args=list(node.args),
+            keywords=other_kwargs,
+        )
+        ast.copy_location(groupby_call, node)
+        ast.copy_location(new_call, node)
+        ast.fix_missing_locations(new_call)
+        self.fixes_applied.append(f"Replaced .{name}(level=) with .groupby(level=).{name}()")
+        return new_call
+
+    def visit_Call(self, node: ast.Call) -> ast.AST:
+        self.generic_visit(node)
         name = _get_call_name(node)
         if name is None:
             return node
 
-        # Structural transforms below require a method call (node.func.value).
         if isinstance(node.func, ast.Attribute):
-            # -------------------------------------------------------------- #
-            # 1. groupby(axis=...) — drop the axis= keyword                   #
-            # -------------------------------------------------------------- #
-            if name == "groupby":
-                new_keywords = [kw for kw in node.keywords if kw.arg != "axis"]
-                if len(new_keywords) < len(node.keywords):
-                    node.keywords = new_keywords
-                    self.fixes_applied.append("Removed deprecated axis= argument from .groupby()")
+            self._try_fix_groupby_axis(node)
 
-            # -------------------------------------------------------------- #
-            # 2. .fillna(method='ffill'/'pad') → .ffill()                     #
-            #    .fillna(method='bfill'/'backfill') → .bfill()                #
-            # -------------------------------------------------------------- #
-            elif name == "fillna":
-                method_value = None
-                for kw in node.keywords:
-                    if kw.arg == "method" and isinstance(kw.value, ast.Constant):
-                        method_value = kw.value.value
-                        break
+            result = self._try_fix_fillna_method(node)
+            if result is not None:
+                return result
 
-                if method_value in ("ffill", "pad"):
-                    new_keywords = [kw for kw in node.keywords if kw.arg != "method"]
-                    new_call = ast.Call(
-                        func=ast.Attribute(value=node.func.value, attr="ffill", ctx=ast.Load()),
-                        args=node.args,
-                        keywords=new_keywords,
-                    )
-                    ast.copy_location(new_call, node)
-                    ast.fix_missing_locations(new_call)
-                    self.fixes_applied.append("Replaced .fillna(method='ffill') with .ffill()")
-                    return new_call
+            result = self._try_fix_level_agg(node)
+            if result is not None:
+                return result
 
-                if method_value in ("bfill", "backfill"):
-                    new_keywords = [kw for kw in node.keywords if kw.arg != "method"]
-                    new_call = ast.Call(
-                        func=ast.Attribute(value=node.func.value, attr="bfill", ctx=ast.Load()),
-                        args=node.args,
-                        keywords=new_keywords,
-                    )
-                    ast.copy_location(new_call, node)
-                    ast.fix_missing_locations(new_call)
-                    self.fixes_applied.append("Replaced .fillna(method='bfill') with .bfill()")
-                    return new_call
-
-            # -------------------------------------------------------------- #
-            # 3. .mean/sum/std/min/max(level=L) → .groupby(level=L).FUNC()    #
-            # -------------------------------------------------------------- #
-            elif name in _LEVEL_AGG_FUNCS:
-                level_kw = None
-                other_kwargs = []
-                for kw in node.keywords:
-                    if kw.arg == "level":
-                        level_kw = kw
-                    else:
-                        other_kwargs.append(kw)
-
-                if level_kw is not None:
-                    groupby_call = ast.Call(
-                        func=ast.Attribute(value=node.func.value, attr="groupby", ctx=ast.Load()),
-                        args=[],
-                        keywords=[level_kw],
-                    )
-                    new_call = ast.Call(
-                        func=ast.Attribute(value=groupby_call, attr=name, ctx=ast.Load()),
-                        args=list(node.args),
-                        keywords=other_kwargs,
-                    )
-                    ast.copy_location(groupby_call, node)
-                    ast.copy_location(new_call, node)
-                    ast.fix_missing_locations(new_call)
-                    self.fixes_applied.append(f"Replaced .{name}(level=) with .groupby(level=).{name}()")
-                    return new_call
-
-        # ------------------------------------------------------------------ #
-        # 4. Context-sensitive freq alias remapping (any call style)          #
-        # ------------------------------------------------------------------ #
         self._remap_freq(node, name)
         return node
 
@@ -214,45 +218,57 @@ class _MissingImportInjector(ast.NodeTransformer):
     def __init__(self) -> None:
         self.fixes_applied: list[str] = []
 
-    def visit_Module(self, node: ast.Module) -> ast.AST:
-        # Scan the entire tree for ``Any`` usage and existing typing imports.
-        any_used = False
-        typing_imported = False
+    @staticmethod
+    def _detect_any_usage(node: ast.Module) -> bool:
+        """Scan the AST for ``Any`` references (names and string annotations)."""
         for child in ast.walk(node):
             if isinstance(child, ast.Name) and child.id == "Any":
-                any_used = True
-            elif isinstance(child, ast.Constant) and isinstance(child.value, str):
-                # String annotations like ``'dict[str, Any]'``
-                if _ANY_WORD_RE.search(child.value):
-                    any_used = True
-            elif isinstance(child, ast.ImportFrom):
-                if child.module == "typing":
-                    for alias in child.names:
-                        if alias.name == "Any":
-                            typing_imported = True
+                return True
+            if isinstance(child, ast.Constant) and isinstance(child.value, str) and _ANY_WORD_RE.search(child.value):
+                return True
+        return False
+
+    @staticmethod
+    def _detect_typing_any_import(node: ast.Module) -> bool:
+        """Check if ``Any`` is already imported from typing."""
+        for child in ast.walk(node):
+            if isinstance(child, ast.ImportFrom) and child.module == "typing":
+                for alias in child.names:
+                    if alias.name == "Any":
+                        return True
             elif isinstance(child, ast.Import):
                 for alias in child.names:
                     if alias.name == "typing":
-                        typing_imported = True
+                        return True
+        return False
 
-        if any_used and not typing_imported:
-            import_node = ast.ImportFrom(
-                module="typing",
-                names=[ast.alias(name="Any")],
-                level=0,
-            )
-            ast.fix_missing_locations(import_node)
-            insert_idx = 0
-            if (
-                node.body
-                and isinstance(node.body[0], ast.Expr)
-                and isinstance(node.body[0].value, ast.Constant)
-                and isinstance(node.body[0].value.value, str)
-            ):
-                insert_idx = 1
-            node.body.insert(insert_idx, import_node)
-            self.fixes_applied.append("Injected missing `from typing import Any`")
+    @staticmethod
+    def _find_import_insert_idx(node: ast.Module) -> int:
+        """Determine where to insert the import (after docstring if present)."""
+        if (
+            node.body
+            and isinstance(node.body[0], ast.Expr)
+            and isinstance(node.body[0].value, ast.Constant)
+            and isinstance(node.body[0].value.value, str)
+        ):
+            return 1
+        return 0
 
+    def _inject_typing_any_import(self, node: ast.Module) -> None:
+        """Insert ``from typing import Any`` at the top of the module."""
+        import_node = ast.ImportFrom(
+            module="typing",
+            names=[ast.alias(name="Any")],
+            level=0,
+        )
+        ast.fix_missing_locations(import_node)
+        insert_idx = self._find_import_insert_idx(node)
+        node.body.insert(insert_idx, import_node)
+        self.fixes_applied.append("Injected missing `from typing import Any`")
+
+    def visit_Module(self, node: ast.Module) -> ast.AST:
+        if self._detect_any_usage(node) and not self._detect_typing_any_import(node):
+            self._inject_typing_any_import(node)
         return self.generic_visit(node)
 
 

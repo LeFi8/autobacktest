@@ -162,6 +162,218 @@ class CachedDataProvider(DataProvider):
             return pd.DataFrame()
         return df.loc[start_dt:end_dt]
 
+    def _update_suffix(
+        self,
+        ticker: str,
+        interval: str,
+        cached_df: pd.DataFrame,
+        cache_start: pd.Timestamp,
+        cache_end: pd.Timestamp,
+        start_dt: pd.Timestamp,
+        end_dt: pd.Timestamp,
+        end: str,
+    ) -> pd.DataFrame:
+        """Fetch rows newer than *cache_end* and extend the on-disk cache.
+
+        Skips non-trading days before fetching to avoid unnecessary provider
+        calls.  Marks the suffix as ``confirmed_empty`` when no rows are returned.
+
+        Args:
+            ticker: Asset ticker symbol.
+            interval: Price interval string (e.g. ``"1d"``).
+            cached_df: Currently cached price DataFrame.
+            cache_start: Earliest date covered by the on-disk cache.
+            cache_end: Latest date covered by the on-disk cache.
+            start_dt: Requested window start as a ``Timestamp``.
+            end_dt: Requested window end as a ``Timestamp``.
+            end: Requested window end as a date string.
+
+        Returns:
+            pd.DataFrame: Ticker prices sliced to ``[start_dt, end_dt]``.
+        """
+        cache_file = self.cache_dir / f"{ticker}_{interval}.parquet"
+        next_day = cache_end + pd.Timedelta(days=1)
+        while not is_trading_day(next_day) and next_day <= end_dt:
+            next_day += pd.Timedelta(days=1)
+
+        if next_day > end_dt:
+            self._save_metadata(ticker, interval, cache_start, end_dt, confirmed_empty=True)
+            return self._slice_window(cached_df, start_dt, end_dt)
+
+        fetch_start = next_day.strftime("%Y-%m-%d")
+        new_data, fetch_ok = self._safe_fetch(ticker, fetch_start, end, interval, "incremental suffix update")
+
+        if not fetch_ok:
+            return self._slice_window(cached_df, start_dt, end_dt)
+
+        if not new_data.empty:
+            cached_df = pd.concat([cached_df, new_data])
+            cached_df = cached_df[~cached_df.index.duplicated(keep="last")]
+            cached_df.sort_index(inplace=True)
+            lock = _get_cache_lock(cache_file)
+            with lock:
+                _atomic_write(cached_df, cache_file)
+            self._save_metadata(ticker, interval, cache_start, cached_df.index.max())
+        else:
+            self._save_metadata(ticker, interval, cache_start, end_dt, confirmed_empty=True)
+
+        return self._slice_window(cached_df, start_dt, end_dt)
+
+    def _update_prefix(
+        self,
+        ticker: str,
+        interval: str,
+        cached_df: pd.DataFrame,
+        cache_start: pd.Timestamp,
+        cache_end: pd.Timestamp,
+        start_dt: pd.Timestamp,
+        end_dt: pd.Timestamp,
+        start: str,
+    ) -> pd.DataFrame:
+        """Fetch rows older than *cache_start* and extend the on-disk cache.
+
+        Args:
+            ticker: Asset ticker symbol.
+            interval: Price interval string (e.g. ``"1d"``).
+            cached_df: Currently cached price DataFrame.
+            cache_start: Earliest date covered by the on-disk cache.
+            cache_end: Latest date covered by the on-disk cache.
+            start_dt: Requested window start as a ``Timestamp``.
+            end_dt: Requested window end as a ``Timestamp``.
+            start: Requested window start as a date string.
+
+        Returns:
+            pd.DataFrame: Ticker prices sliced to ``[start_dt, end_dt]``.
+        """
+        cache_file = self.cache_dir / f"{ticker}_{interval}.parquet"
+        prev_day = cache_start - pd.Timedelta(days=1)
+        fetch_end = prev_day.strftime("%Y-%m-%d")
+        new_data, fetch_ok = self._safe_fetch(ticker, start, fetch_end, interval, "incremental prefix update")
+
+        if not fetch_ok:
+            return self._slice_window(cached_df, start_dt, end_dt)
+
+        if not new_data.empty:
+            cached_df = pd.concat([new_data, cached_df])
+            cached_df = cached_df[~cached_df.index.duplicated(keep="last")]
+            cached_df.sort_index(inplace=True)
+            lock = _get_cache_lock(cache_file)
+            with lock:
+                _atomic_write(cached_df, cache_file)
+            self._save_metadata(ticker, interval, cached_df.index.min(), cache_end)
+        else:
+            self._save_metadata(ticker, interval, start_dt, cache_end, confirmed_empty=True)
+
+        return self._slice_window(cached_df, start_dt, end_dt)
+
+    def _fetch_full_window(
+        self,
+        ticker: str,
+        interval: str,
+        cached_df: pd.DataFrame,
+        start_dt: pd.Timestamp,
+        end_dt: pd.Timestamp,
+        start: str,
+        end: str,
+    ) -> pd.DataFrame:
+        """Full-window fetch when no sufficient cache exists.
+
+        Merges any existing cached rows with fresh data before writing the
+        updated DataFrame back to disk.
+
+        Args:
+            ticker: Asset ticker symbol.
+            interval: Price interval string (e.g. ``"1d"``).
+            cached_df: Currently cached price DataFrame (may be empty).
+            start_dt: Requested window start as a ``Timestamp``.
+            end_dt: Requested window end as a ``Timestamp``.
+            start: Requested window start as a date string.
+            end: Requested window end as a date string.
+
+        Returns:
+            pd.DataFrame: Ticker prices sliced to ``[start_dt, end_dt]``.
+        """
+        cache_file = self.cache_dir / f"{ticker}_{interval}.parquet"
+        new_data, fetch_ok = self._safe_fetch(ticker, start, end, interval, "full window fetch")
+
+        if not fetch_ok:
+            return self._slice_window(cached_df, start_dt, end_dt)
+
+        if not new_data.empty:
+            if not cached_df.empty:
+                cached_df = pd.concat([cached_df, new_data])
+                cached_df = cached_df[~cached_df.index.duplicated(keep="last")]
+            else:
+                cached_df = new_data
+            cached_df.sort_index(inplace=True)
+            lock = _get_cache_lock(cache_file)
+            with lock:
+                _atomic_write(cached_df, cache_file)
+            self._save_metadata(ticker, interval, cached_df.index.min(), cached_df.index.max())
+        else:
+            self._save_metadata(ticker, interval, start_dt, end_dt, confirmed_empty=True)
+
+        return self._slice_window(cached_df, start_dt, end_dt)
+
+    def _get_ticker_prices(
+        self,
+        ticker: str,
+        interval: str,
+        start: str,
+        end: str,
+        start_dt: pd.Timestamp,
+        end_dt: pd.Timestamp,
+    ) -> pd.DataFrame:
+        """Return a price series for a single *ticker*, fetching incrementally as needed.
+
+        Loads the on-disk Parquet cache and metadata, then delegates to the
+        appropriate strategy: full-coverage slice, suffix/prefix extension,
+        or a full-window re-fetch.
+
+        Args:
+            ticker: Asset ticker symbol.
+            interval: Price interval string.
+            start: Requested window start as a date string.
+            end: Requested window end as a date string.
+            start_dt: Requested window start as a ``Timestamp``.
+            end_dt: Requested window end as a ``Timestamp``.
+
+        Returns:
+            pd.DataFrame: Price rows for *ticker* sliced to ``[start_dt, end_dt]``.
+        """
+        cache_file = self.cache_dir / f"{ticker}_{interval}.parquet"
+        cached_df = pd.DataFrame()
+        parquet_ok = True
+
+        if cache_file.exists():
+            try:
+                cached_df = pd.read_parquet(cache_file)
+            except Exception as e:
+                logger.warning(
+                    "Failed to read Parquet cache file %s: %s. Re-fetching data...",
+                    cache_file,
+                    e,
+                )
+                parquet_ok = False
+
+        meta_start, meta_end = None, None
+        if parquet_ok:
+            meta_start, meta_end = self._load_metadata(ticker, interval)
+        if (meta_start is None or meta_end is None) and not cached_df.empty:
+            meta_start = cached_df.index.min()
+            meta_end = cached_df.index.max()
+
+        if meta_start is not None and meta_end is not None:
+            cache_start, cache_end = meta_start, meta_end
+            if cache_start <= start_dt and cache_end >= end_dt:
+                return self._slice_window(cached_df, start_dt, end_dt)
+            if cache_start <= start_dt and cache_end < end_dt:
+                return self._update_suffix(ticker, interval, cached_df, cache_start, cache_end, start_dt, end_dt, end)
+            if cache_start > start_dt and cache_end >= end_dt:
+                return self._update_prefix(ticker, interval, cached_df, cache_start, cache_end, start_dt, end_dt, start)
+
+        return self._fetch_full_window(ticker, interval, cached_df, start_dt, end_dt, start, end)
+
     def get_prices(
         self,
         tickers: list[str],
@@ -175,160 +387,16 @@ class CachedDataProvider(DataProvider):
 
         start_dt = pd.to_datetime(start)
         end_dt = pd.to_datetime(end)
-
         merged = pd.DataFrame()
 
         for ticker in tickers:
-            cache_file = self.cache_dir / f"{ticker}_{interval}.parquet"
-            cached_df = pd.DataFrame()
-            parquet_ok = True
-
-            if cache_file.exists():
-                try:
-                    cached_df = pd.read_parquet(cache_file)
-                except Exception as e:
-                    logger.warning(
-                        "Failed to read Parquet cache file %s: %s. Re-fetching data...",
-                        cache_file,
-                        e,
-                    )
-                    parquet_ok = False
-
-            # P0-2: If parquet read failed, ignore stale metadata — forces re-fetch.
-            meta_start, meta_end = None, None
-            if parquet_ok:
-                meta_start, meta_end = self._load_metadata(ticker, interval)
-            if (meta_start is None or meta_end is None) and not cached_df.empty:
-                meta_start = cached_df.index.min()
-                meta_end = cached_df.index.max()
-
-            needs_fetch = True
-            ticker_df = pd.DataFrame()
-
-            if meta_start is not None and meta_end is not None:
-                cache_start = meta_start
-                cache_end = meta_end
-
-                # Cache covers the requested range — no fetch needed.
-                if cache_start <= start_dt and cache_end >= end_dt:
-                    needs_fetch = False
-                    ticker_df = self._slice_window(cached_df, start_dt, end_dt)
-
-                elif cache_start <= start_dt and cache_end < end_dt:
-                    # Incremental suffix: fetch [cache_end+1d, end].
-                    next_day = cache_end + pd.Timedelta(days=1)
-                    # Skip known non-trading days to avoid pointless yfinance calls.
-                    while not is_trading_day(next_day) and next_day <= end_dt:
-                        next_day += pd.Timedelta(days=1)
-                    if next_day > end_dt:
-                        # Entire suffix is non-trading — mark as confirmed_empty.
-                        # Use cache_start so the full parquet range is recognised
-                        # on future requests (confirmed_empty only prevents
-                        # re-fetching the suffix, not reading existing data).
-                        self._save_metadata(ticker, interval, cache_start, end_dt, confirmed_empty=True)
-                        ticker_df = self._slice_window(cached_df, start_dt, end_dt)
-                        needs_fetch = False
-                    else:
-                        fetch_start = next_day.strftime("%Y-%m-%d")
-                        new_data, fetch_ok = self._safe_fetch(
-                            ticker, fetch_start, end, interval, "incremental suffix update"
-                        )
-
-                        if not fetch_ok:
-                            # Provider errored — don't advance metadata.
-                            ticker_df = self._slice_window(cached_df, start_dt, end_dt)
-                            needs_fetch = False
-                        else:
-                            if not new_data.empty:
-                                cached_df = pd.concat([cached_df, new_data])
-                                cached_df = cached_df[~cached_df.index.duplicated(keep="last")]
-                                cached_df.sort_index(inplace=True)
-                                lock = _get_cache_lock(cache_file)
-                                with lock:
-                                    _atomic_write(cached_df, cache_file)
-                                # P0-1: advance boundary only when rows were received.
-                                self._save_metadata(ticker, interval, cache_start, cached_df.index.max())
-                            else:
-                                # Provider responded cleanly but has no rows (holiday/gap).
-                                # Record the boundary so we don't re-query this range.
-                                self._save_metadata(
-                                    ticker,
-                                    interval,
-                                    cache_start,
-                                    end_dt,
-                                    confirmed_empty=True,
-                                )
-                            ticker_df = self._slice_window(cached_df, start_dt, end_dt)
-                            needs_fetch = False
-
-                elif cache_start > start_dt and cache_end >= end_dt:
-                    # Incremental prefix: fetch [start, cache_start-1d].
-                    prev_day = cache_start - pd.Timedelta(days=1)
-                    fetch_end = prev_day.strftime("%Y-%m-%d")
-                    new_data, fetch_ok = self._safe_fetch(
-                        ticker, start, fetch_end, interval, "incremental prefix update"
-                    )
-
-                    if not fetch_ok:
-                        # Provider errored — don't advance metadata.
-                        ticker_df = self._slice_window(cached_df, start_dt, end_dt)
-                        needs_fetch = False
-                    else:
-                        if not new_data.empty:
-                            cached_df = pd.concat([new_data, cached_df])
-                            cached_df = cached_df[~cached_df.index.duplicated(keep="last")]
-                            cached_df.sort_index(inplace=True)
-                            lock = _get_cache_lock(cache_file)
-                            with lock:
-                                _atomic_write(cached_df, cache_file)
-                            # P0-1: advance boundary only when rows were received.
-                            self._save_metadata(ticker, interval, cached_df.index.min(), cache_end)
-                        else:
-                            self._save_metadata(
-                                ticker,
-                                interval,
-                                start_dt,
-                                cache_end,
-                                confirmed_empty=True,
-                            )
-                        ticker_df = self._slice_window(cached_df, start_dt, end_dt)
-                        needs_fetch = False
-
-            if needs_fetch:
-                # Full window fetch.
-                new_data, fetch_ok = self._safe_fetch(ticker, start, end, interval, "full window fetch")
-
-                if not fetch_ok:
-                    # Provider errored — return whatever is in cache (may be empty).
-                    # Do NOT write metadata so the next call retries.
-                    ticker_df = self._slice_window(cached_df, start_dt, end_dt)
-                elif not new_data.empty:
-                    if not cached_df.empty:
-                        cached_df = pd.concat([cached_df, new_data])
-                        cached_df = cached_df[~cached_df.index.duplicated(keep="last")]
-                    else:
-                        cached_df = new_data
-                    cached_df.sort_index(inplace=True)
-                    lock = _get_cache_lock(cache_file)
-                    with lock:
-                        _atomic_write(cached_df, cache_file)
-                    # P0-1: metadata advance gated on actual rows stored.
-                    self._save_metadata(ticker, interval, cached_df.index.min(), cached_df.index.max())
-                    ticker_df = self._slice_window(cached_df, start_dt, end_dt)
-                else:
-                    # Provider returned cleanly but no rows (missing ticker).
-                    # Record confirmed_empty so future calls don't re-query.
-                    self._save_metadata(ticker, interval, start_dt, end_dt, confirmed_empty=True)
-                    ticker_df = self._slice_window(cached_df, start_dt, end_dt)
-
-            # Align prices
+            ticker_df = self._get_ticker_prices(ticker, interval, start, end, start_dt, end_dt)
             if not ticker_df.empty:
                 merged = ticker_df if merged.empty else merged.join(ticker_df[[ticker]], how="outer")
 
         if not merged.empty:
             merged = self._detect_and_clean_outliers(merged)
 
-        # Return aligned columns matching requested order and universe
         return merged.reindex(columns=tickers)
 
     def _detect_and_clean_outliers(self, df: pd.DataFrame) -> pd.DataFrame:

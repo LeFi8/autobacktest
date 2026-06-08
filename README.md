@@ -135,6 +135,7 @@ sequenceDiagram
 | `evaluate` | Run walk-forward + holdout on a single strategy |
 | `init-strategy` | Scaffold a new strategy with validated config |
 | `llm-test` | Test an LLM edit against preflight checks |
+| `spa` | Hansen's Superior Predictive Ability audit |
 
 Use `uv run autobacktest --help` for full flag details.
 
@@ -158,10 +159,12 @@ autobacktest/
 ├── configs/            # Parameters per strategy
 ├── src/autobacktest/   # Core engine
 │   ├── cli.py          # Typer entrypoint
-│   ├── orchestrator.py # Optimization loop
+│   ├── commands/       # Subcommand implementations (run, report, evaluate, etc.)
+│   ├── orchestrator.py # Optimization loop orchestration
+│   ├── optimization/   # Candidate generation, eval mgmt, persistence
 │   ├── gate.py         # Two-phase (select + confirm)
-│   ├── evaluator/      # Backtest, CSCV/PBO, DSR, regime tests
-│   ├── strategy/       # Validator, codemod, diversity, config jitter
+│   ├── evaluator/      # Backtest, engine, metrics, CSCV/PBO, DSR, regime
+│   ├── strategy/       # Validator, AST linter, sandbox, codemod, diversity
 │   └── data/           # Price data, caching
 ├── docs/               # Architecture, API reference, setup guides
 ├── runs/               # Run artifacts (git-ignored)

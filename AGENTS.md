@@ -14,6 +14,7 @@ uv run mypy src/                 # typecheck (--strict)
 uv run autobacktest run --program program.md --strategy haa --iterations 5
 uv run autobacktest report       # leaderboard
 uv run autobacktest evaluate --strategy strategies/haa.py
+uv run autobacktest spa          # Hansen's SPA test
 uv run autobacktest llm-test "Add momentum filter" --strategy haa
 uv run autobacktest init-strategy --name my_strategy
 ```
@@ -22,11 +23,11 @@ No `.pre-commit-config.yaml` exists — skip `pre-commit install`.
 
 ## Architecture
 
-- **Entrypoint**: `src/autobacktest/cli.py:app` (typer). 7 subcommands: `run`, `report`, `reset`, `evaluate`, `llm-test`, `init-strategy`. `run` has `--quiet` and `--json` flags.
+- **Entrypoint**: `src/autobacktest/cli.py:app` (typer) delegating to `commands/` package. 7 subcommands: `run`, `report`, `reset`, `evaluate`, `spa`, `llm-test`, `init-strategy`. `run` has `--quiet` and `--json` flags.
 - **Strategy files**: `strategies/<name>.py` + `configs/<name>.yaml` — matched by stem. Strategy exports `generate_signals(prices: pd.DataFrame, config: dict) -> pd.DataFrame`.
 - **Allowed imports** in strategy code: pandas, numpy, math, typing, scipy, dataclasses, collections, itertools, functools, decimal, statistics, numbers, json only. Blocked by AST whitelist.
-- **Optimization loop** (`orchestrator.py`): LLM edits code → `repair_strategy_code()` (3 AST passes: pandas deprecation fix, `typing.Any` import injection, weight renormalization) → preflight validation (8 checks incl. undefined-name AST scan) → config diversity gate (with optional jitter salvage via `config_jitter.py`) → evaluation (walk-forward + holdout) → returns diversity gate → two-phase select/confirm gate → git commit or rollback. Config jitter and LLM repair loop are optional salvages when candidates fail diversity or preflight.
-- **Undefined-name validator** (`_check_undefined_names` in `validator.py`): Catches LLM hallucinations (misspelled identifiers, out-of-scope variables). Handles tuple unpacking and top-level constants via `_extract_names` helper.
+- **Optimization loop** (`orchestrator.py` with `optimization/` sub-package): LLM edits code → `repair_strategy_code()` (3 AST passes: pandas deprecation fix, `typing.Any` import injection, weight renormalization) → preflight validation (8 checks incl. AST linter in `ast_linter.py`, sandboxed smoke test in `sandbox_runner.py`) → config diversity gate (with optional jitter salvage via `config_jitter.py`) → evaluation (walk-forward + holdout) → returns diversity gate → two-phase select/confirm gate → git commit or rollback. Config jitter and LLM repair loop are optional salvages when candidates fail diversity or preflight.
+- **Undefined-name validator** (`_check_undefined_names` in `ast_linter.py`): Catches LLM hallucinations (misspelled identifiers, out-of-scope variables). Handles tuple unpacking and top-level constants via `_extract_names` helper.
 - **PBO via CSCV** (`evaluator/cscv.py`): Combinatorially Symmetric Cross-Validation calculates Probability of Backtest Overfitting. Default 10 blocks → 252 train/test split combinations. Stored in `EvaluationReport.pbo`.
 - **Gate** (`gate.py`): Two-phase: `select` (in-sample — max_drawdown ≤ 20%, regime stress tests pass, turnover ≤ 2.0, target metric improvement, min_return_ratio, DSR non-degradation) then `confirm` (holdout — drawdown, turnover, DSR non-degradation). DSR is a hard gate for both phases.
 - **Holdout**: 3 years default (`AUTOBACKTEST_DEFAULT_HOLDOUT_YEARS`). Walk-forward: 5y train / 1y test. All statistical simulations use seed=42.
@@ -43,7 +44,14 @@ No `.pre-commit-config.yaml` exists — skip `pre-commit install`.
 | `strategies/<name>.py` | Strategy signal code |
 | `configs/<name>.yaml` | Strategy parameters (Pydantic-validated) |
 | `.antigravity/` | Removed from repo — local IDE/agent config (git-ignored) |
-| `docs/` | Comprehensive docs: architecture, API reference, setup, ADRs |
+| `docs/` | Comprehensive docs: architecture, API reference, setup, ADRs (`docs/adrs/`) |
+| `src/autobacktest/optimization/` | Candidate gen, eval mgmt, ledger persistence helpers |
+| `src/autobacktest/commands/` | CLI subcommand implementations (8 commands) |
+| `src/autobacktest/strategy/ast_linter.py` | AST-based static validation (imports, complexity, undefined names) |
+| `src/autobacktest/strategy/sandbox_runner.py` | Sandboxed subprocess execution for smoke tests |
+| `src/autobacktest/evaluator/engine.py` | Vectorized window execution, caching, dataset hashing |
+| `src/autobacktest/evaluator/metrics.py` | Sortino, Information Ratio, walk-forward aggregation |
+| `src/autobacktest/evaluator/stress_testing.py` | Regime stress + Monte Carlo bootstrap wrapper |
 
 ## Env var quirks
 

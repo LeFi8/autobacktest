@@ -392,10 +392,30 @@ def summarize_explored_space(historical_configs: list[str], max_configs: int = 3
     if not historical_configs:
         return ""
 
+    numeric_values, set_values = _collect_explored_params(historical_configs, max_configs)
+
+    if not numeric_values and not set_values:
+        return ""
+
+    lines = ["### Tried parameters in past configurations:"]
+
+    for param in sorted(numeric_values.keys()):
+        lines.append(_format_numeric_param_line(param, numeric_values[param]))
+
+    for param in sorted(set_values.keys()):
+        lines.append(_format_set_param_line(param, set_values[param]))
+
+    return "\n".join(lines)
+
+
+def _collect_explored_params(
+    historical_configs: list[str],
+    max_configs: int,
+) -> tuple[dict[str, set[float]], dict[str, set[str]]]:
+    """Extract numeric and set parameter values from historical configs."""
     numeric_values: dict[str, set[float]] = {}
     set_values: dict[str, set[str]] = {}
 
-    # Process only the last max_configs
     for config_yml in historical_configs[-max_configs:]:
         try:
             fp = extract_config_fingerprint(config_yml)
@@ -405,44 +425,37 @@ def summarize_explored_space(historical_configs: list[str], max_configs: int = 3
                 if sk not in set_values:
                     set_values[sk] = set()
                 set_values[sk].update(sv)
-        except Exception as e:
-            logger.warning("Failed to extract fingerprint for explored space: %s", e)
+        except Exception:
             continue
 
-    if not numeric_values and not set_values:
-        return ""
+    return numeric_values, set_values
 
-    lines = []
-    lines.append("### Tried parameters in past configurations:")
 
-    for param in sorted(numeric_values.keys()):
-        num_vals: list[float] = sorted(numeric_values[param])
-        formatted_vals = []
-        for v in num_vals:
-            if v.is_integer():
-                formatted_vals.append(str(int(v)))
-            else:
-                formatted_vals.append(f"{v:.4f}".rstrip("0").rstrip("."))
+def _format_numeric_param_line(param: str, values: set[float]) -> str:
+    """Format a single numeric parameter line for the explored space summary."""
+    sorted_vals: list[float] = sorted(values)
+    formatted_vals = []
+    for v in sorted_vals:
+        if v.is_integer():
+            formatted_vals.append(str(int(v)))
+        else:
+            formatted_vals.append(f"{v:.4f}".rstrip("0").rstrip("."))
+    truncated = len(formatted_vals) > 8
+    if truncated:
+        formatted_vals = formatted_vals[:8]
+    vals_str = ", ".join(formatted_vals)
+    if truncated:
+        vals_str += ", …"
+    return f"- **{param}**: [{vals_str}]"
 
-        truncated = False
-        if len(formatted_vals) > 8:
-            formatted_vals = formatted_vals[:8]
-            truncated = True
 
-        vals_str = ", ".join(formatted_vals)
-        if truncated:
-            vals_str += ", …"
-        lines.append(f"- **{param}**: [{vals_str}]")
-
-    for param in sorted(set_values.keys()):
-        set_vals: list[str] = sorted(set_values[param])
-        truncated = False
-        if len(set_vals) > 8:
-            set_vals = set_vals[:8]
-            truncated = True
-        vals_str = ", ".join(set_vals)
-        if truncated:
-            vals_str += ", …"
-        lines.append(f"- **{param}**: {{{vals_str}}}")
-
-    return "\n".join(lines)
+def _format_set_param_line(param: str, values: set[str]) -> str:
+    """Format a single set parameter line for the explored space summary."""
+    sorted_vals: list[str] = sorted(values)
+    truncated = len(sorted_vals) > 8
+    if truncated:
+        sorted_vals = sorted_vals[:8]
+    vals_str = ", ".join(sorted_vals)
+    if truncated:
+        vals_str += ", …"
+    return f"- **{param}**: {{{vals_str}}}"

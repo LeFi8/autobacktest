@@ -271,6 +271,67 @@ def plot_walk_forward_bars(
     return out_path
 
 
+def _tally_legacy_event(event: dict[str, object], summary: dict[str, Any]) -> None:
+    """Accumulate failure counts from a legacy flat-key event schema.
+
+    Handles the schema produced before the ``candidates`` array was introduced.
+    Returns early after the first matching key to avoid double-counting.
+
+    Args:
+        event: Parsed event dict with optional top-level ``validation``, ``gate``,
+            ``diversity``, ``llm_error``, and ``evaluation`` keys.
+        summary: Running failure summary dict updated in-place.
+    """
+    val = event.get("validation")
+    if isinstance(val, dict) and val.get("passed") is False:
+        code = val.get("error_code", "unknown")
+        summary["Validation"][code] = summary["Validation"].get(code, 0) + 1
+        return
+    gate = event.get("gate")
+    if isinstance(gate, dict) and gate.get("accepted") is False:
+        fg = gate.get("failed_gate", "unknown")
+        summary["Gate"][fg] = summary["Gate"].get(fg, 0) + 1
+        return
+    div = event.get("diversity")
+    if isinstance(div, dict) and div.get("passed") is False:
+        tier = div.get("tier", "unknown")
+        summary["Diversity"][tier] = summary["Diversity"].get(tier, 0) + 1
+        return
+    if event.get("llm_error") is not None:
+        summary["LLM Error"] = summary["LLM Error"] + 1
+        return
+    eval_err = event.get("evaluation")
+    if isinstance(eval_err, dict) and eval_err.get("error") is not None:
+        summary["Eval Error"] = summary["Eval Error"] + 1
+
+
+def _tally_candidate(c: dict[str, object], summary: dict[str, Any]) -> None:
+    """Accumulate failure counts from a single candidate dict in the modern schema.
+
+    Args:
+        c: Candidate dict with keys such as ``passed``, ``stage``, ``detail``,
+            ``failed_gate``, and ``llm_error``.
+        summary: Running failure summary dict updated in-place.
+    """
+    if c.get("passed") is True:
+        return
+    if c.get("llm_error"):
+        summary["LLM Error"] = summary["LLM Error"] + 1
+        return
+    stage = c.get("stage", "")
+    if stage == "validation":
+        code = c.get("detail", "unknown")
+        summary["Validation"][code] = summary["Validation"].get(code, 0) + 1
+    elif stage == "gate":
+        fg = c.get("failed_gate") or "unknown"
+        summary["Gate"][fg] = summary["Gate"].get(fg, 0) + 1
+    elif stage in ("diversity_config", "diversity_returns"):
+        tier = stage.removeprefix("diversity_")
+        summary["Diversity"][tier] = summary["Diversity"].get(tier, 0) + 1
+    elif stage == "eval_error":
+        summary["Eval Error"] = summary["Eval Error"] + 1
+
+
 def compile_failure_summary(run_dir: Path) -> dict[str, Any]:
     """Parse the events JSONL file and compile per-category failure statistics.
 
@@ -306,66 +367,114 @@ def compile_failure_summary(run_dir: Path) -> dict[str, Any]:
                 event = json.loads(line)
             except json.JSONDecodeError:
                 continue
-
             if not isinstance(event, dict):
                 continue
 
-            # Parse per-candidate failures from the candidates array.
-            # These cover all failure modes: preflight validation, gate,
-            # diversity, eval errors, and LLM errors.
             candidates = event.get("candidates")
             if not isinstance(candidates, list):
-                # Legacy fallback: parse top-level failure keys for events
-                # produced before the candidates array schema was introduced.
-                val = event.get("validation")
-                if isinstance(val, dict) and val.get("passed") is False:
-                    code = val.get("error_code", "unknown")
-                    summary["Validation"][code] = summary["Validation"].get(code, 0) + 1
-                    continue
-                gate = event.get("gate")
-                if isinstance(gate, dict) and gate.get("accepted") is False:
-                    fg = gate.get("failed_gate", "unknown")
-                    summary["Gate"][fg] = summary["Gate"].get(fg, 0) + 1
-                    continue
-                div = event.get("diversity")
-                if isinstance(div, dict) and div.get("passed") is False:
-                    tier = div.get("tier", "unknown")
-                    summary["Diversity"][tier] = summary["Diversity"].get(tier, 0) + 1
-                    continue
-                if event.get("llm_error") is not None:
-                    summary["LLM Error"] += 1
-                    continue
-                eval_err = event.get("evaluation")
-                if isinstance(eval_err, dict) and eval_err.get("error") is not None:
-                    summary["Eval Error"] += 1
+                _tally_legacy_event(event, summary)
                 continue
 
             for c in candidates:
-                if not isinstance(c, dict):
-                    continue
-                if c.get("passed") is True:
-                    continue
-                if c.get("llm_error"):
-                    summary["LLM Error"] += 1
-                    continue
-
-                stage = c.get("stage", "")
-                if stage == "validation":
-                    code = c.get("detail", "unknown")
-                    bucket = summary["Validation"]
-                    bucket[code] = bucket.get(code, 0) + 1
-                elif stage == "gate":
-                    fg = c.get("failed_gate") or "unknown"
-                    bucket = summary["Gate"]
-                    bucket[fg] = bucket.get(fg, 0) + 1
-                elif stage in ("diversity_config", "diversity_returns"):
-                    tier = stage.removeprefix("diversity_")
-                    bucket = summary["Diversity"]
-                    bucket[tier] = bucket.get(tier, 0) + 1
-                elif stage == "eval_error":
-                    summary["Eval Error"] += 1
+                if isinstance(c, dict):
+                    _tally_candidate(c, summary)
 
     return summary
+
+
+def _add_robustness_section(lines: list[str], report: EvaluationReport) -> None:
+    """Add robustness diagnostics section."""
+    _h2(lines, "Robustness Diagnostics")
+    _h3(lines, "In-Sample Metrics")
+    _window_table(lines, report.in_sample_metrics, "In-Sample")
+    _h3(lines, "Holdout Metrics")
+    _window_table(lines, report.holdout_metrics, "Holdout")
+    _h3(lines, "Monte Carlo Bootstrap (Sharpe)")
+    _kv(lines, "5th Percentile", f"{report.mc_sharpe_5th:.4f}")
+    _kv(lines, "50th Percentile", f"{report.mc_sharpe_50th:.4f}")
+    _kv(lines, "95th Percentile", f"{report.mc_sharpe_95th:.4f}")
+    _h3(lines, "Deflated Sharpe Ratio")
+    _kv(lines, "DSR (In-Sample)", f"{report.deflated_sharpe:.4f}")
+    _kv(lines, "DSR (Holdout)", f"{report.holdout_deflated_sharpe:.4f}")
+    _kv(lines, "Effective Trials", str(report.effective_trials))
+    _h3(lines, "Regime Stress Tests")
+    _kv(lines, "Passed", str(report.regime_passed))
+    if report.regime_drawdowns:
+        lines.append("")
+        lines.append("| Regime | Max Drawdown |")
+        lines.append("|--------|-------------|")
+        for regime, dd in report.regime_drawdowns.items():
+            lines.append(f"| {regime} | {dd * 100:.2f}% |")
+
+
+def _add_walk_forward_section(lines: list[str], report: EvaluationReport) -> None:
+    """Add walk-forward windows section."""
+    _h2(lines, "Walk-Forward Windows")
+    if report.walk_forward_metrics:
+        lines.append("")
+        lines.append("| Window | Sharpe | Max DD | Turnover |")
+        lines.append("|--------|--------|--------|----------|")
+        for i, w in enumerate(report.walk_forward_metrics, 1):
+            lines.append(
+                f"| WF-{i} ({w.start_date} - {w.end_date}) "
+                f"| {w.sharpe_ratio:.3f} "
+                f"| {w.max_drawdown * 100:.2f}% "
+                f"| {w.turnover:.2f}x |"
+            )
+
+
+def _add_benchmark_section(lines: list[str], report: EvaluationReport) -> None:
+    """Add benchmark comparison section."""
+    _h2(lines, "Benchmark Comparison")
+    bench_is = report.benchmark_in_sample_metrics
+    bench_ho = report.benchmark_holdout_metrics
+    if bench_is is not None and bench_ho is not None:
+        ticker = report.benchmark_ticker
+        lines.append("")
+        _window_table(lines, report.in_sample_metrics, "Strategy (IS)")
+        _window_table(lines, bench_is, f"{ticker} (IS)")
+        lines.append("")
+        _window_table(lines, report.holdout_metrics, "Strategy (HO)")
+        _window_table(lines, bench_ho, f"{ticker} (HO)")
+        strat_ho_ret = report.holdout_metrics.annualized_return
+        bench_ho_ret = bench_ho.annualized_return
+        excess = strat_ho_ret - bench_ho_ret
+        lines.append("")
+        _kv(lines, f"Active Return ({ticker})", f"{excess * 100:+.2f}%")
+        excess_vol = (report.holdout_metrics.annualized_volatility - bench_ho.annualized_volatility) * 100
+        _kv(lines, "Excess Volatility", f"{excess_vol:+.2f}%")
+        ho_ir = report.holdout_metrics.information_ratio
+        ho_ir_str = f"{ho_ir:+.4f}" if ho_ir is not None else "N/A"
+        _kv(lines, "Information Ratio (HO)", ho_ir_str)
+        if bench_is.information_ratio is None:
+            lines.append("- *Benchmark IR shown as 0.0 — computed against itself, not meaningful.*")
+    else:
+        lines.append("")
+        lines.append("*(Benchmark performance data not available — re-run evaluation with benchmark price data.)*")
+        lines.append("")
+
+
+def _add_failure_summary_section(lines: list[str], failure_summary: dict[str, Any]) -> None:
+    """Add failure summary section."""
+    _h2(lines, "Failure Summary")
+    if failure_summary:
+        lines.append("")
+        _render_failure_summary_table(lines, failure_summary)
+    else:
+        lines.append("No failures recorded (events.jsonl not found or empty).")
+        lines.append("")
+
+
+def _embed_chart(lines: list[str], output_dir: Path, filename: str, title: str, fallback: str) -> None:
+    """Embed a chart PNG if it exists, otherwise show fallback text."""
+    _h2(lines, title)
+    lines.append("")
+    chart_path = output_dir / filename
+    if chart_path.exists():
+        lines.append(f"![{title}]({filename})")
+    else:
+        lines.append(f"*({fallback})*")
+    lines.append("")
 
 
 def compile_strategy_report(
@@ -419,103 +528,19 @@ def compile_strategy_report(
     lines.append("> " + program_text.strip().replace("\n", "\n> "))
     lines.append("")
 
-    _h2(lines, "Robustness Diagnostics")
-    _h3(lines, "In-Sample Metrics")
-    _window_table(lines, final_report.in_sample_metrics, "In-Sample")
-    _h3(lines, "Holdout Metrics")
-    _window_table(lines, final_report.holdout_metrics, "Holdout")
-    _h3(lines, "Monte Carlo Bootstrap (Sharpe)")
-    _kv(lines, "5th Percentile", f"{final_report.mc_sharpe_5th:.4f}")
-    _kv(lines, "50th Percentile", f"{final_report.mc_sharpe_50th:.4f}")
-    _kv(lines, "95th Percentile", f"{final_report.mc_sharpe_95th:.4f}")
-    _h3(lines, "Deflated Sharpe Ratio")
-    _kv(lines, "DSR (In-Sample)", f"{final_report.deflated_sharpe:.4f}")
-    _kv(lines, "DSR (Holdout)", f"{final_report.holdout_deflated_sharpe:.4f}")
-    _kv(lines, "Effective Trials", str(final_report.effective_trials))
-    _h3(lines, "Regime Stress Tests")
-    _kv(lines, "Passed", str(final_report.regime_passed))
-    if final_report.regime_drawdowns:
-        lines.append("")
-        lines.append("| Regime | Max Drawdown |")
-        lines.append("|--------|-------------|")
-        for regime, dd in final_report.regime_drawdowns.items():
-            lines.append(f"| {regime} | {dd * 100:.2f}% |")
+    _add_robustness_section(lines, final_report)
 
-    _h2(lines, "Walk-Forward Windows")
-    if final_report.walk_forward_metrics:
-        lines.append("")
-        lines.append("| Window | Sharpe | Max DD | Turnover |")
-        lines.append("|--------|--------|--------|----------|")
-        for i, w in enumerate(final_report.walk_forward_metrics, 1):
-            lines.append(
-                f"| WF-{i} ({w.start_date} - {w.end_date}) "
-                f"| {w.sharpe_ratio:.3f} "
-                f"| {w.max_drawdown * 100:.2f}% "
-                f"| {w.turnover:.2f}x |"
-            )
+    _add_walk_forward_section(lines, final_report)
 
-    _h2(lines, "Benchmark Comparison")
-    bench_is = final_report.benchmark_in_sample_metrics
-    bench_ho = final_report.benchmark_holdout_metrics
-    if bench_is is not None and bench_ho is not None:
-        ticker = final_report.benchmark_ticker
-        lines.append("")
-        _window_table(lines, final_report.in_sample_metrics, "Strategy (IS)")
-        _window_table(lines, bench_is, f"{ticker} (IS)")
-        lines.append("")
-        _window_table(lines, final_report.holdout_metrics, "Strategy (HO)")
-        _window_table(lines, bench_ho, f"{ticker} (HO)")
-        strat_ho_ret = final_report.holdout_metrics.annualized_return
-        bench_ho_ret = bench_ho.annualized_return
-        excess = strat_ho_ret - bench_ho_ret
-        lines.append("")
-        _kv(lines, f"Active Return ({ticker})", f"{excess * 100:+.2f}%")
-        excess_vol = (final_report.holdout_metrics.annualized_volatility - bench_ho.annualized_volatility) * 100
-        _kv(lines, "Excess Volatility", f"{excess_vol:+.2f}%")
-        ho_ir = final_report.holdout_metrics.information_ratio
-        ho_ir_str = f"{ho_ir:+.4f}" if ho_ir is not None else "N/A"
-        _kv(lines, "Information Ratio (HO)", ho_ir_str)
-        if bench_is.information_ratio is None:
-            lines.append("- *Benchmark IR shown as 0.0 — computed against itself, not meaningful.*")
-    else:
-        lines.append("")
-        lines.append("*(Benchmark performance data not available — re-run evaluation with benchmark price data.)*")
-        lines.append("")
+    _add_benchmark_section(lines, final_report)
 
-    _h2(lines, "Failure Summary")
-    if failure_summary:
-        lines.append("")
-        _render_failure_summary_table(lines, failure_summary)
-    else:
-        lines.append("No failures recorded (events.jsonl not found or empty).")
-        lines.append("")
+    _add_failure_summary_section(lines, failure_summary)
 
-    _h2(lines, "Equity Curves")
-    lines.append("")
-    png_path = output_dir / "equity_curves.png"
-    if png_path.exists():
-        lines.append("![equity_curves](equity_curves.png)")
-    else:
-        lines.append("*(Chart not generated)*")
-    lines.append("")
-
-    _h2(lines, "Monte Carlo Distribution")
-    lines.append("")
-    mc_path = output_dir / "mc_histogram.png"
-    if mc_path.exists():
-        lines.append("![mc_histogram](mc_histogram.png)")
-    else:
-        lines.append("*(MC histogram not available)*")
-    lines.append("")
-
-    _h2(lines, "Walk-Forward Metrics")
-    lines.append("")
-    wf_path = output_dir / "walk_forward_bars.png"
-    if wf_path.exists():
-        lines.append("![walk_forward_bars](walk_forward_bars.png)")
-    else:
-        lines.append("*(Walk-forward bar chart not available)*")
-    lines.append("")
+    _embed_chart(lines, output_dir, "equity_curves.png", "Equity Curves", "Chart not generated")
+    _embed_chart(lines, output_dir, "mc_histogram.png", "Monte Carlo Distribution", "MC histogram not available")
+    _embed_chart(
+        lines, output_dir, "walk_forward_bars.png", "Walk-Forward Metrics", "Walk-forward bar chart not available"
+    )
 
     _h2(lines, "Final Source Code")
     lines.append("```python")

@@ -32,7 +32,7 @@ def run_block_bootstrap(
         n_paths: Number of bootstrap paths.
         block_size: Size of contiguous return blocks in days (or expected block size for stationary).
         seed: Seed for random number generator.
-        method: Bootstrap method ("circular" or "stationary").
+        method: Bootstrap method ``"circular"`` (default) or ``"stationary"``.
 
     Returns:
         tuple: (5th_percentile_sharpe, 50th_percentile_sharpe, 95th_percentile_sharpe, all_sharpes)
