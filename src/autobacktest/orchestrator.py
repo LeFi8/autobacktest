@@ -357,6 +357,19 @@ class _OptimizationState:
                 f"(Sharpe {self.incumbent.observed_sharpe:.3f}).[/]"
             )
 
+        if self.config_obj.metric_floor is not None:
+            base_val = _get_metric_value(self.incumbent, self.target_metric)
+            if base_val < self.config_obj.metric_floor:
+                logger.warning(
+                    "metric_floor (%.2f) exceeds baseline %s (%.2f). "
+                    "All candidates with %s below %.2f will be rejected.",
+                    self.config_obj.metric_floor,
+                    self.target_metric.value,
+                    base_val,
+                    self.target_metric.value,
+                    self.config_obj.metric_floor,
+                )
+
     def _resume_incumbent(self) -> None:
         rows = (
             self.ledger._conn()

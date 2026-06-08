@@ -148,14 +148,16 @@ def select(
     Returns:
         GateResult: Decision outcome. The holdout is **never** consulted.
     """
-    dd_limit, turnover_limit, pbo_limit, min_improvement, min_return_ratio, require_dsr = _resolve_select_config(
-        config,
-        dd_limit,
-        turnover_limit,
-        pbo_limit,
-        min_improvement,
-        min_return_ratio,
-        require_dsr_non_degradation,
+    dd_limit, turnover_limit, pbo_limit, min_improvement, min_return_ratio, require_dsr, tradeoff, floor = (
+        _resolve_select_config(
+            config,
+            dd_limit,
+            turnover_limit,
+            pbo_limit,
+            min_improvement,
+            min_return_ratio,
+            require_dsr_non_degradation,
+        )
     )
 
     result = _check_hard_gates(report, dd_limit, turnover_limit, pbo_limit)
@@ -163,7 +165,7 @@ def select(
         return result
 
     result = _check_soft_gates(
-        report, baseline, target_metric, min_improvement, min_return_ratio, require_dsr, config=config
+        report, baseline, target_metric, min_improvement, min_return_ratio, require_dsr, tradeoff, floor
     )
     if not result.accepted:
         return result
@@ -179,7 +181,7 @@ def _resolve_select_config(
     min_improvement: float | None,
     min_return_ratio: float | None,
     require_dsr_non_degradation: bool | None,
-) -> tuple[float, float, float | None, float, float, bool]:
+) -> tuple[float, float, float | None, float, float, bool, float, float | None]:
     """Resolve select gate parameters from explicit args or config object."""
     dd_limit = dd_limit if dd_limit is not None else _get_config_val(config, "max_drawdown_limit", 0.20)
     turnover_limit = turnover_limit if turnover_limit is not None else _get_config_val(config, "turnover_limit", 2.0)
@@ -194,7 +196,9 @@ def _resolve_select_config(
         require_dsr = require_dsr_non_degradation
     else:
         require_dsr = _get_config_val(config, "require_dsr_non_degradation", True)
-    return dd_limit, turnover_limit, pbo_limit, min_improvement, min_return_ratio, require_dsr
+    tradeoff = _get_config_val(config, "metric_return_tradeoff", 0.0)
+    floor = _get_config_val(config, "metric_floor", None)
+    return dd_limit, turnover_limit, pbo_limit, min_improvement, min_return_ratio, require_dsr, tradeoff, floor
 
 
 def _check_hard_gates(
@@ -261,11 +265,14 @@ def _check_soft_gates(
     min_improvement: float,
     min_return_ratio: float,
     require_dsr: bool,
-    config: Any = None,
+    tradeoff_coeff: float = 0.0,
+    metric_floor: float | None = None,
 ) -> GateResult:
     """Check soft constraints: metric improvement, return floor, DSR non-degradation."""
     if baseline is not None:
-        result = _check_metric_improvement(report, baseline, target_metric, min_improvement, config=config)
+        result = _check_metric_improvement(
+            report, baseline, target_metric, min_improvement, tradeoff_coeff, metric_floor
+        )
         if not result.accepted:
             return result
 
@@ -286,7 +293,8 @@ def _check_metric_improvement(
     baseline: EvaluationReport,
     target_metric: TargetMetric,
     min_improvement: float,
-    config: Any = None,
+    tradeoff_coeff: float = 0.0,
+    metric_floor: float | None = None,
 ) -> GateResult:
     """Check candidate metric improves over baseline, incorporating trade-off and floor."""
     candidate_val = _get_in_sample_metric_val(report, target_metric)
@@ -295,23 +303,26 @@ def _check_metric_improvement(
     cand_ret = report.in_sample_metrics.annualized_return
     base_ret = baseline.in_sample_metrics.annualized_return
 
-    tradeoff_coeff = _get_config_val(config, "sharpe_return_tradeoff", 0.0)
-    metric_floor = _get_config_val(config, "min_metric_floor", None)
+    if tradeoff_coeff > 0.0 and (math.isnan(cand_ret) or math.isnan(base_ret)):
+        msg = f"Candidate or baseline annualized return is NaN while metric_return_tradeoff={tradeoff_coeff} is active."
+        report.is_accepted = False
+        report.rejection_reason = msg
+        return GateResult(accepted=False, reason=msg, failed_gate="target_metric_improvement")
 
     required_metric = baseline_val + min_improvement
     if tradeoff_coeff > 0.0:
-        required_metric -= tradeoff_coeff * (cand_ret - base_ret)
+        required_metric -= tradeoff_coeff * (cand_ret - base_ret) * 100
 
     is_below_hurdle = candidate_val <= required_metric
-    is_below_floor = metric_floor is not None and candidate_val < metric_floor
+    is_below_floor = metric_floor is not None and candidate_val <= metric_floor
 
     if math.isnan(candidate_val) or math.isnan(baseline_val) or is_below_hurdle or is_below_floor:
         if is_below_floor:
             msg = (
                 f"Candidate {target_metric.value} ({candidate_val:.4f}) is below the"
-                f" minimum required floor of {metric_floor:.4f}."
+                f" required floor of {metric_floor:.4f}."
             )
-            failed_gate = "min_metric_floor"
+            failed_gate = "metric_floor"
         else:
             msg = (
                 f"Candidate in-sample {target_metric.value} ({candidate_val:.4f}) does not "
