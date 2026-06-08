@@ -50,6 +50,18 @@ class StrategyConfig(BaseModel):
     dsr_floor: float | None = Field(
         None, description="Optional absolute DSR floor (unused by gate currently, reserved)"
     )
+    metric_return_tradeoff: float = Field(
+        0.0,
+        ge=0.0,
+        description="Maximum acceptable target metric reduction per 1pp (0.01) increase in annualized return. "
+        "Example: 0.1 reduces the required metric by 0.5 for a 5pp return improvement.",
+    )
+    metric_floor: float | None = Field(
+        None,
+        description="Absolute target-metric floor. Candidates below this value are always rejected. "
+        "Unit matches the configured target_metric (Sharpe, Sortino, or Information Ratio). "
+        "If the baseline value is already below this floor, a warning is emitted at setup time.",
+    )
 
     @field_validator("mc_bootstrap_method")
     @classmethod

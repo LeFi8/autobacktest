@@ -468,3 +468,121 @@ def test_gate_pbo_constraints() -> None:
     res_ordering = accept(rep_both_fail, baseline=None, turnover_limit=1.0, pbo_limit=0.5)
     assert not res_ordering.accepted
     assert res_ordering.failed_gate == "turnover"  # turnover comes first lexicographically
+
+
+def test_gate_hybrid_tradeoff() -> None:
+    """Verifies that the gate allows target metric degradation in exchange for return."""
+    base = _create_mock_report(sharpe=1.14, annualized_return=0.10)
+    cand = _create_mock_report(sharpe=0.70, annualized_return=0.15)
+
+    # 1. With no tradeoff configured -> Fails (standard strict check)
+    config_none = {"metric_return_tradeoff": 0.0}
+    res_none = accept(cand, baseline=base, config=config_none)
+    assert not res_none.accepted
+    assert res_none.failed_gate == "target_metric_improvement"
+
+    # 2. With tradeoff configured -> Passes (hurdle is 1.14 - 0.1 * 5pp * 100 = 0.64 < 0.70)
+    config_tradeoff = {"metric_return_tradeoff": 0.1}
+    res_tradeoff = accept(cand, baseline=base, config=config_tradeoff)
+    assert res_tradeoff.accepted
+
+
+def test_gate_hybrid_floor() -> None:
+    """Verifies that the hybrid gate enforces the absolute metric floor constraint."""
+    base = _create_mock_report(sharpe=1.14, annualized_return=0.10)
+    cand = _create_mock_report(sharpe=0.70, annualized_return=0.15)
+
+    # With tradeoff = 0.1 and floor = 0.80 -> Fails due to absolute floor breach
+    config_floor_fail = {"metric_return_tradeoff": 0.1, "metric_floor": 0.80}
+    res_floor_fail = accept(cand, baseline=base, config=config_floor_fail)
+    assert not res_floor_fail.accepted
+    assert res_floor_fail.failed_gate == "metric_floor"
+
+    # With tradeoff = 0.1 and floor = 0.60 -> Passes (floor is 0.60, hurdle is 0.64)
+    config_floor_pass = {"metric_return_tradeoff": 0.1, "metric_floor": 0.60}
+    res_floor_pass = accept(cand, baseline=base, config=config_floor_pass)
+    assert res_floor_pass.accepted
+
+
+def test_gate_tradeoff_negative_return_diff() -> None:
+    """Verifies tradeoff raises the hurdle when candidate returns are below baseline."""
+    base = _create_mock_report(sharpe=1.14, annualized_return=0.10)
+    cand = _create_mock_report(sharpe=0.80, annualized_return=0.08)
+
+    # hurdle = 1.14 + 0.0 - 0.1 * (-0.02) * 100 = 1.14 + 0.2 = 1.34
+    config = {"metric_return_tradeoff": 0.1}
+    res = accept(cand, baseline=base, config=config)
+    assert not res.accepted
+    assert res.failed_gate == "target_metric_improvement"
+
+
+def test_gate_tradeoff_nan_return() -> None:
+    """Verifies NaN annualized return is rejected when tradeoff is active."""
+    base = _create_mock_report(sharpe=1.0, annualized_return=0.15)
+    cand = _create_mock_report(sharpe=1.5, annualized_return=float("nan"))
+
+    config = {"metric_return_tradeoff": 0.1}
+    res = accept(cand, baseline=base, config=config)
+    assert not res.accepted
+    assert res.failed_gate == "target_metric_improvement"
+
+
+def test_gate_tradeoff_boundary_hurdle() -> None:
+    """Verifies candidate at exactly the hurdle value is rejected."""
+    base = _create_mock_report(sharpe=2.0, annualized_return=0.10)
+    cand = _create_mock_report(sharpe=1.50, annualized_return=0.11)
+
+    # hurdle = 2.0 + 0.0 - 0.5 * (0.11 - 0.10) * 100 = 2.0 - 0.5 = 1.50
+    config = {"metric_return_tradeoff": 0.5}
+    res = accept(cand, baseline=base, config=config)
+    assert not res.accepted
+    assert res.failed_gate == "target_metric_improvement"
+
+
+def test_gate_tradeoff_with_sortino() -> None:
+    """Verifies tradeoff works with non-Sharpe target metrics."""
+    base = _create_mock_report(sortino=2.0, annualized_return=0.10)
+    cand = _create_mock_report(sortino=1.20, annualized_return=0.15)
+
+    # No tradeoff -> Fails
+    res_none = accept(cand, baseline=base, target_metric=TargetMetric.SORTINO)
+    assert not res_none.accepted
+
+    # With tradeoff -> Passes (hurdle = 2.0 - 0.1 * 0.05 * 100 = 1.50, cand 1.20 < 1.50)
+    # Actually 1.20 < 1.50 so still fails. Let's use stronger tradeoff.
+    config = {"metric_return_tradeoff": 0.5}
+    res_trade = accept(cand, baseline=base, target_metric=TargetMetric.SORTINO, config=config)
+    assert res_trade.accepted
+
+
+def test_gate_floor_without_tradeoff() -> None:
+    """Verifies metric_floor is enforced independently of the tradeoff."""
+    base = _create_mock_report(sharpe=1.50, annualized_return=0.10)
+
+    # Candidate exceeds baseline but is below absolute floor -> rejected by floor
+    cand_fail = _create_mock_report(sharpe=1.55, annualized_return=0.12)
+    config_fail = {"metric_floor": 1.60}
+    res_fail = accept(cand_fail, baseline=base, config=config_fail)
+    assert not res_fail.accepted
+    assert res_fail.failed_gate == "metric_floor"
+
+    # Candidate exceeds both baseline and floor -> accepted
+    cand_pass = _create_mock_report(sharpe=1.70, annualized_return=0.12)
+    config_pass = {"metric_floor": 1.60}
+    res_pass = accept(cand_pass, baseline=base, config=config_pass)
+    assert res_pass.accepted
+
+
+def test_gate_tradeoff_default_parity() -> None:
+    """Verifies default params (tradeoff=0, floor=None) give identical behavior to pre-hybrid code."""
+    base = _create_mock_report(sharpe=1.2, annualized_return=0.10)
+    cand = _create_mock_report(sharpe=1.1, annualized_return=0.12)
+
+    res = accept(cand, baseline=base)
+    assert not res.accepted
+    assert res.failed_gate == "target_metric_improvement"
+
+    # Better candidate passes
+    cand2 = _create_mock_report(sharpe=1.3, annualized_return=0.08)
+    res2 = accept(cand2, baseline=base)
+    assert res2.accepted

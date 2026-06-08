@@ -175,9 +175,14 @@ Defined in `strategy/config_schema.py:StrategyConfig`. Validated by Pydantic v2 
 | `holdout_min_improvement` | `float` | `0.0` | — | **confirm** | Tolerance for holdout DSR degradation |
 | `enable_holdout_confirmation` | `bool` | `True` | — | **confirm** | Enable/disable holdout gate entirely |
 | `dsr_floor` | `float\|None` | `None` | — | _reserved_ | Not currently used |
+| `metric_return_tradeoff` | `float` | `0.0` | ge=0.0 | **select (soft)** | Metric reduction tolerated per 1pp (0.01) increase in annualized return; `0.0` disables |
+| `metric_floor` | `float\|None` | `None` | — | **select (soft)** | Absolute target-metric floor; candidates below this are always rejected. Unit matches `target_metric` (Sharpe/Sortino/IR). |
 
 > [!TIP]
 > `select_min_return_ratio` — Lower to `0.25` if your goal is risk-adjusted improvement (Sharpe/Sortino) at the cost of some return. Keep at `0.5` if absolute return matters.
+
+> [!TIP]
+> **Hybrid gating** (`metric_return_tradeoff` + `metric_floor`) — Set `metric_return_tradeoff: 0.1` to allow the optimizer to accept a candidate whose Sharpe is 0.5 lower than baseline for a 5pp annualized return gain (0.1 × 5 = 0.5). Pair with `metric_floor: 0.5` to prevent unlimited drift; candidates falling below 0.5 are always rejected regardless of return improvement.
 
 ---
 
@@ -289,7 +294,7 @@ Called from `stress_testing.py` with `n_paths=1000`.
 | Regime stress tests passed | Hard | `REGIMES`, `MIN_TICKERS_FOR_REJECT` (regime.py) | 3 regimes | Yes |
 | Turnover ≤ limit | Hard | `turnover_limit` (YAML) | `2.0` | Yes |
 | PBO ≤ limit | Hard (opt) | `pbo_limit` (YAML) | `None` (disabled) | No |
-| Target metric improvement | Soft | `min_improvement` (YAML) + `TargetMetric` (CLI) | `0.0` | Only with baseline |
+| Target metric improvement (hybrid) | Soft | `min_improvement` + `metric_return_tradeoff` + `metric_floor` (YAML) | `0.0`, `0.0`, `None` | Only with baseline |
 | Return ≥ ratio × baseline | Soft | `select_min_return_ratio` (YAML) | `0.5` | Only with baseline |
 | DSR non-degradation | Soft | `require_dsr_non_degradation` (YAML) | `True` | Only with baseline |
 
@@ -396,6 +401,8 @@ Called from `stress_testing.py` with `n_paths=1000`.
 | `max_drawdown_limit` | YAML | `0.20` |
 | `mc_bootstrap_method` | YAML | `stationary` |
 | `min_improvement` | YAML | `0.0` |
+| `metric_floor` | YAML | `None` |
+| `metric_return_tradeoff` | YAML | `0.0` |
 | `momentum_lookback` | YAML | `12` |
 | `params` | YAML | `{}` |
 | `pbo_limit` | YAML | `None` |

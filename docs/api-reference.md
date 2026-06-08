@@ -303,6 +303,8 @@ Unified configuration validator inheriting from `pydantic.BaseModel` with ``extr
 | `holdout_min_improvement` | `float` | `0.0` | Tolerance for holdout DSR non-degradation |
 | `enable_holdout_confirmation` | `bool` | `True` | If True, select-passing candidates confirmed on holdout |
 | `dsr_floor` | `float\|None` | `None` | Optional absolute DSR floor (reserved) |
+| `metric_return_tradeoff` | `float` | `0.0` | Metric reduction tolerated per 1pp (0.01) increase in annualized return; `0.0` disables |
+| `metric_floor` | `float\|None` | `None` | Absolute target-metric floor below which candidates are always rejected; `None` disables |
 
 **Methods:**
 - `from_yaml(path: Path) -> StrategyConfig`: Parses YAML file and instantiates schema.
