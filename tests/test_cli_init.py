@@ -38,6 +38,8 @@ def test_init_strategy_basic_flow(tmp_path: Path) -> None:
                 "0.15",  # max drawdown
                 "1.5",  # turnover
                 "12",  # momentum lookback
+                "BIL",  # cash asset
+                "equal-weight",  # template
                 "n",  # advanced params? no
                 "n",  # custom params? no
             ]
@@ -63,7 +65,7 @@ def test_init_strategy_basic_flow(tmp_path: Path) -> None:
     assert cfg["max_drawdown_limit"] == 0.15
     assert cfg["turnover_limit"] == 1.5
     assert cfg["momentum_lookback"] == 12
-    assert cfg["params"] == {}
+    assert cfg["params"] == {"cash_asset": "BIL"}
 
     strategy_path = tmp_path / "strategies" / "test_momentum.py"
     assert strategy_path.exists()
@@ -124,6 +126,8 @@ def test_init_strategy_overwrite_flag(tmp_path: Path) -> None:
                 "0.20",  # drawdown
                 "2.0",  # turnover
                 "12",  # lookback
+                "BIL",  # cash asset
+                "equal-weight",  # template
                 "n",  # advanced params? no
                 "n",  # custom params? no
             ]
@@ -160,6 +164,8 @@ def test_init_strategy_invalid_drawdown(tmp_path: Path) -> None:
                 "0.20",  # valid drawdown
                 "2.0",  # turnover
                 "12",  # lookback
+                "BIL",  # cash asset
+                "equal-weight",  # template
                 "n",  # advanced params? no
                 "n",  # custom params? no
             ]
@@ -190,6 +196,8 @@ def test_init_strategy_custom_params(tmp_path: Path) -> None:
                 "0.20",  # drawdown
                 "2.0",  # turnover
                 "12",  # lookback
+                "BIL",  # cash asset
+                "equal-weight",  # template
                 "n",  # advanced params? no
                 "y",  # custom params? yes
                 "vol_span",  # param name
@@ -234,6 +242,8 @@ def test_init_strategy_reserved_key_rejected(tmp_path: Path) -> None:
                 "0.20",  # drawdown
                 "2.0",  # turnover
                 "12",  # lookback
+                "BIL",  # cash asset
+                "equal-weight",  # template
                 "n",  # advanced params? no
                 "y",  # custom params? yes
                 "universe",  # reserved key — should be rejected, then reprompt
@@ -275,6 +285,8 @@ def test_init_strategy_tz_aware_prices(tmp_path: Path) -> None:
                 "0.20",
                 "2.0",
                 "12",
+                "BIL",  # cash asset
+                "equal-weight",  # template
                 "n",  # advanced params? no
                 "n",  # custom params? no
             ]
@@ -329,6 +341,8 @@ def test_init_strategy_advanced_params(tmp_path: Path) -> None:
                 "0.20",  # drawdown
                 "2.0",  # turnover
                 "12",  # lookback
+                "BIL",  # cash asset
+                "equal-weight",  # template
                 "y",  # advanced params? yes
                 "50.0",  # borrow_cost_bps
                 "8",  # cscv_blocks
@@ -368,3 +382,275 @@ def test_init_strategy_advanced_params(tmp_path: Path) -> None:
 
     program_path = tmp_path / "program-advanced_params_test.md"
     assert program_path.exists()
+
+
+def test_init_strategy_silent_basic(tmp_path: Path) -> None:
+    """Silent mode (--universe) produces files without interactive prompts."""
+    (tmp_path / "strategies").mkdir()
+    (tmp_path / "configs").mkdir()
+
+    result = runner.invoke(
+        app,
+        [
+            "init-strategy",
+            "--name",
+            "silent_test",
+            "--universe",
+            "SPY,QQQ,BIL",
+        ],
+    )
+    assert result.exit_code == 0, f"Exit: {result.exit_code}, out: {result.output}"
+    assert "Success" in result.output
+    assert "?" not in result.output  # no interactive prompts
+
+    cfg_path = tmp_path / "configs" / "silent_test.yaml"
+    assert cfg_path.exists()
+
+    strat_path = tmp_path / "strategies" / "silent_test.py"
+    assert strat_path.exists()
+
+    prog_path = tmp_path / "program-silent_test.md"
+    assert prog_path.exists()
+
+
+def test_init_strategy_silent_all_flags(tmp_path: Path) -> None:
+    """Silent mode with all flags produces correct config values."""
+    (tmp_path / "strategies").mkdir()
+    (tmp_path / "configs").mkdir()
+
+    result = runner.invoke(
+        app,
+        [
+            "init-strategy",
+            "--name",
+            "full_test",
+            "--universe",
+            "A,B,C",
+            "--benchmark",
+            "QQQ",
+            "--drawdown",
+            "0.15",
+            "--turnover",
+            "1.5",
+            "--lookback",
+            "6",
+            "--template",
+            "equal-weight",
+            "--cash-asset",
+            "SHY",
+        ],
+    )
+    assert result.exit_code == 0, f"Exit: {result.exit_code}, out: {result.output}"
+
+    with (tmp_path / "configs" / "full_test.yaml").open() as f:
+        cfg = yaml.safe_load(f)
+    assert cfg["universe"] == ["A", "B", "C"]
+    assert cfg["benchmark"] == "QQQ"
+    assert cfg["max_drawdown_limit"] == 0.15
+    assert cfg["turnover_limit"] == 1.5
+    assert cfg["momentum_lookback"] == 6
+
+    assert "SHY" in result.output
+
+
+def test_init_strategy_template_momentum_rotation(tmp_path: Path) -> None:
+    """Momentum-rotation template produces different code and is valid."""
+    (tmp_path / "strategies").mkdir()
+    (tmp_path / "configs").mkdir()
+
+    result = runner.invoke(
+        app,
+        [
+            "init-strategy",
+            "--name",
+            "mom_test",
+            "--universe",
+            "SPY,QQQ,BIL",
+            "--template",
+            "momentum-rotation",
+        ],
+    )
+    assert result.exit_code == 0, f"Exit: {result.exit_code}, out: {result.output}"
+    assert "momentum-rotation" in result.output
+
+    content = (tmp_path / "strategies" / "mom_test.py").read_text()
+    assert "pct_change" in content  # momentum computation
+    assert "top_n" in content  # top-N selection
+
+
+def test_init_strategy_invalid_template(tmp_path: Path) -> None:
+    """An unknown template name produces an error."""
+    (tmp_path / "strategies").mkdir()
+    (tmp_path / "configs").mkdir()
+
+    result = runner.invoke(
+        app,
+        [
+            "init-strategy",
+            "--name",
+            "bad_tmpl",
+            "--universe",
+            "SPY",
+            "--template",
+            "bogus",
+        ],
+    )
+    assert result.exit_code == 1
+    assert "Unknown template" in result.output
+
+
+def test_init_strategy_name_normalization_warning(tmp_path: Path) -> None:
+    """Mixed-case strategy name triggers normalization warning."""
+    (tmp_path / "strategies").mkdir()
+    (tmp_path / "configs").mkdir()
+
+    result = runner.invoke(
+        app,
+        [
+            "init-strategy",
+            "--name",
+            "GTAA13",
+            "--universe",
+            "SPY,QQQ,BIL",
+        ],
+    )
+    assert result.exit_code == 0
+    assert "normalized" in result.output
+    assert "gtaa13" in result.output
+
+
+def test_init_strategy_name_no_warning(tmp_path: Path) -> None:
+    """Already-normal name produces no warning."""
+    (tmp_path / "strategies").mkdir()
+    (tmp_path / "configs").mkdir()
+
+    result = runner.invoke(
+        app,
+        [
+            "init-strategy",
+            "--name",
+            "gtaa13",
+            "--universe",
+            "SPY,QQQ,BIL",
+        ],
+    )
+    assert result.exit_code == 0
+    assert "normalized" not in result.output.lower()
+
+
+def test_init_strategy_template_executes_equal_weight(tmp_path: Path) -> None:
+    """Generated equal-weight template executes against synthetic prices."""
+    (tmp_path / "strategies").mkdir()
+    (tmp_path / "configs").mkdir()
+
+    runner.invoke(
+        app,
+        [
+            "init-strategy",
+            "--name",
+            "ew_exec",
+            "--universe",
+            "SPY,QQQ,BIL",
+            "--template",
+            "equal-weight",
+        ],
+    )
+
+    import importlib.util
+
+    import numpy as np
+    import pandas as pd
+
+    spec = importlib.util.spec_from_file_location("ew_exec", tmp_path / "strategies" / "ew_exec.py")
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    dates = pd.date_range("2023-01-01", periods=500, freq="B", tz="US/Eastern")
+    rng = np.random.default_rng(42)
+    prices = pd.DataFrame(
+        {t: 100.0 * np.exp(np.cumsum(rng.normal(0.0002, 0.01, 500))) for t in ["SPY", "QQQ", "BIL"]},
+        index=dates,
+    )
+    config = {"universe": ["SPY", "QQQ", "BIL"], "params": {"cash_asset": "BIL"}}
+    weights = mod.generate_signals(prices, config)
+    assert not weights.empty
+    assert weights.shape[1] == 3
+
+
+def test_init_strategy_template_executes_momentum(tmp_path: Path) -> None:
+    """Generated momentum-rotation template executes against synthetic prices."""
+    (tmp_path / "strategies").mkdir()
+    (tmp_path / "configs").mkdir()
+
+    runner.invoke(
+        app,
+        [
+            "init-strategy",
+            "--name",
+            "mom_exec",
+            "--universe",
+            "SPY,QQQ,BIL",
+            "--template",
+            "momentum-rotation",
+        ],
+    )
+
+    import importlib.util
+
+    import numpy as np
+    import pandas as pd
+
+    spec = importlib.util.spec_from_file_location("mom_exec", tmp_path / "strategies" / "mom_exec.py")
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    dates = pd.date_range("2023-01-01", periods=500, freq="B", tz="US/Eastern")
+    rng = np.random.default_rng(42)
+    prices = pd.DataFrame(
+        {t: 100.0 * np.exp(np.cumsum(rng.normal(0.0002, 0.01, 500))) for t in ["SPY", "QQQ", "BIL"]},
+        index=dates,
+    )
+    config = {"universe": ["SPY", "QQQ", "BIL"], "params": {"cash_asset": "BIL"}}
+    weights = mod.generate_signals(prices, config)
+    assert not weights.empty
+    assert weights.shape[1] == 3
+
+
+def test_init_strategy_end_summary(tmp_path: Path) -> None:
+    """End summary displays key settings."""
+    (tmp_path / "strategies").mkdir()
+    (tmp_path / "configs").mkdir()
+
+    result = runner.invoke(
+        app,
+        [
+            "init-strategy",
+            "--name",
+            "summary_test",
+            "--universe",
+            "SPY,QQQ",
+            "--benchmark",
+            "SPY",
+            "--drawdown",
+            "0.10",
+            "--turnover",
+            "3.0",
+            "--lookback",
+            "6",
+            "--template",
+            "equal-weight",
+            "--cash-asset",
+            "BIL",
+        ],
+    )
+    assert result.exit_code == 0
+    assert "Template:" in result.output
+    assert "Universe:" in result.output
+    assert "Benchmark:" in result.output
+    assert "Cash Asset:" in result.output
+    assert "Max DD:" in result.output
+    assert "Turnover:" in result.output
+    assert "Lookback:" in result.output
+    assert "Files:" in result.output

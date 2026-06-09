@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 
 from autobacktest.evaluator.regime import evaluate_stress_regimes
-from strategies.haa import generate_signals
+from tmp.haa import generate_signals
 
 
 def test_regime_ends_in_low_exposure() -> None:

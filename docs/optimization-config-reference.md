@@ -13,7 +13,7 @@ graph TB
     subgraph "Config Sources"
         CLI[CLI Flags<br/>run --iterations 5]
         ENV[.env / Env Vars<br/>AUTOBACKTEST_*]
-        YAML[Strategy YAML<br/>configs/haa.yaml]
+        YAML[Strategy YAML<br/>configs/equal_weight.yaml]
         CODE[Hardcoded Constants<br/>orchestrator.py, regime.py, ...]
     end
 

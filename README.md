@@ -38,7 +38,7 @@ Edit `.env` to set your API key and any backtest date windows.
 ```bash
 uv run autobacktest run \
   --program program.md \
-  --strategy haa \
+  --strategy equal_weight \
   --iterations 5
 ```
 
@@ -87,8 +87,7 @@ to `program-<name>.md` — files matching `program-*.md` are git-ignored by defa
 uv run autobacktest run --program program.md --strategy my_strategy --iterations 10
 ```
 
-See `strategies/haa.py` and `configs/haa.yaml` for a complete reference strategy
-(Hybrid Asset Allocation by Keller & Keuning).
+See `strategies/equal_weight.py` and `configs/equal_weight.yaml` for a complete reference strategy.
 
 ---
 

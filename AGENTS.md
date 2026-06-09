@@ -11,11 +11,11 @@ uv run pytest tests/test_gate.py -x -k "test_name"  # single test
 uv run ruff check .              # lint (line-length 120, target py312)
 uv run ruff format . --check     # formatter check
 uv run mypy src/                 # typecheck (--strict)
-uv run autobacktest run --program program.md --strategy haa --iterations 5
+uv run autobacktest run --program program.md --strategy equal_weight --iterations 5
 uv run autobacktest report       # leaderboard
-uv run autobacktest evaluate --strategy strategies/haa.py
+uv run autobacktest evaluate --strategy strategies/equal_weight.py
 uv run autobacktest spa          # Hansen's SPA test
-uv run autobacktest llm-test "Add momentum filter" --strategy haa
+uv run autobacktest llm-test "Add momentum filter" --strategy equal_weight
 uv run autobacktest init-strategy --name my_strategy
 ```
 
