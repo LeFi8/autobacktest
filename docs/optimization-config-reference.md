@@ -294,7 +294,7 @@ Called from `stress_testing.py` with `n_paths=1000`.
 | Regime stress tests passed | Hard | `REGIMES`, `MIN_TICKERS_FOR_REJECT` (regime.py) | 3 regimes | Yes |
 | Turnover ≤ limit | Hard | `turnover_limit` (YAML) | `2.0` | Yes |
 | PBO ≤ limit | Hard (opt) | `pbo_limit` (YAML) | `None` (disabled) | No |
-| Target metric improvement (hybrid) | Soft | `min_improvement` + `metric_return_tradeoff` + `metric_floor` (YAML) | `0.0`, `0.0`, `None` | Tradeoff needs baseline; ``metric_floor`` is unconditional |
+| Target metric improvement (hybrid) | Soft | `min_improvement` + `metric_return_tradeoff` + `metric_floor` (YAML) | `0.0`, `0.0`, `None` | Tradeoff needs baseline; `metric_floor` is unconditional |
 | Return ≥ ratio × baseline | Soft | `select_min_return_ratio` (YAML) | `0.5` | Only with baseline |
 | DSR non-degradation | Soft | `require_dsr_non_degradation` (YAML) | `True` | Only with baseline |
 
