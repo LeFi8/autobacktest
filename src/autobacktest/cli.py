@@ -18,6 +18,7 @@ from autobacktest.commands.reset import reset_impl
 from autobacktest.commands.run import register_command as register_run
 from autobacktest.commands.spa import register_command as register_spa
 from autobacktest.config import settings
+from autobacktest.templates import TEMPLATE_REGISTRY
 
 app = typer.Typer(
     name="autobacktest",
@@ -47,9 +48,64 @@ def init_strategy(
         "--overwrite",
         help="Overwrite existing strategy/config files without prompting.",
     ),
+    universe: str | None = typer.Option(
+        None,
+        "--universe",
+        "-u",
+        help="Comma-separated asset tickers (e.g. SPY,TLT,GLD,BIL). "
+        "When provided, all prompts are skipped (silent mode).",
+    ),
+    benchmark: str = typer.Option(
+        "SPY",
+        "--benchmark",
+        "--bench",
+        help="Benchmark index ticker.",
+    ),
+    max_drawdown: float = typer.Option(
+        0.20,
+        "--drawdown",
+        "--mdd",
+        help="Maximum drawdown limit (0.0 to 1.0).",
+    ),
+    turnover: float = typer.Option(
+        2.0,
+        "--turnover",
+        help="Annualized turnover limit.",
+    ),
+    lookback: int = typer.Option(
+        12,
+        "--lookback",
+        "--mom-lookback",
+        help="Momentum lookback window in months.",
+    ),
+    template: str = typer.Option(
+        "equal-weight",
+        "--template",
+        help=f"Strategy template: {', '.join(sorted(TEMPLATE_REGISTRY))}.",
+    ),
+    cash_asset: str = typer.Option(
+        "BIL",
+        "--cash-asset",
+        help="Cash/risk-free asset ticker.",
+    ),
 ) -> None:
-    """Interactively set up a new backtesting strategy config and boilerplate code."""
-    init_strategy_impl(name, overwrite, settings_obj=settings)
+    """Scaffold a new strategy with Pydantic-validated boilerplate code.
+
+    When --universe is provided, runs in silent (non-interactive) mode.
+    All other options can be mixed: omitted values use their defaults.
+    """
+    init_strategy_impl(
+        name=name,
+        overwrite=overwrite,
+        silent_universe=universe,
+        silent_benchmark=benchmark,
+        silent_max_drawdown=max_drawdown,
+        silent_turnover=turnover,
+        silent_lookback=lookback,
+        silent_template=template,
+        silent_cash_asset=cash_asset,
+        settings_obj=settings,
+    )
 
 
 @app.command()
@@ -66,7 +122,7 @@ def reset(
         help="Path to runs directory to be deleted.",
     ),
 ) -> None:
-    """Restore strategy baseline files, clear lessons, and delete the runs directory."""
+    """Restore strategy baseline files and delete the runs directory."""
     from autobacktest.ledger.git_ops import GitLedger
 
     reset_impl(
@@ -74,7 +130,6 @@ def reset(
         run_dir=run_dir,
         path_class=Path,
         git_ledger_class=GitLedger,
-        settings_obj=settings,
     )
 
 

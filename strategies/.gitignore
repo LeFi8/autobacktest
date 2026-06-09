@@ -1,0 +1,6 @@
+# Ignore all other strategies
+*
+
+# Templates
+!equal_weight.py
+!momentum_rotation.py

@@ -82,13 +82,74 @@ Test whether a prompt produces a valid strategy edit against preflight checks:
 ```bash
 uv run autobacktest llm-test \
   "Add a momentum filter that only selects assets with positive 6-month return" \
-  --strategy haa
+  --strategy equal_weight
 ```
 
 ### 6. Interactive Strategy Scaffolding
-Generate a new strategy with Pydantic-validated boilerplate:
+Generate a new strategy with Pydantic-validated boilerplate. By default the command
+runs an interactive wizard that asks for universe, benchmark, risk limits, and template:
+
 ```bash
 uv run autobacktest init-strategy --name my_strategy
+```
+
+#### Silent (Non-Interactive) Mode
+When ``--universe`` is provided, all prompts are skipped — unspecified values use their
+defaults.  This is ideal for scripting or CI:
+
+```bash
+uv run autobacktest init-strategy \
+    --name GTAA13 \
+    --universe SPY,TLT,GLD,BIL \
+    --benchmark SPY \
+    --drawdown 0.20 \
+    --turnover 2.0 \
+    --lookback 12 \
+    --template momentum-rotation \
+    --cash-asset BIL
+```
+
+#### CLI Flags
+
+| Flag | Default | Description |
+|---|---|---|
+| ``--name`` / ``-n`` | _prompts_ | Strategy name (snake\_case). Required. |
+| ``--universe`` / ``-u`` | _prompts_ | Comma-separated tickers (e.g. ``SPY,TLT,GLD,BIL``). **Triggers silent mode.** |
+| ``--benchmark`` / ``--bench`` | ``SPY`` | Benchmark index ticker. |
+| ``--drawdown`` / ``--mdd`` | ``0.20`` | Max drawdown limit (0.0–1.0). |
+| ``--turnover`` | ``2.0`` | Annualized turnover limit. |
+| ``--lookback`` / ``--mom-lookback`` | ``12`` | Momentum lookback in months. |
+| ``--template`` | ``equal-weight`` | Strategy template: ``equal-weight`` or ``momentum-rotation``. |
+| ``--cash-asset`` | ``BIL`` | Cash/risk-free asset ticker. |
+| ``--overwrite`` | ``False`` | Overwrite existing files without prompting. |
+
+#### Strategy Templates
+
+The ``--template`` flag selects the generated boilerplate:
+
+- **``equal-weight``** (default): Allocates ``1/N`` of capital to each universe asset on each
+  rebalance date.  Simplest starting point.
+- **``momentum-rotation``**: Ranks assets by trailing return over the momentum lookback
+  period, selects the top ``N`` (configurable via ``params.top_n``), and allocates equally.
+  Falls back to 100 % cash when no asset has positive momentum.
+
+#### Generated Files
+
+Three files are created:
+
+| File | Purpose |
+|---|---|
+| ``configs/{name}.yaml`` | Full Pydantic-validated strategy configuration |
+| ``strategies/{name}.py`` | Runnable signal-generation code (edit to implement your logic) |
+| ``program-{name}.md`` | LLM objective / constraints document for optimization |
+
+The generated code is a **starting point** — edit ``strategies/{name}.py`` to implement
+your custom signal logic before running the optimization loop.
+
+#### Run the Optimization Loop
+
+```bash
+uv run autobacktest run --program program-{name}.md --strategy {name} --iterations 5
 ```
 
 ### 7. Hansen's SPA Test

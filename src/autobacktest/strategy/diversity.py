@@ -27,7 +27,7 @@ KNOWN_RANGES: dict[str, tuple[float, float]] = {
     "min_canary_period": (1.0, 36.0),
     "offensive_rebalance_months": (1.0, 12.0),
     "max_drawdown_limit": (0.0, 0.5),
-    "turnover_limit": (0.1, 10.0),
+    "turnover_limit": (0.1, 50.0),
     "metric_return_tradeoff": (0.0, 5.0),
     "metric_floor": (0.0, 5.0),
 }
@@ -334,7 +334,7 @@ def max_config_similarity(
 def check_returns_correlation(
     candidate_returns: pd.Series,
     historical_returns_matrix: pd.DataFrame,
-    threshold: float = 0.90,
+    threshold: float = 0.95,
     min_overlap_days: int = 60,
 ) -> tuple[bool, float]:
     """Check whether *candidate_returns* is too highly correlated with any column in *historical_returns_matrix*.
@@ -347,7 +347,7 @@ def check_returns_correlation(
         candidate_returns: Daily net returns of the current strategy candidate.
         historical_returns_matrix: Each column is the return series of a
             past attempt (aligned by date).
-        threshold: Maximum allowed Pearson correlation (default 0.90).
+        threshold: Maximum allowed Pearson correlation (default 0.95).
         min_overlap_days: Minimum overlapping trading days required to
             compute a meaningful correlation (default 60).
 

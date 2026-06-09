@@ -16,6 +16,9 @@ from autobacktest.strategy.validator import preflight
 
 logger = logging.getLogger(__name__)
 
+# Diversity directives cycled across parallel candidates in explore mode.
+# Each candidate receives a different directive to encourage structurally
+# distinct mutations.  Assigned via index % len(CANDIDATE_DIRECTIVES).
 CANDIDATE_DIRECTIVES = [
     "structurally change the signal-generation logic",
     "explore an untried parameter region far from explored values",

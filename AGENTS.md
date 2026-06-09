@@ -11,11 +11,11 @@ uv run pytest tests/test_gate.py -x -k "test_name"  # single test
 uv run ruff check .              # lint (line-length 120, target py312)
 uv run ruff format . --check     # formatter check
 uv run mypy src/                 # typecheck (--strict)
-uv run autobacktest run --program program.md --strategy haa --iterations 5
+uv run autobacktest run --program program.md --strategy equal_weight --iterations 5
 uv run autobacktest report       # leaderboard
-uv run autobacktest evaluate --strategy strategies/haa.py
+uv run autobacktest evaluate --strategy strategies/equal_weight.py
 uv run autobacktest spa          # Hansen's SPA test
-uv run autobacktest llm-test "Add momentum filter" --strategy haa
+uv run autobacktest llm-test "Add momentum filter" --strategy equal_weight
 uv run autobacktest init-strategy --name my_strategy
 ```
 
@@ -40,13 +40,13 @@ No `.pre-commit-config.yaml` exists — skip `pre-commit install`.
 | File | Purpose |
 |---|---|
 | `program.md` | LLM objective + constraints (must have `# Objective` and `# Constraints` H1) |
-| `lessons.md` | LLM-curated memory (4096 token cap ~16k chars) |
+| `runs/lessons.db` | SQLite-backed LLM lesson store (replaces flat `lessons.md`) |
 | `strategies/<name>.py` | Strategy signal code |
 | `configs/<name>.yaml` | Strategy parameters (Pydantic-validated) |
 | `.antigravity/` | Removed from repo — local IDE/agent config (git-ignored) |
 | `docs/` | Comprehensive docs: architecture, API reference, setup, ADRs (`docs/adrs/`) |
 | `src/autobacktest/optimization/` | Candidate gen, eval mgmt, ledger persistence helpers |
-| `src/autobacktest/commands/` | CLI subcommand implementations (8 commands) |
+| `src/autobacktest/commands/` | CLI subcommand implementations (7 subcommands, 8 files) |
 | `src/autobacktest/strategy/ast_linter.py` | AST-based static validation (imports, complexity, undefined names) |
 | `src/autobacktest/strategy/sandbox_runner.py` | Sandboxed subprocess execution for smoke tests |
 | `src/autobacktest/evaluator/engine.py` | Vectorized window execution, caching, dataset hashing |

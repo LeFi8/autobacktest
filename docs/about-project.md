@@ -32,7 +32,7 @@ graph TD
 ```
 
 ### Detailed Flow Steps
-1. **Initiate Loop**: User defines constraints (e.g. max drawdown limit, maximum turnover, benchmark) in a configuration file and target strategy (`strategies/haa.py`).
+1. **Initiate Loop**: User defines constraints (e.g. max drawdown limit, maximum turnover, benchmark) in a configuration file and target strategy (`strategies/equal_weight.py`).
 2. **Multi-Candidate Generation**: The orchestrator requests **3 candidate edits in parallel** from the LLM, each containing proposed code changes, a YAML config, and updated lessons text. Candidates are deduplicated by the LessonStore (SQLite-backed, keyed by `(strategy, type, body_hash)`).
 3. **Pre-Flight Verification** (per candidate, 8 checks):
     - Path traversal security check.

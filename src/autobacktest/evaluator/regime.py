@@ -20,7 +20,18 @@ MIN_TICKERS_FOR_REJECT = 3  # only hard-reject when universe >= 3 tickers
 
 
 def calculate_max_drawdown(equity: pd.Series) -> float:
-    """Calculate the maximum drawdown from an equity curve series."""
+    """Calculate the maximum drawdown from an equity curve series as a fraction [0, 1].
+
+    Drawdown is measured as the peak-to-trough decline relative to the
+    running maximum.  An empty series returns 0.0.
+
+    Args:
+        equity: Cumulative equity curve (or portfolio value) indexed by date.
+
+    Returns:
+        Maximum drawdown as a float in [0, 1], where 0 means no drawdown
+        and 1 means complete loss from the prior peak.
+    """
     if equity.empty:
         return 0.0
     running_max = equity.cummax()

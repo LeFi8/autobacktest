@@ -22,7 +22,7 @@ class StrategyConfig(BaseModel):
     benchmark: str = Field("SPY", description="Benchmark index ticker")
     momentum_lookback: int = Field(12, ge=1, description="Momentum lookback window (months)")
     max_drawdown_limit: float = Field(0.20, ge=0.0, le=1.0, description="Max permitted drawdown")
-    turnover_limit: float = Field(2.0, gt=0.0, le=10.0, description="Max annualized turnover (capped at 10x)")
+    turnover_limit: float = Field(2.0, gt=0.0, description="Max annualized turnover")
     borrow_cost_bps: float = Field(100.0, ge=0.0, description="Annualized short borrowing cost in bps")
     cscv_blocks: int = Field(10, ge=4, description="Number of blocks to partition returns for CSCV PBO calculation")
     pbo_limit: float | None = Field(None, ge=0.0, le=1.0, description="PBO ceiling select gate limit")

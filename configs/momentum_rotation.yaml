@@ -1,0 +1,11 @@
+universe:
+- SPY
+- QQQ
+- BIL
+benchmark: SPY
+momentum_lookback: 12
+max_drawdown_limit: 0.20
+turnover_limit: 2.0
+params:
+  cash_asset: BIL
+  top_n: 3

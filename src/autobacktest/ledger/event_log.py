@@ -7,6 +7,7 @@ in the reporting module.
 
 from __future__ import annotations
 
+import contextlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,7 +29,12 @@ class EventLog:
     """
 
     def __init__(self, path: Path) -> None:
-        """Create parent dirs and open file for append."""
+        """Initialise the event log at *path*, creating parent directories as needed.
+
+        Args:
+            path: Filesystem path for the ``events.jsonl`` file.  Parent
+                directories are created automatically.
+        """
         path.parent.mkdir(parents=True, exist_ok=True)
         self._path = path
         self._file = path.open("a", encoding="utf-8")
@@ -39,6 +45,10 @@ class EventLog:
             record["timestamp"] = datetime.now(tz=timezone.utc).isoformat()  # noqa: UP017
         self._file.write(json.dumps(record) + "\n")
         self._file.flush()
+
+    def __del__(self) -> None:
+        with contextlib.suppress(Exception):
+            self.close()
 
     def close(self) -> None:
         """Close the underlying file handle. Safe to call multiple times."""

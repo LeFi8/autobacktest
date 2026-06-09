@@ -13,7 +13,7 @@ graph TB
     subgraph "Config Sources"
         CLI[CLI Flags<br/>run --iterations 5]
         ENV[.env / Env Vars<br/>AUTOBACKTEST_*]
-        YAML[Strategy YAML<br/>configs/haa.yaml]
+        YAML[Strategy YAML<br/>configs/equal_weight.yaml]
         CODE[Hardcoded Constants<br/>orchestrator.py, regime.py, ...]
     end
 
@@ -216,7 +216,7 @@ Used for min-max normalisation in config similarity fingerprinting:
 | `min_canary_period` | (1.0, 36.0) |
 | `offensive_rebalance_months` | (1.0, 12.0) |
 | `max_drawdown_limit` | (0.0, 0.5) |
-| `turnover_limit` | (0.1, 10.0) |
+| `turnover_limit` | (0.1, 50.0) |
 
 ### 6.2 Regime Stress Tests (`regime.py`)
 
@@ -267,7 +267,7 @@ Called from `stress_testing.py` with `n_paths=1000`.
 | Constant | Value | Purpose |
 |---|---|---|
 | `LEVERAGE_TOLERANCE` | `1e-5` | Max allowed weight sum excess above 1.0 |
-| `LEVERAGE_TOLERANCE` | `-1e-7` | Min allowed weight (long-only guard) |
+| `LONG_ONLY_FLOOR` | `-1e-7` | Min allowed weight (long-only guard) |
 
 ### 6.8 Forbidden Names (`constants.py`)
 

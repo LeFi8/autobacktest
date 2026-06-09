@@ -10,10 +10,13 @@ import yaml
 
 from autobacktest.config import settings as default_settings
 from autobacktest.strategy.config_schema import StrategyConfig
+from autobacktest.templates import TEMPLATE_REGISTRY, render_program_template, render_strategy_source
 
 
 def _validate_strategy_name(name: str | None) -> str:
     """Prompt for a strategy name if not provided and validate it as snake_case.
+
+    Prints a visible warning when the name is modified by normalization.
 
     Args:
         name: Candidate strategy name (may be ``None`` to trigger interactive prompt).
@@ -26,14 +29,25 @@ def _validate_strategy_name(name: str | None) -> str:
     """
     if not name:
         name = typer.prompt("Enter a unique name for your strategy (snake_case)")
-    strategy_name = re.sub(r"\s+", "_", name.strip().lower())
+
+    original = name.strip()
+    strategy_name = re.sub(r"\s+", "_", original.lower())
+
+    if strategy_name != original:
+        typer.secho(
+            f"Note: Strategy name '{original}' normalized to '{strategy_name}' (Python snake_case convention).",
+            fg=typer.colors.YELLOW,
+        )
+
     if not re.match(r"^[a-z_][a-z0-9_]*$", strategy_name):
         typer.echo("Error: Strategy name must be a valid snake_case Python identifier.")
         raise typer.Exit(code=1)
     return strategy_name
 
 
-def _confirm_files_overwrite(strategy_file: Any, config_file: Any, strategy_name: str, overwrite: bool) -> bool:
+def _confirm_files_overwrite(
+    strategy_file: Any, config_file: Any, program_file: Any, strategy_name: str, overwrite: bool
+) -> bool:
     """Return ``True`` when the operation should proceed, ``False`` when the user cancels.
 
     When files already exist and *overwrite* is ``False``, prompts the user interactively.
@@ -41,13 +55,14 @@ def _confirm_files_overwrite(strategy_file: Any, config_file: Any, strategy_name
     Args:
         strategy_file: ``Path`` to the ``.py`` strategy file.
         config_file: ``Path`` to the ``.yaml`` config file.
+        program_file: ``Path`` to the ``.md`` program file.
         strategy_name: Display name used in the confirmation prompt.
         overwrite: If ``True``, skip the prompt and proceed.
 
     Returns:
         bool: ``True`` if the caller should proceed, ``False`` to abort.
     """
-    if (strategy_file.exists() or config_file.exists()) and not overwrite:
+    if (strategy_file.exists() or config_file.exists() or program_file.exists()) and not overwrite:
         confirm = typer.confirm(
             f"Strategy files for '{strategy_name}' already exist. Overwrite?",
             default=False,
@@ -169,60 +184,210 @@ def _prompt_custom_params(reserved_keys: set[str]) -> dict[str, Any]:
     return custom_params
 
 
+def _prompt_advanced_config() -> dict[str, Any]:
+    """Interactively prompt for key ``StrategyConfig`` fields.
+
+    Gated behind a single yes/no prompt.  Fields that the user skips
+    (empty input for optional values) are omitted so the schema default
+    is used.
+
+    Returns:
+        dict[str, Any]: Advanced config keys to merge into the config data.
+    """
+    if not typer.confirm("Do you want to configure advanced strategy parameters?", default=False):
+        return {}
+
+    params: dict[str, Any] = {}
+
+    params["borrow_cost_bps"] = _prompt_valid_float(
+        "Annualized short borrowing cost (bps)",
+        "100.0",
+        0.0,
+        float("inf"),
+        "Error: Borrow cost must be >= 0.",
+    )
+
+    params["cscv_blocks"] = _prompt_valid_int(
+        "CSCV blocks for PBO calculation",
+        "10",
+        4,
+        "Error: CSCV blocks must be at least 4.",
+    )
+
+    pbo_raw = typer.prompt("PBO limit (press Enter for no limit)", default="").strip()
+    if pbo_raw:
+        try:
+            v = float(pbo_raw)
+            if 0.0 <= v <= 1.0:
+                params["pbo_limit"] = v
+            else:
+                typer.echo("Error: PBO limit must be between 0.0 and 1.0. Using no limit.")
+        except ValueError:
+            typer.echo("Error: Invalid number. Using no limit.")
+
+    if typer.confirm("Use adaptive slippage?", default=False):
+        params["adaptive_slippage"] = True
+
+    params["min_improvement"] = _prompt_valid_float(
+        "Minimum target-metric improvement epsilon",
+        "0.0",
+        0.0,
+        float("inf"),
+        "Error: Min improvement must be >= 0.",
+    )
+
+    params["select_min_return_ratio"] = _prompt_valid_float(
+        "Min fraction of baseline annualized return for select gate",
+        "0.5",
+        0.0,
+        1.0,
+        "Error: Must be between 0.0 and 1.0.",
+    )
+
+    params["require_dsr_non_degradation"] = typer.confirm("Require DSR non-degradation in select gate?", default=True)
+
+    while True:
+        method = typer.prompt("MC bootstrap method", default="stationary")
+        if method in ("circular", "stationary"):
+            params["mc_bootstrap_method"] = method
+            break
+        typer.echo("Error: Must be 'circular' or 'stationary'.")
+
+    return params
+
+
+def _print_end_summary(
+    strategy_name: str,
+    template: str,
+    config_data: dict[str, Any],
+    cash_asset: str,
+    config_file: Any,
+    strategy_file: Any,
+    program_file: Any,
+) -> None:
+    """Print a formatted summary after successful strategy initialization."""
+    typer.echo(f"\n[Success] Strategy '{strategy_name}' initialized!")
+    typer.echo(f"  Template:     {template}")
+    typer.echo(f"  Universe:     {', '.join(config_data.get('universe', []))}")
+    typer.echo(f"  Benchmark:    {config_data.get('benchmark', 'SPY')}")
+    typer.echo(f"  Cash Asset:   {cash_asset}")
+    typer.echo(f"  Max DD:       {config_data.get('max_drawdown_limit', 0.20) * 100:.0f}%")
+    typer.echo(f"  Turnover:     {config_data.get('turnover_limit', 2.0)}")
+    typer.echo(f"  Lookback:     {config_data.get('momentum_lookback', 12)} months")
+    typer.echo("  Files:")
+    typer.echo(f"    Config:     {config_file.resolve()}")
+    typer.echo(f"    Strategy:   {strategy_file.resolve()}")
+    typer.echo(f"    Program:    {program_file.resolve()}")
+
+
 def init_strategy_impl(
     name: str | None,
     overwrite: bool,
+    silent_universe: str | None = None,
+    silent_benchmark: str = "SPY",
+    silent_max_drawdown: float = 0.20,
+    silent_turnover: float = 2.0,
+    silent_lookback: int = 12,
+    silent_template: str = "equal-weight",
+    silent_cash_asset: str = "BIL",
     settings_obj: Any = default_settings,
 ) -> None:
-    """Interactively scaffold a new strategy with Pydantic-validated boilerplate.
+    """Scaffold a new strategy with Pydantic-validated boilerplate.
 
-    Prompts for universe tickers, benchmark, risk limits, and custom parameters,
-    generates validated ``configs/{name}.yaml`` and ``strategies/{name}.py`` files.
+    When *silent_universe* is provided the function runs in fully non-interactive
+    mode — no prompts are displayed and unspecified values use schema defaults.
+    When *silent_universe* is ``None`` the interactive wizard is shown (with any
+    other ``silent_*`` values pre-filling prompt defaults).
 
     Args:
         name: Strategy name in snake_case. Prompts interactively if ``None``.
         overwrite: Overwrite existing files without prompting.
+        silent_universe: Comma-separated tickers. When provided, triggers silent mode.
+        silent_benchmark: Benchmark ticker (default ``"SPY"``).
+        silent_max_drawdown: Max drawdown limit (default ``0.20``).
+        silent_turnover: Annualized turnover limit (default ``2.0``).
+        silent_lookback: Momentum lookback months (default ``12``).
+        silent_template: Strategy template key (default ``"equal-weight"``).
+        silent_cash_asset: Cash/risk-free asset ticker (default ``"BIL"``).
         settings_obj: Settings object (injected for testability).
     """
     strategy_name = _validate_strategy_name(name)
+    silent = silent_universe is not None
+
+    if silent_template not in TEMPLATE_REGISTRY:
+        valid = ", ".join(sorted(TEMPLATE_REGISTRY))
+        typer.echo(f"Error: Unknown template '{silent_template}'. Valid options: {valid}")
+        raise typer.Exit(code=1)
 
     strategies_dir = settings_obj.strategies_dir
     configs_dir = settings_obj.configs_dir
+    project_root = strategies_dir.parent
     strategy_file = strategies_dir / f"{strategy_name}.py"
     config_file = configs_dir / f"{strategy_name}.yaml"
+    program_file = project_root / f"program-{strategy_name}.md"
 
-    if not _confirm_files_overwrite(strategy_file, config_file, strategy_name, overwrite):
+    if not _confirm_files_overwrite(strategy_file, config_file, program_file, strategy_name, overwrite):
         raise typer.Exit(code=0)
 
-    typer.echo("\n--- Strategy Configuration Setup Wizard ---\n")
+    custom_params: dict[str, Any]
+    if silent:
+        assert silent_universe is not None
+        universe = [t.strip().upper() for t in silent_universe.split(",") if t.strip()]
+        if not universe:
+            typer.echo("Error: Universe must contain at least one asset ticker.")
+            raise typer.Exit(code=1)
+        benchmark = silent_benchmark.strip().upper()
+        mdd = silent_max_drawdown
+        turnover = silent_turnover
+        momentum_lookback = silent_lookback
+        template = silent_template
+        cash_asset = silent_cash_asset.strip().upper()
+        advanced_params: dict[str, Any] = {}
+        custom_params = {}
+    else:
+        typer.echo("\n--- Strategy Configuration Setup Wizard ---\n")
+        universe = _prompt_universe_tickers()
+        benchmark = typer.prompt("Enter benchmark asset ticker", default=silent_benchmark).strip().upper()
+        mdd = _prompt_valid_float(
+            "Max drawdown limit (0.0 to 1.0)",
+            str(silent_max_drawdown),
+            0.0,
+            1.0,
+            "Error: Drawdown limit must be between 0.0 and 1.0.",
+        )
+        turnover = _prompt_valid_float(
+            "Annualized turnover limit (e.g. 2.0)",
+            str(silent_turnover),
+            1e-9,
+            float("inf"),
+            "Error: Turnover limit must be greater than 0.0.",
+        )
+        momentum_lookback = _prompt_valid_int(
+            "Momentum score lookback window (months)",
+            str(silent_lookback),
+            1,
+            "Error: Momentum lookback must be at least 1.",
+        )
+        cash_asset = typer.prompt("Cash/risk-free asset ticker", default=silent_cash_asset).strip().upper()
+        template = (
+            typer.prompt(
+                "Strategy template",
+                default=silent_template,
+            )
+            .strip()
+            .lower()
+        )
+        if template not in TEMPLATE_REGISTRY:
+            valid = ", ".join(sorted(TEMPLATE_REGISTRY))
+            typer.echo(f"Error: Unknown template '{template}'. Valid options: {valid}")
+            raise typer.Exit(code=1)
+        advanced_params = _prompt_advanced_config()
+        reserved_keys = set(StrategyConfig.model_fields.keys()) - {"params"}
+        custom_params = {}
+        if typer.confirm("\nDo you want to define custom strategy parameters?", default=False):
+            custom_params = _prompt_custom_params(reserved_keys)
 
-    universe = _prompt_universe_tickers()
-    benchmark = typer.prompt("Enter benchmark asset ticker", default="SPY").strip().upper()
-    mdd = _prompt_valid_float(
-        "Max drawdown limit (0.0 to 1.0)",
-        "0.20",
-        0.0,
-        1.0,
-        "Error: Drawdown limit must be between 0.0 and 1.0.",
-    )
-    turnover = _prompt_valid_float(
-        "Annualized turnover limit (e.g. 2.0)",
-        "2.0",
-        1e-9,
-        float("inf"),
-        "Error: Turnover limit must be greater than 0.0.",
-    )
-    momentum_lookback = _prompt_valid_int(
-        "Momentum score lookback window (months)",
-        "12",
-        1,
-        "Error: Momentum lookback must be at least 1.",
-    )
-
-    reserved_keys = set(StrategyConfig.model_fields.keys()) - {"params"}
-    custom_params: dict[str, Any] = {}
-    if typer.confirm("\nDo you want to define custom strategy parameters?", default=False):
-        custom_params = _prompt_custom_params(reserved_keys)
+    custom_params["cash_asset"] = cash_asset
 
     try:
         config_data: dict[str, Any] = {
@@ -231,6 +396,7 @@ def init_strategy_impl(
             "momentum_lookback": momentum_lookback,
             "max_drawdown_limit": mdd,
             "turnover_limit": turnover,
+            **advanced_params,
             "params": custom_params,
         }
         validated_config = StrategyConfig(**config_data)
@@ -244,50 +410,14 @@ def init_strategy_impl(
     with config_file.open("w", encoding="utf-8") as f:
         yaml.safe_dump(validated_config.model_dump(), f, default_flow_style=False, sort_keys=False)
 
-    py_boilerplate = f'''"""{strategy_name} strategy — generated by autobacktest init-strategy."""
+    universe_str = ", ".join(universe)
 
-from typing import Any
+    py_source = render_strategy_source(strategy_name, cash_asset, template)
+    strategy_file.write_text(py_source, encoding="utf-8")
 
-import numpy as np
-import pandas as pd
+    program_md = render_program_template(
+        template, strategy_name, universe_str, benchmark, mdd, turnover, momentum_lookback
+    )
+    program_file.write_text(program_md, encoding="utf-8")
 
-
-def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFrame:
-    """Generate portfolio allocation weights.
-
-    Args:
-        prices: Daily close prices DataFrame (DatetimeIndex).
-        config: Strategy configuration dictionary.
-
-    Returns:
-        pd.DataFrame: Weights DataFrame indexed by rebalance dates.
-    """
-    universe = config.get("universe", [])
-    cash_asset = config.get("params", {{}}).get("cash_asset", "BIL")
-
-    if prices.empty:
-        return pd.DataFrame(0.0, index=pd.DatetimeIndex([]), columns=prices.columns)
-
-    available = set(prices.columns)
-    if cash_asset not in available:
-        raise ValueError(f"Cash asset {{cash_asset}} not in price data")
-
-    start = prices.index.min()
-    end = prices.index.max()
-    rebalance_dates = pd.date_range(start=start, end=end, freq="BME", tz=prices.index.tz).intersection(prices.index)
-    weights = pd.DataFrame(0.0, index=rebalance_dates, columns=prices.columns)
-
-    for date in rebalance_dates:
-        valid_assets = [t for t in universe if t in available]
-        if valid_assets:
-            w = 1.0 / len(valid_assets)
-            for asset in valid_assets:
-                weights.loc[date, asset] = w
-
-    return weights
-'''
-    strategy_file.write_text(py_boilerplate, encoding="utf-8")
-
-    typer.echo(f"\n[Success] Strategy '{strategy_name}' initialized!")
-    typer.echo(f"  Config:   {config_file.resolve()}")
-    typer.echo(f"  Strategy: {strategy_file.resolve()}")
+    _print_end_summary(strategy_name, template, config_data, cash_asset, config_file, strategy_file, program_file)
