@@ -169,7 +169,7 @@ autobacktest/
 ├── docs/               # Architecture, API reference, setup guides
 ├── runs/               # Run artifacts (git-ignored)
 ├── program.md          # LLM objective + constraints template
-├── lessons.md          # Auto-curated LLM memory
+├── runs/lessons.db     # SQLite-backed LLM lesson store
 └── .env.dist           # Environment template
 ```
 

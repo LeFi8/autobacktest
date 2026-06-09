@@ -562,7 +562,7 @@ def build_messages(
 Parse and filter the lessons markdown content for context-specific injection.
 ```python
 def parse_lessons(lessons_text: str) -> list[dict[str, str]]:
-    """Parse lessons.md content into dicts with keys: title, type, body."""
+    """Parse lesson markdown content into dicts with keys: title, type, body."""
 
 def filter_lessons(lessons_text: str, context_stage: str | None) -> str:
     """Filter lessons by type matching active stage (BUG, DIVERSITY, GATE_REJECTION)."""
@@ -825,8 +825,7 @@ def format_importance_lessons(importance: dict[str, dict[str, float]]) -> str:
 ## 13. Lessons Memory Store (`autobacktest.lessons`)
 
 ### `LessonStore`
-SQLite-backed deduplicated lesson store with per-strategy filtering. Replaces the flat `lessons.md` file.
-- `migrate_from_file(lessons_md_path: Path, strategy: str) -> int`: Imports entries from legacy `lessons.md` into the database.
+SQLite-backed deduplicated lesson store with per-strategy filtering.
 - `ingest_markdown(markdown_text: str, strategy: str)`: Parses markdown lessons and inserts deduplicated entries.
 - `get_filtered_markdown(strategy: str) -> str`: Renders stored lessons as markdown for LLM context.
 - `close()`: Closes the database connection.

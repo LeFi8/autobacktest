@@ -7,6 +7,7 @@ in the reporting module.
 
 from __future__ import annotations
 
+import contextlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -39,6 +40,10 @@ class EventLog:
             record["timestamp"] = datetime.now(tz=timezone.utc).isoformat()  # noqa: UP017
         self._file.write(json.dumps(record) + "\n")
         self._file.flush()
+
+    def __del__(self) -> None:
+        with contextlib.suppress(Exception):
+            self.close()
 
     def close(self) -> None:
         """Close the underlying file handle. Safe to call multiple times."""

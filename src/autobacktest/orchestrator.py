@@ -285,11 +285,6 @@ class _OptimizationState:
                 started_at=datetime.now(tz=UTC).isoformat(),
             )
 
-        lessons_md_path = self.git_ledger.repo_root / "lessons.md"
-        if lessons_md_path.exists():
-            n = self.lesson_store.migrate_from_file(lessons_md_path, self.strategy_name)
-            if n > 0:
-                logger.info("Migrated %d lessons from lessons.md to lessons.db", n)
         self.lessons_text = self.lesson_store.get_filtered_markdown(self.strategy_name)
 
         self._setup_incumbent(resume)

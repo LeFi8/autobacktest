@@ -144,8 +144,8 @@ Provides the abstract contract and concrete implementations for LLM-powered stra
 - `mock_provider.py`: Deterministic mock provider returning fixed edits for offline testing.
 
 ### 3. Lessons Memory (`lessons/`)
-Structured, deduplicated memory store replacing the flat `lessons.md` file.
-- `store.py`: `LessonStore` — SQLite-backed persistence with per-strategy filtering, deduplication by `(strategy, type, body_hash)`, and markdown import/export. Migrates legacy `lessons.md` on first use.
+Structured, deduplicated memory store.
+- `store.py`: `LessonStore` — SQLite-backed persistence with per-strategy filtering, deduplication by `(strategy, type, body_hash)`, and markdown import/export.
 
 ### 4. Data Provider (`data/`)
 Provides market data abstraction with Parquet caching.

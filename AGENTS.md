@@ -40,7 +40,7 @@ No `.pre-commit-config.yaml` exists — skip `pre-commit install`.
 | File | Purpose |
 |---|---|
 | `program.md` | LLM objective + constraints (must have `# Objective` and `# Constraints` H1) |
-| `lessons.md` | LLM-curated memory (4096 token cap ~16k chars) |
+| `runs/lessons.db` | SQLite-backed LLM lesson store (replaces flat `lessons.md`) |
 | `strategies/<name>.py` | Strategy signal code |
 | `configs/<name>.yaml` | Strategy parameters (Pydantic-validated) |
 | `.antigravity/` | Removed from repo — local IDE/agent config (git-ignored) |

@@ -66,7 +66,7 @@ def reset(
         help="Path to runs directory to be deleted.",
     ),
 ) -> None:
-    """Restore strategy baseline files, clear lessons, and delete the runs directory."""
+    """Restore strategy baseline files and delete the runs directory."""
     from autobacktest.ledger.git_ops import GitLedger
 
     reset_impl(
@@ -74,7 +74,6 @@ def reset(
         run_dir=run_dir,
         path_class=Path,
         git_ledger_class=GitLedger,
-        settings_obj=settings,
     )
 
 

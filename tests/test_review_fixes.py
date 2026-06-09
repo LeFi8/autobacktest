@@ -496,9 +496,7 @@ def test_db_schema_migration_and_custom_sorting(tmp_path: Path) -> None:
 
 
 def test_git_ledger_upgrades(tmp_path: Path) -> None:
-    """Verifies subdirectory safety, dynamic baseline branch checkout, and
-    lessons.md decoupled rollback in GitLedger.
-    """
+    """Verifies subdirectory safety and dynamic baseline branch checkout in GitLedger."""
     import git
 
     from autobacktest.ledger.git_ops import GitLedger
@@ -519,13 +517,11 @@ def test_git_ledger_upgrades(tmp_path: Path) -> None:
 
     strat_file = strat_dir / "test_strat.py"
     cfg_file = cfg_dir / "test_strat.yaml"
-    lessons_file = repo_dir / "lessons.md"
 
     strat_file.write_text("code v1", encoding="utf-8")
     cfg_file.write_text("config v1", encoding="utf-8")
-    lessons_file.write_text("lessons v1", encoding="utf-8")
 
-    repo.index.add([str(strat_file), str(cfg_file), str(lessons_file)])
+    repo.index.add([str(strat_file), str(cfg_file)])
     repo.index.commit("Initial baseline commit")
 
     # Get the automatically created baseline branch name (master or main)
@@ -539,16 +535,10 @@ def test_git_ledger_upgrades(tmp_path: Path) -> None:
     git_ledger = GitLedger(nested_dir)
     assert git_ledger.repo_root.resolve() == repo_dir.resolve()
 
-    # 2. Modify files and test rollback_strategy
+    # 2. Modify strategy and test rollback_strategy
     strat_file.write_text("code v2", encoding="utf-8")
-    lessons_file.write_text("lessons v2", encoding="utf-8")
-
     git_ledger.rollback_strategy("test_strat")
-
-    # Strategy files must be reverted to baseline, lessons.md must stay
-    # modified (decoupled)
     assert strat_file.read_text(encoding="utf-8") == "code v1"
-    assert lessons_file.read_text(encoding="utf-8") == "lessons v2"
 
     # 3. Create run branch and test reset_to_main (recovering baseline dynamically)
     run_branch = repo.create_head("autobacktest/run-abc")
@@ -568,15 +558,14 @@ def test_git_ledger_upgrades(tmp_path: Path) -> None:
 
 
 def test_orchestrator_lessons_persistence(tmp_path: Path) -> None:
-    """Verifies that lessons.md is successfully updated and persisted on disk
-    and in memory during rejected/exception orchestrator loops.
-    """
+    """Verifies that lessons are persisted in the DB across orchestrator iterations."""
     from unittest.mock import patch
 
     import git
 
     from autobacktest.config import settings
     from autobacktest.gate import TargetMetric
+    from autobacktest.lessons import LessonStore
     from autobacktest.llm.base import AgentEdit, LLMProvider
     from autobacktest.orchestrator import run_optimization
 
@@ -600,18 +589,21 @@ def test_orchestrator_lessons_persistence(tmp_path: Path) -> None:
     (cfg_dir / "toy.yaml").write_text(STRATEGY_CONFIG, encoding="utf-8")
     (tmp_path / "program.md").write_text(PROGRAM_MD, encoding="utf-8")
 
-    # Initial lessons.md file (will be migrated to .db on first run)
-    lessons_file = tmp_path / "lessons.md"
-    lessons_file.write_text(
-        "### Initial Lessons\n- **Type:** STRUCTURAL\n- Initial lessons content.\n",
-        encoding="utf-8",
-    )
-
     repo = git.Repo.init(tmp_path)
     repo.config_writer().set_value("user", "name", "Test User").release()
     repo.config_writer().set_value("user", "email", "test@test.com").release()
-    repo.index.add(["strategies/toy.py", "configs/toy.yaml", "lessons.md"])
+    repo.index.add(["strategies/toy.py", "configs/toy.yaml"])
     repo.index.commit("initial: baseline toy strategy")
+
+    # Seed an initial lesson directly into the DB
+    store = LessonStore(run_dir / "lessons.db")
+    store.store_lesson(
+        strategy="toy",
+        title="Initial Lessons",
+        body="- Initial lessons content.",
+        lesson_type="STRUCTURAL",
+    )
+    store.close()
 
     # 2. Mock LLM Provider
     # Iteration 1: returns a validation-failing edit.
@@ -667,19 +659,15 @@ def test_orchestrator_lessons_persistence(tmp_path: Path) -> None:
         )
 
     # Verify that:
-    # 1. At the start, the context received lessons from the DB (migrated from .md).
+    # 1. At the start, the context received the initial lesson from the DB.
     n_cand = settings.n_candidates
     assert len(called_contexts) == 2 * n_cand  # n_cand calls per iteration x 2 iterations
     assert "Initial Lessons" in called_contexts[0].lessons_text
-    # 2. At the start of Iteration 2, the context contains both the migrated lesson
+    # 2. At the start of Iteration 2, the context contains both the initial lesson
     #    AND the lesson from iteration 1, stored/retrieved from the DB.
     iter2_start = n_cand  # first context of iteration 2
     assert "initial lessons" in called_contexts[iter2_start].lessons_text.lower()
     assert "validation failed" in called_contexts[iter2_start].lessons_text.lower()
-
-    # 3. lessons.md on disk is NOT updated by the orchestrator (DB replaces it).
-    assert "Initial Lessons" in lessons_file.read_text(encoding="utf-8")
-    assert "validation failed" not in lessons_file.read_text(encoding="utf-8")
 
 
 def test_cli_reset_safe_abort(tmp_path: Path) -> None:
@@ -699,10 +687,6 @@ def test_cli_reset_safe_abort(tmp_path: Path) -> None:
     cfg_dir.mkdir()
     run_dir.mkdir()
 
-    # Create lessons.md with uncommitted content
-    lessons_file = tmp_path / "lessons.md"
-    lessons_file.write_text("# Saved lessons\n", encoding="utf-8")
-
     # Patch GitLedger to raise a GitCommandError or any Exception during reset_to_main
     from unittest.mock import patch
 
@@ -712,20 +696,11 @@ def test_cli_reset_safe_abort(tmp_path: Path) -> None:
         # Force an exception during git reset
         ledger_instance.reset_to_main.side_effect = RuntimeError("Dirty working tree conflict")
 
-        def mock_path(*args: Any) -> Path:
-            if not args:
-                return tmp_path
-            if args[0] == "lessons.md":
-                return tmp_path / "lessons.md"
-            return Path(*args)
-
-        with patch("autobacktest.cli.Path", side_effect=mock_path):
-            result = runner.invoke(app, ["reset", "--strategy", "toy", "--run-dir", str(run_dir)])
+        result = runner.invoke(app, ["reset", "--strategy", "toy", "--run-dir", str(run_dir)])
 
         # Assert safe abort occurred
         assert result.exit_code == 1
         assert "Abort: Reset could not be completed safely." in result.output
 
-        # Verify run directory and lessons.md were NOT wiped or deleted!
+        # Verify run directory was NOT wiped or deleted!
         assert run_dir.exists()
-        assert lessons_file.read_text(encoding="utf-8") == "# Saved lessons\n"
