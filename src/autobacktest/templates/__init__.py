@@ -12,7 +12,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
-_PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+
+def _find_project_root(marker: str = "pyproject.toml") -> Path:
+    current = Path(__file__).resolve().parent
+    for _ in range(10):
+        if (current / marker).exists():
+            return current
+        current = current.parent
+    msg = f"Could not find project root (no {marker} found ascending from {__file__})"
+    raise RuntimeError(msg)
+
+
+_PACKAGE_ROOT = _find_project_root()
 
 TEMPLATE_REGISTRY: dict[str, dict[str, str]] = {
     "equal-weight": {
