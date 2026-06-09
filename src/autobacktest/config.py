@@ -72,7 +72,8 @@ class Settings(BaseModel):
     ledger_db_name: str = _env_str("AUTOBACKTEST_LEDGER_DB_NAME", "ledger.db")
 
     # --- OPTIMIZATION LOOP ---
-    n_candidates: int = _env_int("AUTOBACKTEST_N_CANDIDATES", "3")
+    n_candidates: int = _env_int("AUTOBACKTEST_N_CANDIDATES", "10")
+    eval_max_workers: int = _env_int("AUTOBACKTEST_EVAL_MAX_WORKERS", "4")
     importance_min_attempts: int = _env_int("AUTOBACKTEST_IMPORTANCE_MIN_ATTEMPTS", "6")
     importance_p_threshold: float = _env_float("AUTOBACKTEST_IMPORTANCE_P_THRESHOLD", "0.20")
     early_stop_patience: int = _env_int("AUTOBACKTEST_EARLY_STOP_PATIENCE", "10")
@@ -101,6 +102,10 @@ class Settings(BaseModel):
     identical_behavior_epsilon: float = _env_float("AUTOBACKTEST_IDENTICAL_BEHAVIOR_EPSILON", "1e-6")
     diversity_config_threshold: float = _env_float("AUTOBACKTEST_DIVERSITY_CONFIG_THRESHOLD", "0.95")
     diversity_returns_threshold: float = _env_float("AUTOBACKTEST_DIVERSITY_RETURNS_THRESHOLD", "0.95")
+    diversity_compare_mode: str = _env_str("AUTOBACKTEST_DIVERSITY_COMPARE_MODE", "recent")
+    diversity_recent_n: int = _env_int("AUTOBACKTEST_DIVERSITY_RECENT_N", "5")
+    diversity_hard_threshold: float = _env_float("AUTOBACKTEST_DIVERSITY_HARD_THRESHOLD", "0.999")
+    diversity_returns_penalty: float = _env_float("AUTOBACKTEST_DIVERSITY_RETURNS_PENALTY", "0.0")
 
     # --- VERBOSITY CONTROL ---
     quiet: bool = _env_bool("AUTOBACKTEST_QUIET", "false")

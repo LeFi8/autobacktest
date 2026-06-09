@@ -62,6 +62,27 @@ class StrategyConfig(BaseModel):
         "Unit matches the configured target_metric (Sharpe, Sortino, or Information Ratio). "
         "If the baseline value is already below this floor, a warning is emitted at setup time.",
     )
+    select_compare_metric: str = Field(
+        "deflated",
+        description="Metric used for the select-gate improvement comparison. "
+        "'deflated' uses Deflated Sharpe Ratio (robust, overfit-adjusted). "
+        "'raw' uses the in-sample target_metric (Sharpe/Sortino/Information Ratio). "
+        "Unit of min_improvement follows this setting.",
+    )
+    select_improvement_tol: float = Field(
+        0.02,
+        ge=0.0,
+        description="Non-negative tolerance for the select-gate improvement comparison. "
+        "A candidate is accepted when its comparison metric >= incumbent's metric minus this "
+        "tolerance, so near-ties are not rejected.",
+    )
+
+    @field_validator("select_compare_metric")
+    @classmethod
+    def validate_select_compare_metric(cls, v: str) -> str:
+        if v not in ("deflated", "raw"):
+            raise ValueError("select_compare_metric must be either 'deflated' or 'raw'")
+        return v
 
     @field_validator("mc_bootstrap_method")
     @classmethod

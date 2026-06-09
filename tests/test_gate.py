@@ -102,21 +102,22 @@ def test_gate_lexicographic_ordering() -> None:
 def test_gate_improvement_over_baseline() -> None:
     """Verifies candidate is rejected if target metric does not improve."""
     base = _create_mock_report(sharpe=1.2)
+    raw_config = {"select_compare_metric": "raw", "select_improvement_tol": 0.0}
 
     # 1. Candidate is identical -> rejected (needs positive improvement)
     cand_same = _create_mock_report(sharpe=1.2)
-    res_same = accept(cand_same, baseline=base, target_metric=TargetMetric.SHARPE)
+    res_same = accept(cand_same, baseline=base, target_metric=TargetMetric.SHARPE, config=raw_config)
     assert not res_same.accepted
     assert res_same.failed_gate == "target_metric_improvement"
 
     # 2. Candidate is worse -> rejected
     cand_worse = _create_mock_report(sharpe=1.1)
-    res_worse = accept(cand_worse, baseline=base, target_metric=TargetMetric.SHARPE)
+    res_worse = accept(cand_worse, baseline=base, target_metric=TargetMetric.SHARPE, config=raw_config)
     assert not res_worse.accepted
 
     # 3. Candidate is better -> accepted
     cand_better = _create_mock_report(sharpe=1.3)
-    res_better = accept(cand_better, baseline=base, target_metric=TargetMetric.SHARPE)
+    res_better = accept(cand_better, baseline=base, target_metric=TargetMetric.SHARPE, config=raw_config)
     assert res_better.accepted
 
 
@@ -150,10 +151,15 @@ def test_gate_rejects_nan_metrics() -> None:
     res = accept(rep_nan_dsr, baseline=None)
     assert res.accepted
 
-    # 4. NaN Target Metric
+    # 4. NaN Target Metric (pin to raw comparison so NaN sharpe triggers the gate)
     base = _create_mock_report(sharpe=1.2)
     rep_nan_sharpe = _create_mock_report(sharpe=float("nan"))
-    res = accept(rep_nan_sharpe, baseline=base, target_metric=TargetMetric.SHARPE)
+    res = accept(
+        rep_nan_sharpe,
+        baseline=base,
+        target_metric=TargetMetric.SHARPE,
+        config={"select_compare_metric": "raw", "select_improvement_tol": 0.0},
+    )
     assert not res.accepted
     assert res.failed_gate == "target_metric_improvement"
 
@@ -204,8 +210,8 @@ def test_gate_select_rejects_dsr_degradation() -> None:
     """Verifies select gate rejects DSR degradation (always-on by default)."""
     base = _create_mock_report(sharpe=1.0, deflated_sharpe=0.90)
     cand = _create_mock_report(sharpe=1.1, deflated_sharpe=0.50)
-    # The accept wrapper calls select (DSR always-on by default) -> DSR degrades
-    res = accept(cand, baseline=base)
+    # Use raw compare metric so improvement check passes, letting DSR gate fire
+    res = accept(cand, baseline=base, config={"select_compare_metric": "raw", "select_improvement_tol": 0.0})
     assert not res.accepted
     assert res.failed_gate == "dsr_non_degradation"
 
@@ -222,7 +228,13 @@ def test_gate_dsr_non_degradation_rejects_when_dsr_degrades() -> None:
     """Verifies DSR non-degradation gate rejects when candidate DSR significantly degrades."""
     base = _create_mock_report(sharpe=1.0, deflated_sharpe=0.80)
     cand = _create_mock_report(sharpe=1.1, deflated_sharpe=0.50)
-    res = accept(cand, baseline=base, require_dsr_non_degradation=True)
+    # Use raw compare metric so improvement check passes, letting DSR gate fire
+    res = accept(
+        cand,
+        baseline=base,
+        require_dsr_non_degradation=True,
+        config={"select_compare_metric": "raw", "select_improvement_tol": 0.0},
+    )
     assert not res.accepted
     assert res.failed_gate == "dsr_non_degradation"
 
@@ -236,7 +248,8 @@ def test_gate_dsr_non_degradation_no_baseline_skipped() -> None:
 
 def test_gate_dsr_non_degradation_via_config_dict() -> None:
     """Verifies DSR non-degradation gate is resolved correctly from a config dict."""
-    config = {"require_dsr_non_degradation": True}
+    # Use raw compare metric so improvement check passes, letting DSR gate fire
+    config = {"require_dsr_non_degradation": True, "select_compare_metric": "raw", "select_improvement_tol": 0.0}
     base = _create_mock_report(sharpe=1.0, deflated_sharpe=0.80)
     cand = _create_mock_report(sharpe=1.1, deflated_sharpe=0.50)
     res = accept(cand, baseline=base, config=config)
@@ -363,7 +376,8 @@ def test_select_always_on_dsr() -> None:
     """select always enforces DSR non-degradation (no config needed)."""
     base = _create_split_report(in_sharpe=1.0, in_dsr=0.80)
     cand = _create_split_report(in_sharpe=2.0, in_dsr=0.40)
-    res = select(cand, baseline=base)
+    # Use raw compare metric so improvement check passes, letting DSR gate fire
+    res = select(cand, baseline=base, config={"select_compare_metric": "raw", "select_improvement_tol": 0.0})
     assert not res.accepted
     assert res.failed_gate == "dsr_non_degradation"
 
@@ -476,13 +490,13 @@ def test_gate_hybrid_tradeoff() -> None:
     cand = _create_mock_report(sharpe=0.70, annualized_return=0.15)
 
     # 1. With no tradeoff configured -> Fails (standard strict check)
-    config_none = {"metric_return_tradeoff": 0.0}
+    config_none = {"metric_return_tradeoff": 0.0, "select_compare_metric": "raw", "select_improvement_tol": 0.0}
     res_none = accept(cand, baseline=base, config=config_none)
     assert not res_none.accepted
     assert res_none.failed_gate == "target_metric_improvement"
 
     # 2. With tradeoff configured -> Passes (hurdle is 1.14 - 0.1 * 5pp * 100 = 0.64 < 0.70)
-    config_tradeoff = {"metric_return_tradeoff": 0.1}
+    config_tradeoff = {"metric_return_tradeoff": 0.1, "select_compare_metric": "raw", "select_improvement_tol": 0.0}
     res_tradeoff = accept(cand, baseline=base, config=config_tradeoff)
     assert res_tradeoff.accepted
 
@@ -533,7 +547,7 @@ def test_gate_tradeoff_boundary_hurdle() -> None:
     cand = _create_mock_report(sharpe=1.50, annualized_return=0.11)
 
     # hurdle = 2.0 + 0.0 - 0.5 * (0.11 - 0.10) * 100 = 2.0 - 0.5 = 1.50
-    config = {"metric_return_tradeoff": 0.5}
+    config = {"metric_return_tradeoff": 0.5, "select_compare_metric": "raw", "select_improvement_tol": 0.0}
     res = accept(cand, baseline=base, config=config)
     assert not res.accepted
     assert res.failed_gate == "target_metric_improvement"
@@ -544,13 +558,18 @@ def test_gate_tradeoff_with_sortino() -> None:
     base = _create_mock_report(sortino=2.0, annualized_return=0.10)
     cand = _create_mock_report(sortino=1.20, annualized_return=0.15)
 
-    # No tradeoff -> Fails
-    res_none = accept(cand, baseline=base, target_metric=TargetMetric.SORTINO)
+    # No tradeoff -> Fails (pin to raw comparison to use Sortino values)
+    res_none = accept(
+        cand,
+        baseline=base,
+        target_metric=TargetMetric.SORTINO,
+        config={"select_compare_metric": "raw", "select_improvement_tol": 0.0},
+    )
     assert not res_none.accepted
 
     # With tradeoff -> Passes (hurdle = 2.0 - 0.1 * 0.05 * 100 = 1.50, cand 1.20 < 1.50)
     # Actually 1.20 < 1.50 so still fails. Let's use stronger tradeoff.
-    config = {"metric_return_tradeoff": 0.5}
+    config = {"metric_return_tradeoff": 0.5, "select_compare_metric": "raw", "select_improvement_tol": 0.0}
     res_trade = accept(cand, baseline=base, target_metric=TargetMetric.SORTINO, config=config)
     assert res_trade.accepted
 
@@ -574,15 +593,92 @@ def test_gate_floor_without_tradeoff() -> None:
 
 
 def test_gate_tradeoff_default_parity() -> None:
-    """Verifies default params (tradeoff=0, floor=None) give identical behavior to pre-hybrid code."""
+    """Verifies raw compare mode (tradeoff=0, floor=None, tol=0) gives pre-hybrid code behavior."""
     base = _create_mock_report(sharpe=1.2, annualized_return=0.10)
     cand = _create_mock_report(sharpe=1.1, annualized_return=0.12)
+    raw_config = {"select_compare_metric": "raw", "select_improvement_tol": 0.0}
 
-    res = accept(cand, baseline=base)
+    res = accept(cand, baseline=base, config=raw_config)
     assert not res.accepted
     assert res.failed_gate == "target_metric_improvement"
 
     # Better candidate passes
     cand2 = _create_mock_report(sharpe=1.3, annualized_return=0.08)
-    res2 = accept(cand2, baseline=base)
+    res2 = accept(cand2, baseline=base, config=raw_config)
     assert res2.accepted
+
+
+# ---------------------------------------------------------------------------
+# Recalibration: DSR-based comparison (deflated mode default)
+# ---------------------------------------------------------------------------
+
+
+def test_select_compare_metric_deflated_default():
+    """Default mode compares on DSR, not raw Sharpe."""
+    # Baseline: high raw Sharpe (overfit) but modest DSR
+    base = _create_mock_report(sharpe=4.0, deflated_sharpe=0.60)
+    # Candidate: lower raw Sharpe but similar DSR — should PASS under deflated mode
+    cand = _create_mock_report(sharpe=1.5, deflated_sharpe=0.65)
+    res = select(cand, baseline=base, config={})  # default: compare_metric="deflated"
+    assert res.accepted, f"Expected pass under DSR mode but got: {res.reason}"
+
+
+def test_select_compare_metric_raw_explicit():
+    """Raw mode compares on in-sample Sharpe."""
+    base = _create_mock_report(sharpe=4.0, deflated_sharpe=0.60)
+    cand = _create_mock_report(sharpe=1.5, deflated_sharpe=0.65)
+    res = select(cand, baseline=base, config={"select_compare_metric": "raw", "select_improvement_tol": 0.0})
+    assert not res.accepted
+    assert res.failed_gate == "target_metric_improvement"
+
+
+def test_select_improvement_tol_rescues_near_tie():
+    """Candidate with DSR within tolerance band should pass the improvement gate."""
+    base = _create_mock_report(deflated_sharpe=0.80)
+    # Candidate is 0.01 below baseline DSR — within 0.02 tolerance.
+    # Disable DSR non-degradation to isolate the improvement-tol behaviour.
+    cand = _create_mock_report(deflated_sharpe=0.79)
+    res = select(cand, baseline=base, config={"require_dsr_non_degradation": False})
+    assert res.accepted, f"Expected near-tie to pass but got: {res.reason}"
+
+
+def test_select_improvement_tol_still_rejects_large_gap():
+    """Candidate well below baseline DSR should still fail the improvement gate."""
+    base = _create_mock_report(deflated_sharpe=0.80)
+    # Candidate is 0.10 below — outside 0.02 tolerance.
+    # Disable DSR non-degradation to isolate the improvement-tol behaviour.
+    cand = _create_mock_report(deflated_sharpe=0.70)
+    res = select(cand, baseline=base, config={"require_dsr_non_degradation": False})
+    assert not res.accepted
+    assert res.failed_gate == "target_metric_improvement"
+
+
+# ---------------------------------------------------------------------------
+# Recalibration: Regime failure message contains breach details
+# ---------------------------------------------------------------------------
+
+
+def test_regime_message_contains_breach_details():
+    """Regime failure message should name the breached regime and show observed vs limit."""
+    import dataclasses
+
+    # Set up a candidate that breaches 2008_GFC (limit 0.25) with 0.35 drawdown
+    rep = _create_mock_report(regime_passed=False)
+    rep = dataclasses.replace(rep, regime_drawdowns={"2008_GFC": 0.35, "2020_COVID": 0.10})
+    res = select(rep, baseline=None)
+    assert not res.accepted
+    assert res.failed_gate == "regimes"
+    assert "2008_GFC" in res.reason
+    assert "35.0%" in res.reason or "0.35" in res.reason.replace(",", ".")
+    assert "25.0%" in res.reason or "0.25" in res.reason.replace(",", ".")
+
+
+def test_regime_message_no_overlap():
+    """Regime failure with no regime_drawdowns should mention window overlap."""
+    import dataclasses
+
+    rep = _create_mock_report(regime_passed=False)
+    rep = dataclasses.replace(rep, regime_drawdowns={})
+    res = select(rep, baseline=None)
+    assert not res.accepted
+    assert "does not overlap" in res.reason or "backtest window" in res.reason

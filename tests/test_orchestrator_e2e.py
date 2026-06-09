@@ -780,8 +780,13 @@ def test_within_batch_dedup_jitters_second_candidate(project_root: Path) -> None
             assert cands[0].get("jitter_applied") is True or cands[1].get("jitter_applied") is True
 
 
-def test_jitter_disabled_preserves_old_rejection(project_root: Path) -> None:
-    """When jitter is disabled, duplicate configs are rejected with diversity_config."""
+def test_jitter_disabled_no_hard_config_rejection(project_root: Path) -> None:
+    """When jitter is disabled, duplicate configs are NOT hard-rejected at diversity_config.
+
+    With the softened diversity gate, config similarity never causes a hard reject.
+    Candidates always proceed to backtest; only near-exact return duplicates (≥ hard
+    threshold 0.999) are rejected post-quality.
+    """
     from autobacktest.config import settings
 
     synthetic_prices = _make_synthetic_prices()
@@ -828,13 +833,15 @@ def test_jitter_disabled_preserves_old_rejection(project_root: Path) -> None:
                 start_date="2013-01-01",
                 end_date="2025-01-01",
             )
-            # The candidate should be rejected as diversity_config
+            # The candidate must NOT be hard-rejected at diversity_config stage —
+            # the softened gate allows it to proceed to backtest.
             events_path = project_root / "runs" / res2.run_id / "events.jsonl"
             raw = events_path.read_text(encoding="utf-8").strip()
             event = json.loads(raw.split("\n")[0])
             cand = event["candidates"][0]
-            assert cand["passed"] is False
-            assert cand["stage"] == "diversity_config"
+            assert cand.get("stage") != "diversity_config", (
+                f"Config similarity should no longer cause a hard reject; got stage={cand.get('stage')!r}"
+            )
 
 
 def test_orchestrator_lookahead_repair_and_jitter_logging(project_root: Path) -> None:

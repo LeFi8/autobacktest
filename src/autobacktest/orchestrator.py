@@ -72,8 +72,6 @@ from autobacktest.strategy.validator import preflight
 
 logger = logging.getLogger(__name__)
 
-DIVERSITY_CONFIG_THRESHOLD = 0.95
-DIVERSITY_RETURNS_THRESHOLD = 0.95
 STUCK_THRESHOLD = 5
 STUCK_ESCALATION_FACTOR = 0.8
 MAX_DIVERSITY_RETRIES = 2
@@ -524,7 +522,7 @@ class _OptimizationState:
             import dataclasses as _dc
 
             edit_jittered = _dc.replace(ev["edit"], config_yaml=new_yaml)
-            rep_ok, rep_err_code, rep_err_detail = _validate_candidate(
+            rep_ok, _rep_err_code, _rep_err_detail = _validate_candidate(
                 self.strategy_name, edit_jittered, self.strategies_dir, self.configs_dir
             )
             ev["config_yaml"] = new_yaml
@@ -534,21 +532,14 @@ class _OptimizationState:
                 ev["jitter_meta"] = jitter_meta
                 ev["config_similarity"] = jitter_meta["final_similarity"]
             else:
-                ev["valid"] = False
-                ev["validation_stage"] = "validation"
-                ev["error_code"] = rep_err_code
-                ev["detail"] = rep_err_detail
+                # Jitter produced invalid code — keep original candidate, just log attempt
                 ev["jitter_applied"] = False
                 ev["jitter_meta"] = jitter_meta
                 ev["jitter_attempted"] = True
         else:
-            ev["valid"] = False
-            ev["validation_stage"] = "diversity_config"
+            # Jitter couldn't find a diverse config — keep original candidate, just log attempt
+            ev["jitter_applied"] = False
             ev["jitter_attempted"] = True
-            ev["detail"] = (
-                f"Config similarity {ev['config_similarity']:.3f} exceeded threshold "
-                f"{settings.diversity_config_threshold} (jitter failed)."
-            )
 
     def _process_raw_edit(self, k: int, edit: AgentEdit, directive: str, ctx: AgentContext) -> dict[str, Any]:
         self.n_llm_ok += 1
@@ -574,6 +565,21 @@ class _OptimizationState:
         self.total_cost += final_edit.cost
         return ev
 
+    def _diversity_config_pool(
+        self, historical_configs: list[str], batch_configs: list[str], current_yaml: str
+    ) -> list[str]:
+        mode = settings.diversity_compare_mode
+        if mode == "incumbent":
+            base = [current_yaml]
+        elif mode == "recent":
+            n = max(0, settings.diversity_recent_n)
+            base = historical_configs[-n:] if n else []
+        else:
+            if mode != "all":
+                logger.warning("Unknown diversity_compare_mode %r; using 'all'.", mode)
+            base = list(historical_configs)
+        return base + batch_configs
+
     def _check_diversity_gate(
         self,
         k: int,
@@ -581,21 +587,19 @@ class _OptimizationState:
         ev: dict[str, Any],
         historical_configs: list[str],
         batch_configs: list[str],
+        current_yaml: str,
     ) -> None:
+        if not settings.enable_config_diversity_gate:
+            ev["config_similarity"] = 0.0
+            return
+        pool = self._diversity_config_pool(historical_configs, batch_configs, current_yaml)
         e_config_yaml = ev["config_yaml"]
-        all_tried = historical_configs + batch_configs
-        max_sim = max_config_similarity(e_config_yaml, all_tried) if all_tried else 0.0
+        max_sim = max_config_similarity(e_config_yaml, pool) if pool else 0.0
         ev["config_similarity"] = max_sim
 
-        if settings.enable_config_diversity_gate and max_sim > settings.diversity_config_threshold:
-            if settings.enable_config_jitter:
-                self._apply_jitter(k, i, ev, all_tried)
-            else:
-                ev["valid"] = False
-                ev["validation_stage"] = "diversity_config"
-                ev["detail"] = (
-                    f"Config similarity {max_sim:.3f} exceeded threshold {settings.diversity_config_threshold}."
-                )
+        if settings.enable_config_jitter and max_sim > settings.diversity_config_threshold:
+            self._apply_jitter(k, i, ev, pool)
+        # NO hard reject here — candidate always proceeds to backtest
 
     def _check_exploit_gate(self, ev: dict[str, Any], current_yaml: str) -> None:
         e_config_yaml = ev["config_yaml"]
@@ -636,7 +640,7 @@ class _OptimizationState:
                 continue
 
             if self.mode == "explore":
-                self._check_diversity_gate(k, i, ev, historical_configs, batch_configs)
+                self._check_diversity_gate(k, i, ev, historical_configs, batch_configs, current_yaml)
             elif self.mode == "exploit":
                 self._check_exploit_gate(ev, current_yaml)
 
@@ -717,7 +721,7 @@ class _OptimizationState:
                     ev["_new_config"] = cfg
                 return ev
 
-            with ThreadPoolExecutor(max_workers=min(4, len(to_eval))) as pool:
+            with ThreadPoolExecutor(max_workers=min(settings.eval_max_workers, len(to_eval))) as pool:
                 futures = {pool.submit(_eval_one, ev): i for i, ev in enumerate(to_eval)}
                 for future in as_completed(futures):
                     future.result()
@@ -733,23 +737,6 @@ class _OptimizationState:
         report_k = ev["_report"]
         returns_k = ev["_returns"]
         new_config = ev["_new_config"]
-
-        # Returns diversity gate
-        if self.mode == "explore":
-            hist_matrix, _ = self.ledger.fetch_historical_returns(self.dataset_hash)
-            if not hist_matrix.empty:
-                corr_passed, max_corr = check_returns_correlation(
-                    returns_k, hist_matrix, settings.diversity_returns_threshold
-                )
-                if not corr_passed:
-                    ev["valid"] = False
-                    ev["validation_stage"] = "diversity_returns"
-                    ev["detail"] = (
-                        f"Return correlation {max_corr:.3f} exceeded threshold {settings.diversity_returns_threshold}."
-                    )
-                    ev["_report_json"] = report_k.to_json()
-                    ev["_observed_sharpe"] = report_k.observed_sharpe
-                    return False, peeks_this_iteration
 
         # DSR deflation
         _deflate(
@@ -807,6 +794,25 @@ class _OptimizationState:
 
         if cnf.accepted:
             ev["_accepted"] = True
+            # Post-quality returns-diversity check (after select+confirm pass)
+            # Only hard-reject exact duplicates (≥ diversity_hard_threshold)
+            if self.mode == "explore" and settings.enable_config_diversity_gate:
+                hist_matrix, _ = self.ledger.fetch_historical_returns(self.dataset_hash)
+                max_corr = 0.0
+                if not hist_matrix.empty:
+                    _corr_passed, max_corr = check_returns_correlation(
+                        returns_k, hist_matrix, settings.diversity_hard_threshold
+                    )
+                    if not _corr_passed:
+                        ev["valid"] = False
+                        ev["validation_stage"] = "diversity_returns"
+                        ev["detail"] = (
+                            f"Return correlation {max_corr:.3f} exceeded hard duplicate "
+                            f"threshold {settings.diversity_hard_threshold}."
+                        )
+                        ev["returns_correlation"] = max_corr
+                        return False, peeks_this_iteration
+                ev["returns_correlation"] = max_corr
             return True, peeks_this_iteration
         else:
             ev["valid"] = False
@@ -834,8 +840,10 @@ class _OptimizationState:
             accepted, peeks_this_iteration = self._evaluate_candidate_gates(k, ev, peeks_this_iteration)
             if accepted:
                 metric_val = _get_metric_value(ev["_report"], self.target_metric)
-                if metric_val > best_metric:
-                    best_metric = metric_val
+                penalty = settings.diversity_returns_penalty * ev.get("returns_correlation", 0.0)
+                adjusted_val = metric_val - penalty
+                if adjusted_val > best_metric:
+                    best_metric = adjusted_val
                     winner = ev
 
         return winner, peeks_this_iteration
@@ -992,6 +1000,7 @@ class _OptimizationState:
 
     def _build_candidate_failure_item(self, ev: dict[str, Any]) -> dict[str, Any]:
         edit = ev.get("edit")
+        rp = ev.get("_report")
         fail_item: dict[str, Any] = {
             "passed": False,
             "stage": ev.get("validation_stage"),
@@ -1003,6 +1012,13 @@ class _OptimizationState:
             "completion_tokens": edit.completion_tokens if edit else 0,
             "total_tokens": edit.total_tokens if edit else 0,
             "cost": edit.cost if edit else 0.0,
+            "deflated_sharpe": rp.deflated_sharpe if rp else None,
+            "holdout_deflated_sharpe": rp.holdout_deflated_sharpe if rp else None,
+            "in_sample_max_drawdown": rp.in_sample_metrics.max_drawdown if rp else None,
+            "in_sample_turnover": rp.in_sample_metrics.turnover if rp else None,
+            "in_sample_sharpe": rp.in_sample_metrics.sharpe_ratio if rp else None,
+            "pbo": rp.pbo if rp else None,
+            "returns_correlation": ev.get("returns_correlation"),
         }
         config_yaml = ev.get("config_yaml") or (edit.config_yaml if edit else None)
         if config_yaml:
@@ -1028,6 +1044,13 @@ class _OptimizationState:
             "completion_tokens": edit.completion_tokens if edit else 0,
             "total_tokens": edit.total_tokens if edit else 0,
             "cost": edit.cost if edit else 0.0,
+            "deflated_sharpe": rp.deflated_sharpe if rp else None,
+            "holdout_deflated_sharpe": rp.holdout_deflated_sharpe if rp else None,
+            "in_sample_max_drawdown": rp.in_sample_metrics.max_drawdown if rp else None,
+            "in_sample_turnover": rp.in_sample_metrics.turnover if rp else None,
+            "in_sample_sharpe": rp.in_sample_metrics.sharpe_ratio if rp else None,
+            "pbo": rp.pbo if rp else None,
+            "returns_correlation": ev.get("returns_correlation"),
         }
         config_yaml = ev.get("config_yaml") or (edit.config_yaml if edit else None)
         if config_yaml:
