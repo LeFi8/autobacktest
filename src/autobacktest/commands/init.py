@@ -33,7 +33,9 @@ def _validate_strategy_name(name: str | None) -> str:
     return strategy_name
 
 
-def _confirm_files_overwrite(strategy_file: Any, config_file: Any, strategy_name: str, overwrite: bool) -> bool:
+def _confirm_files_overwrite(
+    strategy_file: Any, config_file: Any, program_file: Any, strategy_name: str, overwrite: bool
+) -> bool:
     """Return ``True`` when the operation should proceed, ``False`` when the user cancels.
 
     When files already exist and *overwrite* is ``False``, prompts the user interactively.
@@ -41,13 +43,14 @@ def _confirm_files_overwrite(strategy_file: Any, config_file: Any, strategy_name
     Args:
         strategy_file: ``Path`` to the ``.py`` strategy file.
         config_file: ``Path`` to the ``.yaml`` config file.
+        program_file: ``Path`` to the ``.md`` program file.
         strategy_name: Display name used in the confirmation prompt.
         overwrite: If ``True``, skip the prompt and proceed.
 
     Returns:
         bool: ``True`` if the caller should proceed, ``False`` to abort.
     """
-    if (strategy_file.exists() or config_file.exists()) and not overwrite:
+    if (strategy_file.exists() or config_file.exists() or program_file.exists()) and not overwrite:
         confirm = typer.confirm(
             f"Strategy files for '{strategy_name}' already exist. Overwrite?",
             default=False,
@@ -169,6 +172,126 @@ def _prompt_custom_params(reserved_keys: set[str]) -> dict[str, Any]:
     return custom_params
 
 
+def _prompt_advanced_config() -> dict[str, Any]:
+    """Interactively prompt for key ``StrategyConfig`` fields.
+
+    Gated behind a single yes/no prompt.  Fields that the user skips
+    (empty input for optional values) are omitted so the schema default
+    is used.
+
+    Returns:
+        dict[str, Any]: Advanced config keys to merge into the config data.
+    """
+    if not typer.confirm("Do you want to configure advanced strategy parameters?", default=False):
+        return {}
+
+    params: dict[str, Any] = {}
+
+    params["borrow_cost_bps"] = _prompt_valid_float(
+        "Annualized short borrowing cost (bps)",
+        "100.0",
+        0.0,
+        float("inf"),
+        "Error: Borrow cost must be >= 0.",
+    )
+
+    params["cscv_blocks"] = _prompt_valid_int(
+        "CSCV blocks for PBO calculation",
+        "10",
+        4,
+        "Error: CSCV blocks must be at least 4.",
+    )
+
+    pbo_raw = typer.prompt("PBO limit (press Enter for no limit)", default="").strip()
+    if pbo_raw:
+        try:
+            v = float(pbo_raw)
+            if 0.0 <= v <= 1.0:
+                params["pbo_limit"] = v
+            else:
+                typer.echo("Error: PBO limit must be between 0.0 and 1.0. Using no limit.")
+        except ValueError:
+            typer.echo("Error: Invalid number. Using no limit.")
+
+    if typer.confirm("Use adaptive slippage?", default=False):
+        params["adaptive_slippage"] = True
+
+    params["min_improvement"] = _prompt_valid_float(
+        "Minimum target-metric improvement epsilon",
+        "0.0",
+        0.0,
+        float("inf"),
+        "Error: Min improvement must be >= 0.",
+    )
+
+    params["select_min_return_ratio"] = _prompt_valid_float(
+        "Min fraction of baseline annualized return for select gate",
+        "0.5",
+        0.0,
+        1.0,
+        "Error: Must be between 0.0 and 1.0.",
+    )
+
+    params["require_dsr_non_degradation"] = typer.confirm("Require DSR non-degradation in select gate?", default=True)
+
+    while True:
+        method = typer.prompt("MC bootstrap method", default="stationary")
+        if method in ("circular", "stationary"):
+            params["mc_bootstrap_method"] = method
+            break
+        typer.echo("Error: Must be 'circular' or 'stationary'.")
+
+    return params
+
+
+def _create_program_file(path: Any, name: str, config_data: dict[str, Any]) -> None:
+    """Write a boilerplate ``program-{name}.md`` with populated constraints.
+
+    Args:
+        path: Output ``Path`` for the program file.
+        name: Strategy name (for display).
+        config_data: Dict of validated config values to interpolate.
+    """
+    universe_str = ", ".join(config_data.get("universe", []))
+    mdd = config_data.get("max_drawdown_limit", 0.20)
+    turnover = config_data.get("turnover_limit", 2.0)
+    lookback = config_data.get("momentum_lookback", 12)
+    benchmark = config_data.get("benchmark", "SPY")
+
+    content = f"""# Objective
+
+Optimize the **{name}** strategy ({universe_str} universe, benchmark: {benchmark}).
+
+Describe your specific targets here — the LLM optimizer uses this as its north star.
+
+Examples:
+- "Increase Sharpe ratio above 1.2 while keeping drawdown below {mdd * 100:.0f}%"
+- "Improve risk-adjusted returns; reduce turnover below {turnover:.1f}"
+- "Maintain CAGR above 10% with max drawdown under {mdd * 100:.0f}%"
+
+# Constraints
+
+- Maximum drawdown in the holdout period must not exceed {mdd * 100:.0f}%.
+- Annualized portfolio turnover must remain below {turnover:.1f}.
+- The strategy must pass all regime stress tests (2008 GFC, 2020 COVID, 2022 bear market).
+- Monthly rebalancing on the last trading day must be preserved (momentum lookback: {lookback} months).
+- Only ``pandas`` and ``numpy`` imports are permitted in the strategy code.
+- The ``generate_signals(prices: pd.DataFrame, config: dict) -> pd.DataFrame`` signature must be preserved.
+
+## Strategy Details
+
+Optional: Add background, references, or design notes here.
+
+**Asset universe:** {universe_str}
+**Benchmark:** {benchmark}
+
+---
+
+**Tip:** Run ``uv run autobacktest run --program {path.name} --strategy {name} --iterations 5`` to start optimizing.
+"""
+    path.write_text(content, encoding="utf-8")
+
+
 def init_strategy_impl(
     name: str | None,
     overwrite: bool,
@@ -188,10 +311,12 @@ def init_strategy_impl(
 
     strategies_dir = settings_obj.strategies_dir
     configs_dir = settings_obj.configs_dir
+    project_root = strategies_dir.parent
     strategy_file = strategies_dir / f"{strategy_name}.py"
     config_file = configs_dir / f"{strategy_name}.yaml"
+    program_file = project_root / f"program-{strategy_name}.md"
 
-    if not _confirm_files_overwrite(strategy_file, config_file, strategy_name, overwrite):
+    if not _confirm_files_overwrite(strategy_file, config_file, program_file, strategy_name, overwrite):
         raise typer.Exit(code=0)
 
     typer.echo("\n--- Strategy Configuration Setup Wizard ---\n")
@@ -219,6 +344,8 @@ def init_strategy_impl(
         "Error: Momentum lookback must be at least 1.",
     )
 
+    advanced_params = _prompt_advanced_config()
+
     reserved_keys = set(StrategyConfig.model_fields.keys()) - {"params"}
     custom_params: dict[str, Any] = {}
     if typer.confirm("\nDo you want to define custom strategy parameters?", default=False):
@@ -231,6 +358,7 @@ def init_strategy_impl(
             "momentum_lookback": momentum_lookback,
             "max_drawdown_limit": mdd,
             "turnover_limit": turnover,
+            **advanced_params,
             "params": custom_params,
         }
         validated_config = StrategyConfig(**config_data)
@@ -288,6 +416,9 @@ def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFra
 '''
     strategy_file.write_text(py_boilerplate, encoding="utf-8")
 
+    _create_program_file(program_file, strategy_name, config_data)
+
     typer.echo(f"\n[Success] Strategy '{strategy_name}' initialized!")
     typer.echo(f"  Config:   {config_file.resolve()}")
     typer.echo(f"  Strategy: {strategy_file.resolve()}")
+    typer.echo(f"  Program:  {program_file.resolve()}")

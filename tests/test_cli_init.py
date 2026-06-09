@@ -38,6 +38,7 @@ def test_init_strategy_basic_flow(tmp_path: Path) -> None:
                 "0.15",  # max drawdown
                 "1.5",  # turnover
                 "12",  # momentum lookback
+                "n",  # advanced params? no
                 "n",  # custom params? no
             ]
         )
@@ -70,6 +71,15 @@ def test_init_strategy_basic_flow(tmp_path: Path) -> None:
     assert "def generate_signals" in content
     assert "prices: pd.DataFrame" in content
 
+    program_path = tmp_path / "program-test_momentum.md"
+    assert program_path.exists()
+    program_content = program_path.read_text()
+    assert "# Objective" in program_content
+    assert "# Constraints" in program_content
+    assert "SPY, QQQ, BIL" in program_content
+    assert "15%" in program_content  # 0.15 max drawdown
+    assert "1.5" in program_content  # turnover limit
+
 
 def test_init_strategy_invalid_name() -> None:
     """Invalid snake_case name is rejected."""
@@ -87,6 +97,7 @@ def test_init_strategy_overwrite_prompt_cancelled(tmp_path: Path) -> None:
     (tmp_path / "configs").mkdir()
     (tmp_path / "strategies" / "existing_strat.py").touch()
     (tmp_path / "configs" / "existing_strat.yaml").touch()
+    (tmp_path / "program-existing_strat.md").touch()
 
     result = runner.invoke(
         app,
@@ -103,6 +114,7 @@ def test_init_strategy_overwrite_flag(tmp_path: Path) -> None:
     (tmp_path / "configs").mkdir()
     (tmp_path / "strategies" / "overwrite_me.py").write_text("old code", encoding="utf-8")
     (tmp_path / "configs" / "overwrite_me.yaml").write_text("old: config", encoding="utf-8")
+    (tmp_path / "program-overwrite_me.md").write_text("old: program", encoding="utf-8")
 
     inputs = (
         "\n".join(
@@ -112,7 +124,8 @@ def test_init_strategy_overwrite_flag(tmp_path: Path) -> None:
                 "0.20",  # drawdown
                 "2.0",  # turnover
                 "12",  # lookback
-                "n",  # custom params
+                "n",  # advanced params? no
+                "n",  # custom params? no
             ]
         )
         + "\n"
@@ -129,6 +142,9 @@ def test_init_strategy_overwrite_flag(tmp_path: Path) -> None:
     cfg = (tmp_path / "configs" / "overwrite_me.yaml").read_text(encoding="utf-8")
     assert "old: config" not in cfg
 
+    prog = (tmp_path / "program-overwrite_me.md").read_text(encoding="utf-8")
+    assert "old: program" not in prog
+
 
 def test_init_strategy_invalid_drawdown(tmp_path: Path) -> None:
     """Drawdown outside 0.0-1.0 range is rejected; user can retry."""
@@ -144,7 +160,8 @@ def test_init_strategy_invalid_drawdown(tmp_path: Path) -> None:
                 "0.20",  # valid drawdown
                 "2.0",  # turnover
                 "12",  # lookback
-                "n",  # custom params
+                "n",  # advanced params? no
+                "n",  # custom params? no
             ]
         )
         + "\n"
@@ -173,6 +190,7 @@ def test_init_strategy_custom_params(tmp_path: Path) -> None:
                 "0.20",  # drawdown
                 "2.0",  # turnover
                 "12",  # lookback
+                "n",  # advanced params? no
                 "y",  # custom params? yes
                 "vol_span",  # param name
                 "126",  # param value (int)
@@ -216,6 +234,7 @@ def test_init_strategy_reserved_key_rejected(tmp_path: Path) -> None:
                 "0.20",  # drawdown
                 "2.0",  # turnover
                 "12",  # lookback
+                "n",  # advanced params? no
                 "y",  # custom params? yes
                 "universe",  # reserved key — should be rejected, then reprompt
                 "vol_span",  # valid custom param
@@ -256,7 +275,8 @@ def test_init_strategy_tz_aware_prices(tmp_path: Path) -> None:
                 "0.20",
                 "2.0",
                 "12",
-                "n",
+                "n",  # advanced params? no
+                "n",  # custom params? no
             ]
         )
         + "\n"
@@ -294,3 +314,57 @@ def test_init_strategy_tz_aware_prices(tmp_path: Path) -> None:
     weights = module.generate_signals(prices, config)
     assert not weights.empty
     assert weights.shape[1] == len(["SPY", "QQQ", "BIL"])
+
+
+def test_init_strategy_advanced_params(tmp_path: Path) -> None:
+    """Advanced config parameters are prompted and written correctly."""
+    (tmp_path / "strategies").mkdir()
+    (tmp_path / "configs").mkdir()
+
+    inputs = (
+        "\n".join(
+            [
+                "SPY, QQQ",  # universe
+                "SPY",  # benchmark
+                "0.20",  # drawdown
+                "2.0",  # turnover
+                "12",  # lookback
+                "y",  # advanced params? yes
+                "50.0",  # borrow_cost_bps
+                "8",  # cscv_blocks
+                "",  # pbo_limit (no limit)
+                "n",  # adaptive_slippage? no
+                "0.01",  # min_improvement
+                "0.6",  # select_min_return_ratio
+                "y",  # require_dsr_non_degradation? yes
+                "circular",  # mc_bootstrap_method
+                "n",  # custom params? no
+            ]
+        )
+        + "\n"
+    )
+
+    result = runner.invoke(
+        app,
+        ["init-strategy", "--name", "advanced_params_test"],
+        input=inputs,
+    )
+    assert result.exit_code == 0, f"Exit: {result.exit_code}, out: {result.output}"
+    assert "Success" in result.output
+
+    config_path = tmp_path / "configs" / "advanced_params_test.yaml"
+    assert config_path.exists()
+    with config_path.open() as f:
+        cfg = yaml.safe_load(f)
+
+    assert cfg["borrow_cost_bps"] == 50.0
+    assert cfg["cscv_blocks"] == 8
+    assert "pbo_limit" not in cfg or cfg["pbo_limit"] is None
+    assert cfg["adaptive_slippage"] is False
+    assert cfg["min_improvement"] == 0.01
+    assert cfg["select_min_return_ratio"] == 0.6
+    assert cfg["require_dsr_non_degradation"] is True
+    assert cfg["mc_bootstrap_method"] == "circular"
+
+    program_path = tmp_path / "program-advanced_params_test.md"
+    assert program_path.exists()

@@ -27,7 +27,7 @@ KNOWN_RANGES: dict[str, tuple[float, float]] = {
     "min_canary_period": (1.0, 36.0),
     "offensive_rebalance_months": (1.0, 12.0),
     "max_drawdown_limit": (0.0, 0.5),
-    "turnover_limit": (0.1, 10.0),
+    "turnover_limit": (0.1, 50.0),
     "metric_return_tradeoff": (0.0, 5.0),
     "metric_floor": (0.0, 5.0),
 }

@@ -91,10 +91,10 @@ def test_params_collision_raises_error() -> None:
     assert "Keys in 'params' collide with top-level schema fields" in exc_str
 
 
-def test_turnover_limit_upper_bound() -> None:
-    """Verifies that turnover_limit cannot exceed the upper bound."""
-    with pytest.raises(ValidationError):
-        StrategyConfig.model_validate({"universe": ["SPY"], "turnover_limit": 100.0})
+def test_turnover_limit_no_upper_bound() -> None:
+    """Verifies that turnover_limit has no upper bound (cap was removed)."""
+    cfg = StrategyConfig.model_validate({"universe": ["SPY"], "turnover_limit": 100.0})
+    assert cfg.turnover_limit == 100.0
 
 
 def test_from_yaml_loader(tmp_path: Path) -> None:
