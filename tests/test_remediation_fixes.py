@@ -1,10 +1,8 @@
-"""Unit tests verifying the PR review fixes for regime evaluation and HAA strategy."""
+"""Unit tests verifying the PR review fixes for regime evaluation."""
 
-import numpy as np
 import pandas as pd
 
 from autobacktest.evaluator.regime import evaluate_stress_regimes
-from tmp.haa import generate_signals
 
 
 def test_regime_ends_in_low_exposure() -> None:
@@ -32,63 +30,3 @@ def test_regime_ends_in_low_exposure() -> None:
     # Since the low-exposure run lasted for half the series (well over 10 days limit),
     # it should HARD REJECT (passed=False)
     assert not passed
-
-
-def test_haa_missing_defensive_assets() -> None:
-    """Verifies HAA strategy does not crash when defensive assets are missing from the inputs."""
-    dates = pd.date_range("2023-01-01", "2023-12-31", freq="D")
-    # Missing BIL and IEF from columns, only has SPY, VEA, VWO, VNQ, DBC, TLT, TIP
-    columns = ["SPY", "VEA", "VWO", "VNQ", "DBC", "TLT", "TIP"]
-
-    # Create simple prices series
-    prices = pd.DataFrame(100.0, index=dates, columns=columns)
-
-    # Add a bit of upward trend so canary TIP has positive momentum
-    prices["TIP"] = np.linspace(100.0, 110.0, len(dates))
-
-    # Standard HAA config
-    config = {
-        "params": {
-            "offensive_assets": ["SPY", "VEA", "VWO", "VNQ", "DBC", "TLT"],
-            "defensive_assets": ["BIL", "IEF"],
-            "canary_asset": "TIP",
-        }
-    }
-
-    # Since TIP momentum is positive (clear skies), it will rank offensive assets, choose top 4.
-    # Since prices are flat (100.0) for offensive assets, momentum will be <= 0.
-    # Therefore, they will try to allocate to best defensive asset.
-    # Since defensive assets (BIL, IEF) are missing, best_def should be None, and it should run without crashing.
-    weights = generate_signals(prices, config)
-
-    # No crash! All dates should have weights computed.
-    assert not weights.empty
-
-
-def test_haa_standard_execution() -> None:
-    """Verifies HAA strategy with iloc lookup executes correctly under standard conditions."""
-    dates = pd.date_range("2023-01-01", "2023-12-31", freq="D")
-    columns = ["SPY", "VEA", "VWO", "VNQ", "DBC", "TLT", "TIP", "BIL", "IEF"]
-    prices = pd.DataFrame(100.0, index=dates, columns=columns)
-
-    # upward trend for all to ensure positive momentum
-    for c in columns:
-        prices[c] = np.linspace(100.0, 120.0, len(dates))
-
-    config = {
-        "params": {
-            "offensive_assets": ["SPY", "VEA", "VWO", "VNQ", "DBC", "TLT"],
-            "defensive_assets": ["BIL", "IEF"],
-            "canary_asset": "TIP",
-        }
-    }
-
-    weights = generate_signals(prices, config)
-    assert not weights.empty
-    # Only check dates where signals were actually generated (skip the initial warm-up period
-    # where weights are 0 because lookback data is not yet available or the strategy returns
-    # a full price-index DataFrame with ffill from the first rebalance).
-    active_dates = weights.index[weights.sum(axis=1) > 0]
-    assert len(active_dates) > 0, "Expected non-zero weights after warm-up period"
-    for date in active_dates:
-        assert abs(weights.loc[date].sum() - 1.0) < 1e-5

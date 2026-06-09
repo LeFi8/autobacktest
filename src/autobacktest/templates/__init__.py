@@ -104,7 +104,7 @@ def render_program_template(
         "__NAME__": strategy_name,
         "__UNIVERSE__": universe_str,
         "__BENCHMARK__": benchmark,
-        "__DRAWDOWN_PCT__": str(int(mdd * 100)),
+        "__DRAWDOWN_PCT__": str(round(mdd * 100)),
         "__TURNOVER__": str(turnover),
         "__LOOKBACK__": str(lookback),
     }

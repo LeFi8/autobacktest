@@ -44,7 +44,7 @@ def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFra
 
         returns = hist.pct_change(trading_days).iloc[-1]
         ranked = returns.dropna().sort_values(ascending=False)
-        selected = [t for t in ranked.index if t in available and t != cash_asset][:top_n]
+        selected = [t for t in ranked.index if t in available and t != cash_asset and ranked[t] > 0][:top_n]
 
         if not selected:
             weights.loc[date, cash_asset] = 1.0

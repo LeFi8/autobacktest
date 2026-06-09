@@ -58,6 +58,9 @@ exclude = [".claude/"]
 select = ["E", "F", "I", "N", "UP", "B", "A", "C4", "SIM", "ARG", "PTH", "RUF"]
 ignore = []
 
+[tool.ruff.lint.isort]
+known-first-party = ["autobacktest", "strategies", "tests"]
+
 [tool.mypy]
 python_version = "3.12"
 strict = true
