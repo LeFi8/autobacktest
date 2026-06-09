@@ -10,16 +10,31 @@ regardless of ``strategies_dir`` / ``configs_dir`` settings.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 
 def _find_project_root(marker: str = "pyproject.toml") -> Path:
-    current = Path(__file__).resolve().parent
-    for _ in range(10):
-        if (current / marker).exists():
-            return current
-        current = current.parent
-    msg = f"Could not find project root (no {marker} found ascending from {__file__})"
+    candidates: list[Path] = []
+
+    candidates.append(Path(__file__).resolve().parent)
+    if "AUTOBACKTEST_PROJECT_ROOT" in os.environ:
+        candidates.append(Path(os.environ["AUTOBACKTEST_PROJECT_ROOT"]))
+    candidates.append(Path.cwd())
+
+    seen: set[Path] = set()
+    for start in candidates:
+        current = start
+        for _ in range(20):
+            resolved = current.resolve()
+            if resolved in seen:
+                break
+            seen.add(resolved)
+            if (resolved / marker).exists():
+                return resolved
+            current = current.parent
+
+    msg = f"Could not find project root (no {marker} found ascending from {__file__}, CWD={Path.cwd()})"
     raise RuntimeError(msg)
 
 
