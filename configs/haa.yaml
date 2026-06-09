@@ -19,6 +19,8 @@ holdout_min_improvement: 0.0
 min_improvement: 0.0
 select_min_return_ratio: 0.5
 pbo_limit: 0.5
+metric_return_tradeoff: 0.0
+metric_floor: null
 params:
   mom_lags: [21, 63, 126, 252]
   vol_window: 252

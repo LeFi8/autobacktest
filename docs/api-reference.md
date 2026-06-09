@@ -398,10 +398,17 @@ def select(
     3. Turnover <= turnover_limit (resolved from config or default 2.0)
     4. PBO limit (when specified): report.pbo <= pbo_limit
 
-    If all pass, tie-breaker (when baseline is present):
-    5. Target metric improvement: candidate > baseline + min_improvement
-    6. Annualized return >= baselines annualized return * min_return_ratio (default 0.5)
-    7. DSR non-degradation: candidate's in-sample DSR does not degrade below baseline's
+    Unconditional soft check (always, no baseline needed):
+    5. Absolute metric floor: candidate_val > metric_floor
+       (config key metric_floor, default None = disabled).
+
+    Tie-breaker (only when baseline is present):
+    6. Target metric improvement (config key min_improvement),
+       optionally adjusted by metric_return_tradeoff:
+       candidate > baseline + min_improvement - tradeoff_coeff * (cand_ret - base_ret) * 100
+       where tradeoff_coeff is per-1pp (0.01) return increase.
+    7. Annualized return >= baseline's annualized return * min_return_ratio (default 0.5)
+    8. DSR non-degradation: candidate's in-sample DSR does not degrade below baseline's
        (configurable via require_dsr_non_degradation, always-on by default)
     """
 ```

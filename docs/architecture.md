@@ -264,7 +264,8 @@ The gate system is split into two distinct phases to prevent holdout overfitting
 
 **Phase 1 — `select` (in-sample, every candidate):**
 - Hard constraints on the walk-forward aggregate: max drawdown ≤ `dd_limit` (default `0.20`), `regime_passed` must be `True`, turnover ≤ `turnover_limit` (default `2.0`).
-- Tie-breaker: target metric improvement over baseline (Sharpe, Sortino, or Information Ratio) by at least `min_improvement`.
+- Unconditional absolute metric floor: `metric_floor` enforced without a baseline (config key `metric_floor`, default `None` = disabled).
+- Tie-breaker: target metric improvement over baseline (Sharpe, Sortino, or Information Ratio) by at least `min_improvement`, optionally reduced via `metric_return_tradeoff` per 1pp return increase.
 - DSR non-degradation check (always-on by default, configurable): candidate's in-sample DSR must not degrade below the baseline's.
 - The holdout is **never consulted** at this stage.
 
