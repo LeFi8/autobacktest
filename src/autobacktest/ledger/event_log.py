@@ -29,7 +29,12 @@ class EventLog:
     """
 
     def __init__(self, path: Path) -> None:
-        """Create parent dirs and open file for append."""
+        """Initialise the event log at *path*, creating parent directories as needed.
+
+        Args:
+            path: Filesystem path for the ``events.jsonl`` file.  Parent
+                directories are created automatically.
+        """
         path.parent.mkdir(parents=True, exist_ok=True)
         self._path = path
         self._file = path.open("a", encoding="utf-8")

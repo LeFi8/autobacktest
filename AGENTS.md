@@ -46,7 +46,7 @@ No `.pre-commit-config.yaml` exists — skip `pre-commit install`.
 | `.antigravity/` | Removed from repo — local IDE/agent config (git-ignored) |
 | `docs/` | Comprehensive docs: architecture, API reference, setup, ADRs (`docs/adrs/`) |
 | `src/autobacktest/optimization/` | Candidate gen, eval mgmt, ledger persistence helpers |
-| `src/autobacktest/commands/` | CLI subcommand implementations (8 commands) |
+| `src/autobacktest/commands/` | CLI subcommand implementations (7 subcommands, 8 files) |
 | `src/autobacktest/strategy/ast_linter.py` | AST-based static validation (imports, complexity, undefined names) |
 | `src/autobacktest/strategy/sandbox_runner.py` | Sandboxed subprocess execution for smoke tests |
 | `src/autobacktest/evaluator/engine.py` | Vectorized window execution, caching, dataset hashing |

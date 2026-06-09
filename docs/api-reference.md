@@ -349,7 +349,7 @@ Analyzes whether a strategy candidate produces returns that are functionally ide
 def check_returns_correlation(
     candidate_returns: pd.Series,
     historical_returns_matrix: pd.DataFrame,
-    threshold: float = 0.90,
+    threshold: float = 0.95,
     min_overlap_days: int = 60,
 ) -> tuple[bool, float]:
     """Check returns correlation against historical backtests.
@@ -357,7 +357,7 @@ def check_returns_correlation(
     Args:
         candidate_returns: Daily net returns of the active strategy candidate.
         historical_returns_matrix: DataFrame containing daily return columns of past attempts.
-        threshold: Maximum permitted Pearson correlation coefficient (default: 0.90).
+        threshold: Maximum permitted Pearson correlation coefficient (default: 0.95).
         min_overlap_days: Minimum overlapping trading days required to compute
             a meaningful correlation (default: 60).
 
