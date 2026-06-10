@@ -927,3 +927,56 @@ def test_orchestrator_lookahead_repair_and_jitter_logging(project_root: Path) ->
     assert cand["repair_applied"] is True
     # In this run config similarity was not triggered (empty history), so jitter_applied should be False
     assert cand.get("jitter_applied", False) is False
+
+
+def test_confirm_best_candidate_at_most_one_peek_per_iteration(project_root: Path) -> None:
+    """Confirms that run_gates_and_select_winner consumes at most one holdout peek per iteration.
+
+    Uses n_candidates=3 (all identical IMPROVED_STRATEGY) so select passes for all three,
+    but only the top-ranked candidate proceeds to confirm — exactly 1 peek per iteration.
+    """
+    from autobacktest.config import settings
+
+    synthetic_prices = _make_synthetic_prices()
+    fake_instance = _make_fake_provider(synthetic_prices)
+
+    scripted_edit = AgentEdit(
+        strategy_code=IMPROVED_STRATEGY,
+        config_yaml=IMPROVED_CONFIG,
+        reasoning="Switch to HIGH",
+        raw_response="{}",
+    )
+    mock_provider = MockProvider(response=scripted_edit)
+
+    confirm_calls: list[int] = []
+
+    import autobacktest.gate as gate_mod
+
+    original_confirm = gate_mod.confirm
+
+    def tracking_confirm(*args: object, **kwargs: object) -> object:
+        confirm_calls.append(1)
+        return original_confirm(*args, **kwargs)
+
+    with (
+        patch("autobacktest.orchestrator.confirm", side_effect=tracking_confirm),
+        patch("autobacktest.evaluator.evaluate.CachedDataProvider", return_value=fake_instance),
+        patch.object(settings, "n_candidates", 3),
+    ):
+        result = run_optimization(
+            program_path=project_root / "program.md",
+            strategy_name="toy",
+            iterations=3,
+            provider=mock_provider,
+            run_dir=project_root / "runs",
+            strategies_dir=project_root / "strategies",
+            configs_dir=project_root / "configs",
+            target_metric=TargetMetric.SHARPE,
+            repo_path=project_root,
+            start_date="2013-01-01",
+            end_date="2025-01-01",
+        )
+
+    # At most 1 confirm call per iteration regardless of n_candidates=3
+    assert len(confirm_calls) <= 3, f"Expected ≤3 confirm calls (1/iter x 3 iters), got {len(confirm_calls)}"
+    assert result.n_committed >= 1

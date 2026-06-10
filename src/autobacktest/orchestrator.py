@@ -525,8 +525,8 @@ class _OptimizationState:
             rep_ok, _rep_err_code, _rep_err_detail = _validate_candidate(
                 self.strategy_name, edit_jittered, self.strategies_dir, self.configs_dir
             )
-            ev["config_yaml"] = new_yaml
             if rep_ok:
+                ev["config_yaml"] = new_yaml
                 ev["edit"] = edit_jittered
                 ev["jitter_applied"] = True
                 ev["jitter_meta"] = jitter_meta
@@ -728,17 +728,17 @@ class _OptimizationState:
 
         return to_eval
 
-    def _evaluate_candidate_gates(
-        self,
-        k: int,
-        ev: dict[str, Any],
-        peeks_this_iteration: int,
-    ) -> tuple[bool, int]:
+    def _run_select_phase(self, ev: dict[str, Any]) -> bool:
+        """Run in-sample DSR deflation + select gate + returns-correlation duplicate check.
+
+        No holdout peek is consumed. Returns True iff the candidate should be
+        considered for confirm (i.e. passed select and is not a near-duplicate).
+        """
         report_k = ev["_report"]
         returns_k = ev["_returns"]
         new_config = ev["_new_config"]
 
-        # DSR deflation
+        # Candidate DSR deflation (in-sample)
         _deflate(
             report_k,
             returns_k,
@@ -765,9 +765,39 @@ class _OptimizationState:
             ev["validation_stage"] = "gate"
             ev["detail"] = sel.reason
             ev["_failed_gate"] = sel.failed_gate
-            return False, peeks_this_iteration
+            return False
 
-        # Holdout peek budget check
+        # Returns-diversity check (pre-confirm, no peek consumed)
+        # Hard-reject only exact duplicates (≥ diversity_hard_threshold).
+        if self.mode == "explore" and settings.enable_config_diversity_gate:
+            hist_matrix, _ = self.ledger.fetch_historical_returns(self.dataset_hash)
+            max_corr = 0.0
+            if not hist_matrix.empty:
+                _corr_passed, max_corr = check_returns_correlation(
+                    returns_k, hist_matrix, settings.diversity_hard_threshold
+                )
+                if not _corr_passed:
+                    ev["valid"] = False
+                    ev["validation_stage"] = "diversity_returns"
+                    ev["detail"] = (
+                        f"Return correlation {max_corr:.3f} exceeded hard duplicate "
+                        f"threshold {settings.diversity_hard_threshold}."
+                    )
+                    ev["returns_correlation"] = max_corr
+                    return False
+            ev["returns_correlation"] = max_corr
+
+        return True
+
+    def _run_confirm_phase(self, k: int, ev: dict[str, Any], peeks_this_iteration: int) -> tuple[bool, int]:
+        """Run holdout deflation + confirm gate, consuming one holdout peek.
+
+        Returns (accepted, updated_peek_count).
+        """
+        report_k = ev["_report"]
+        new_config = ev["_new_config"]
+
+        # Peek budget check
         hist_matrix, _ = self.ledger.fetch_holdout_history(report_k.dataset_hash)
         current_peeks = len(hist_matrix.columns) if not hist_matrix.empty else 0
         if current_peeks + peeks_this_iteration >= self.holdout_peek_limit:
@@ -794,25 +824,6 @@ class _OptimizationState:
 
         if cnf.accepted:
             ev["_accepted"] = True
-            # Post-quality returns-diversity check (after select+confirm pass)
-            # Only hard-reject exact duplicates (≥ diversity_hard_threshold)
-            if self.mode == "explore" and settings.enable_config_diversity_gate:
-                hist_matrix, _ = self.ledger.fetch_historical_returns(self.dataset_hash)
-                max_corr = 0.0
-                if not hist_matrix.empty:
-                    _corr_passed, max_corr = check_returns_correlation(
-                        returns_k, hist_matrix, settings.diversity_hard_threshold
-                    )
-                    if not _corr_passed:
-                        ev["valid"] = False
-                        ev["validation_stage"] = "diversity_returns"
-                        ev["detail"] = (
-                            f"Return correlation {max_corr:.3f} exceeded hard duplicate "
-                            f"threshold {settings.diversity_hard_threshold}."
-                        )
-                        ev["returns_correlation"] = max_corr
-                        return False, peeks_this_iteration
-                ev["returns_correlation"] = max_corr
             return True, peeks_this_iteration
         else:
             ev["valid"] = False
@@ -829,24 +840,33 @@ class _OptimizationState:
         progress: Any,
     ) -> tuple[dict[str, Any] | None, int]:
         progress.update(progress_task, description=f"[cyan]Iter {k}/{self.iterations} | Running gates...")
-        winner: dict[str, Any] | None = None
-        best_metric: float = -float("inf")
         peeks_this_iteration: int = 0
 
+        # --- Phase 1: select phase (no holdout peeks consumed) ---
+        select_passers: list[dict[str, Any]] = []
         for ev in candidate_results:
             if not ev.get("valid") or ev.get("_report") is None:
                 continue
+            if self._run_select_phase(ev):
+                select_passers.append(ev)
 
-            accepted, peeks_this_iteration = self._evaluate_candidate_gates(k, ev, peeks_this_iteration)
-            if accepted:
-                metric_val = _get_metric_value(ev["_report"], self.target_metric)
-                penalty = settings.diversity_returns_penalty * ev.get("returns_correlation", 0.0)
-                adjusted_val = metric_val - penalty
-                if adjusted_val > best_metric:
-                    best_metric = adjusted_val
-                    winner = ev
+        if not select_passers:
+            return None, peeks_this_iteration
 
-        return winner, peeks_this_iteration
+        # Rank select-passers; confirm only the top-1 (exactly 1 holdout peek per iteration)
+        select_passers.sort(
+            key=lambda ev: (
+                _get_metric_value(ev["_report"], self.target_metric)
+                - settings.diversity_returns_penalty * ev.get("returns_correlation", 0.0)
+            ),
+            reverse=True,
+        )
+        top_ev = select_passers[0]
+        accepted, peeks_this_iteration = self._run_confirm_phase(k, top_ev, peeks_this_iteration)
+
+        if accepted:
+            return top_ev, peeks_this_iteration
+        return None, peeks_this_iteration
 
     def commit_winner(self, k: int, winner: dict[str, Any]) -> str | None:
         w_edit = winner["edit"]

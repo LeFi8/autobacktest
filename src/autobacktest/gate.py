@@ -346,12 +346,10 @@ def _check_soft_gates(
     The absolute ``metric_floor`` is enforced unconditionally (no baseline required).
     """
     if metric_floor is not None:
-        candidate_val = _get_in_sample_metric_val(report, target_metric)
+        candidate_val = _get_compare_metric_val(report, target_metric, compare_metric)
         if math.isnan(candidate_val) or candidate_val <= metric_floor:
-            msg = (
-                f"Candidate {target_metric.value} ({candidate_val:.4f}) is below the"
-                f" required floor of {metric_floor:.4f}."
-            )
+            basis = "DSR" if compare_metric == "deflated" else target_metric.value
+            msg = f"Candidate {basis} ({candidate_val:.4f}) is below the required floor of {metric_floor:.4f}."
             report.is_accepted = False
             report.rejection_reason = msg
             return GateResult(accepted=False, reason=msg, failed_gate="metric_floor")
@@ -373,7 +371,7 @@ def _check_soft_gates(
         if not result.accepted:
             return result
 
-    if require_dsr and baseline is not None:
+    if require_dsr and baseline is not None and compare_metric != "deflated":
         result = _check_dsr_non_degradation(report, baseline)
         if not result.accepted:
             return result
@@ -461,10 +459,19 @@ def _check_dsr_non_degradation(
 ) -> GateResult:
     """Check candidate DSR does not degrade below baseline DSR."""
     eps = 1e-6
-    if report.deflated_sharpe < baseline.deflated_sharpe - eps:
+    cand_dsr = report.deflated_sharpe
+    base_dsr = baseline.deflated_sharpe
+    if math.isnan(cand_dsr):
+        msg = "Candidate in-sample DSR is NaN."
+        report.is_accepted = False
+        report.rejection_reason = msg
+        return GateResult(accepted=False, reason=msg, failed_gate="dsr_non_degradation")
+    if math.isnan(base_dsr):
+        return GateResult(accepted=True)
+    if cand_dsr < base_dsr - eps:
         msg = (
-            f"Candidate in-sample DSR ({report.deflated_sharpe:.6f}) degrades below "
-            f"baseline in-sample DSR ({baseline.deflated_sharpe:.6f}) by more than {eps}."
+            f"Candidate in-sample DSR ({cand_dsr:.6f}) degrades below "
+            f"baseline in-sample DSR ({base_dsr:.6f}) by more than {eps}."
         )
         report.is_accepted = False
         report.rejection_reason = msg
