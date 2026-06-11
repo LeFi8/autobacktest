@@ -58,10 +58,9 @@ class StrategyConfig(BaseModel):
     )
     metric_floor: float | None = Field(
         None,
-        description="Absolute metric floor. Candidates below this value are always rejected. "
-        "Unit follows select_compare_metric: DSR when 'deflated' (default), raw target_metric "
-        "(Sharpe/Sortino/IR) when 'raw'. If the baseline is already below this floor, a warning "
-        "is emitted at setup time.",
+        description="Absolute target-metric floor. Candidates below this value are always rejected. "
+        "Unit matches the configured target_metric (Sharpe, Sortino, or Information Ratio). "
+        "If the baseline value is already below this floor, a warning is emitted at setup time.",
     )
     select_compare_metric: str = Field(
         "deflated",

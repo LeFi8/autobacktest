@@ -686,18 +686,18 @@ def test_regime_message_no_overlap():
     assert "does not overlap" in res.reason or "backtest window" in res.reason
 
 
-def test_metric_floor_deflated_mode_uses_dsr():
-    """In deflated mode (default) metric_floor is compared against DSR, not raw Sharpe."""
-    # Candidate has strong raw Sharpe but poor DSR
+def test_metric_floor_deflated_mode_uses_raw_scale():
+    """In deflated mode (default) metric_floor is compared against raw Sharpe, not DSR."""
+    # Candidate has raw Sharpe=2.0 and DSR=0.50
     cand = _create_mock_report(sharpe=2.0, deflated_sharpe=0.50)
-    # Floor of 0.80 in DSR units — candidate should fail
-    res_fail = select(cand, baseline=None, config={"metric_floor": 0.80})
+    # Floor of 2.20 in Sharpe units — candidate should fail
+    res_fail = select(cand, baseline=None, config={"metric_floor": 2.20})
     assert not res_fail.accepted
     assert res_fail.failed_gate == "metric_floor"
-    assert "DSR" in res_fail.reason
+    assert "sharpe" in res_fail.reason
 
-    # Floor of 0.40 — candidate DSR 0.50 > 0.40 → passes
-    res_pass = select(cand, baseline=None, config={"metric_floor": 0.40})
+    # Floor of 1.80 in Sharpe units — candidate should pass (2.0 > 1.80)
+    res_pass = select(cand, baseline=None, config={"metric_floor": 1.80})
     assert res_pass.accepted
 
 

@@ -296,7 +296,7 @@ def _check_hard_gates(
                 breaches.append(f"{name}: drawdown {dd:.1%} exceeds {limit:.1%} limit")
         if breaches:
             msg = "Failed crisis-regime stress test — " + "; ".join(breaches) + "."
-        elif not report.regime_drawdowns:
+        elif not report.regime_drawdowns or all(v == 0.0 for v in report.regime_drawdowns.values()):
             msg = (
                 "Failed crisis-regime stress test: backtest window does not overlap "
                 "any crisis regime (2008 GFC / 2020 COVID / 2022 bear). "
@@ -346,9 +346,9 @@ def _check_soft_gates(
     The absolute ``metric_floor`` is enforced unconditionally (no baseline required).
     """
     if metric_floor is not None:
-        candidate_val = _get_compare_metric_val(report, target_metric, compare_metric)
+        candidate_val = _get_in_sample_metric_val(report, target_metric)
         if math.isnan(candidate_val) or candidate_val <= metric_floor:
-            basis = "DSR" if compare_metric == "deflated" else target_metric.value
+            basis = target_metric.value
             msg = f"Candidate {basis} ({candidate_val:.4f}) is below the required floor of {metric_floor:.4f}."
             report.is_accepted = False
             report.rejection_reason = msg
