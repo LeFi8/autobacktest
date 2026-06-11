@@ -39,7 +39,7 @@ from autobacktest.evaluator.deflated_sharpe import (
 )
 from autobacktest.evaluator.evaluate import _CacheProtocol, compute_dataset_hash, evaluate_strategy_detailed
 from autobacktest.evaluator.report import EvaluationReport
-from autobacktest.gate import TargetMetric, confirm, select
+from autobacktest.gate import TargetMetric, _get_compare_metric_val, confirm, select
 from autobacktest.ledger.event_log import EventLog
 from autobacktest.ledger.git_ops import GitLedger
 from autobacktest.ledger.store import LedgerStore
@@ -721,7 +721,7 @@ class _OptimizationState:
                     ev["_new_config"] = cfg
                 return ev
 
-            with ThreadPoolExecutor(max_workers=min(settings.eval_max_workers, len(to_eval))) as pool:
+            with ThreadPoolExecutor(max_workers=max(1, min(settings.eval_max_workers, len(to_eval)))) as pool:
                 futures = {pool.submit(_eval_one, ev): i for i, ev in enumerate(to_eval)}
                 for future in as_completed(futures):
                     future.result()
@@ -854,9 +854,17 @@ class _OptimizationState:
             return None, peeks_this_iteration
 
         # Rank select-passers; confirm only the top-1 (exactly 1 holdout peek per iteration)
+        compare_metric = getattr(self.config_obj, "select_compare_metric", "deflated")
+        if settings.diversity_returns_penalty > 0.0 and compare_metric == "deflated":
+            logger.warning(
+                "diversity_returns_penalty is configured while select_compare_metric is 'deflated'. "
+                "The penalty will be applied directly to the deflated Sharpe score (DSR), which "
+                "is typically smaller than raw Sharpe. This may result in excessive penalization."
+            )
+
         select_passers.sort(
             key=lambda ev: (
-                _get_metric_value(ev["_report"], self.target_metric)
+                _get_compare_metric_val(ev["_report"], self.target_metric, compare_metric)
                 - settings.diversity_returns_penalty * ev.get("returns_correlation", 0.0)
             ),
             reverse=True,

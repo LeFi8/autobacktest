@@ -835,10 +835,12 @@ def test_jitter_disabled_no_hard_config_rejection(project_root: Path) -> None:
             )
             # The candidate must NOT be hard-rejected at diversity_config stage —
             # the softened gate allows it to proceed to backtest.
+            assert res2.n_committed == 0
             events_path = project_root / "runs" / res2.run_id / "events.jsonl"
             raw = events_path.read_text(encoding="utf-8").strip()
             event = json.loads(raw.split("\n")[0])
             cand = event["candidates"][0]
+            assert cand["passed"] is False
             assert cand.get("stage") != "diversity_config", (
                 f"Config similarity should no longer cause a hard reject; got stage={cand.get('stage')!r}"
             )

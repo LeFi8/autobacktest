@@ -371,7 +371,7 @@ def _check_soft_gates(
         if not result.accepted:
             return result
 
-    if require_dsr and baseline is not None and compare_metric != "deflated":
+    if require_dsr and baseline is not None:
         result = _check_dsr_non_degradation(report, baseline)
         if not result.accepted:
             return result
@@ -407,7 +407,13 @@ def _check_metric_improvement(
 
     required_metric = baseline_val + min_improvement - improvement_tol
     if tradeoff_coeff > 0.0:
-        required_metric -= tradeoff_coeff * (cand_ret - base_ret) * 100
+        tradeoff_term = tradeoff_coeff * (cand_ret - base_ret) * 100
+        if compare_metric == "deflated":
+            base_raw = baseline.observed_sharpe
+            base_dsr = baseline.deflated_sharpe
+            scale = (base_dsr / base_raw) if base_raw > 0.0 else 1.0
+            tradeoff_term *= scale
+        required_metric -= tradeoff_term
 
     if math.isnan(candidate_val) or math.isnan(baseline_val) or candidate_val <= required_metric:
         basis = "DSR" if compare_metric == "deflated" else target_metric.value
@@ -542,12 +548,18 @@ def confirm(
         return GateResult(accepted=False, reason=msg, failed_gate="turnover")
 
     # 3. Holdout DSR non-degradation
+    hd_candidate = report.holdout_deflated_sharpe
+    if math.isnan(hd_candidate):
+        msg = "Candidate holdout DSR is NaN."
+        report.is_accepted = False
+        report.rejection_reason = msg
+        return GateResult(accepted=False, reason=msg, failed_gate="holdout_dsr_non_degradation")
+
     if baseline is not None:
         eps = 1e-6
-        hd_candidate = report.holdout_deflated_sharpe
         hd_baseline = baseline.holdout_deflated_sharpe
 
-        if hd_candidate < hd_baseline - eps - holdout_min_improvement:
+        if not math.isnan(hd_baseline) and hd_candidate < hd_baseline - eps - holdout_min_improvement:
             msg = (
                 f"Candidate holdout DSR ({hd_candidate:.6f}) degrades below "
                 f"baseline holdout DSR ({hd_baseline:.6f}) by more than "

@@ -636,12 +636,11 @@ def test_select_compare_metric_raw_explicit():
 
 
 def test_select_improvement_tol_rescues_near_tie():
-    """Candidate with DSR within tolerance band passes in default deflated mode."""
+    """Candidate with DSR within tolerance band passes in default deflated mode if non-degradation is disabled."""
     base = _create_mock_report(deflated_sharpe=0.80)
     # Candidate is 0.01 below baseline DSR — within 0.02 tolerance.
-    # Default config: deflated mode, no gate overrides needed (Fix 3 skips non-degradation).
     cand = _create_mock_report(deflated_sharpe=0.79)
-    res = select(cand, baseline=base, config={})
+    res = select(cand, baseline=base, config={"require_dsr_non_degradation": False})
     assert res.accepted, f"Expected near-tie to pass but got: {res.reason}"
 
 
@@ -701,12 +700,20 @@ def test_metric_floor_deflated_mode_uses_raw_scale():
     assert res_pass.accepted
 
 
-def test_dsr_non_degradation_skipped_in_deflated_mode():
-    """In deflated mode, DSR non-degradation gate is skipped (improvement gate subsumes it)."""
-    # Candidate DSR is 0.01 below baseline (within 0.02 tolerance) — should pass
+def test_dsr_non_degradation_enforced_in_deflated_mode_by_default():
+    """In deflated mode, DSR non-degradation gate is enforced by default."""
     base = _create_mock_report(deflated_sharpe=0.85)
     cand = _create_mock_report(deflated_sharpe=0.84)
-    res = select(cand, baseline=base, config={})  # default deflated mode
+    res = select(cand, baseline=base, config={})  # default deflated mode, require_dsr_non_degradation=True
+    assert not res.accepted
+    assert res.failed_gate == "dsr_non_degradation"
+
+
+def test_dsr_non_degradation_can_be_disabled_in_deflated_mode():
+    """In deflated mode, DSR non-degradation gate is skipped if explicitly disabled."""
+    base = _create_mock_report(deflated_sharpe=0.85)
+    cand = _create_mock_report(deflated_sharpe=0.84)
+    res = select(cand, baseline=base, config={"require_dsr_non_degradation": False})  # default deflated mode
     assert res.accepted, f"Expected pass (DSR within tolerance) but got: {res.reason}"
 
 
@@ -729,3 +736,32 @@ def test_dsr_non_degradation_nan_baseline_passes():
     # Use raw mode; NaN baseline → no DSR floor to enforce → gate is skipped → accepted
     res = select(cand, baseline=base, config={"select_compare_metric": "raw", "select_improvement_tol": 0.0})
     assert res.accepted
+
+
+def test_gate_hybrid_tradeoff_deflated_mode() -> None:
+    """Verifies return tradeoff is scaled to DSR units in deflated mode."""
+    # Baseline: DSR=0.50, raw Sharpe=2.0 (scale = 0.25). Return = 0.10.
+    base = _create_mock_report(sharpe=2.0, deflated_sharpe=0.50, annualized_return=0.10)
+
+    # 1. Candidate DSR=0.20. Return = 0.12 (+2pp).
+    # Tradeoff coeff = 0.5.
+    # Raw tradeoff term = 0.5 * 2.0 = 1.0.
+    # Scaled tradeoff term = 1.0 * 0.25 = 0.25.
+    # Hurdle = 0.50 - 0.25 = 0.25.
+    # Candidate DSR is 0.20 (< 0.25 hurdle) -> fails
+    cand_fail = _create_mock_report(sharpe=1.8, deflated_sharpe=0.20, annualized_return=0.12)
+    config_tradeoff = {
+        "metric_return_tradeoff": 0.5,
+        "select_compare_metric": "deflated",
+        "select_improvement_tol": 0.0,
+        "require_dsr_non_degradation": False,
+    }
+    res_fail = select(cand_fail, baseline=base, config=config_tradeoff)
+    assert not res_fail.accepted
+    assert res_fail.failed_gate == "target_metric_improvement"
+
+    # 2. Candidate DSR=0.30. Return = 0.12 (+2pp).
+    # Candidate DSR is 0.30 (> 0.25 hurdle) -> passes
+    cand_pass = _create_mock_report(sharpe=1.8, deflated_sharpe=0.30, annualized_return=0.12)
+    res_pass = select(cand_pass, baseline=base, config=config_tradeoff)
+    assert res_pass.accepted

@@ -385,23 +385,17 @@ class TestDiversityGateIntegration:
         assert "winner" not in ev
 
     def test_orchestrator_rejects_duplicate_strategy(self, project_root: Path) -> None:
-        """Edit with returns nearly identical to baseline → rejected (does not beat incumbent).
+        """Edit with returns nearly identical to baseline -> rejected at returns diversity stage.
 
-        With the softened diversity gate, returns-diversity is now checked POST quality.
-        A candidate that is identical to the baseline will fail the selection gate
-        (it cannot improve over itself), so it is rejected at 'gate' stage rather than
-        'diversity_returns'. The post-quality returns-diversity hard-reject (at 0.999
-        threshold) is only reachable by candidates that genuinely improve quality first.
-
-        This test verifies: the duplicate candidate is rejected (not committed), and
-        the failed attempt is recorded in the ledger.
+        With the softened diversity gate, returns-diversity is checked POST quality.
+        By mocking the evaluation to yield a higher Sharpe for the candidate while
+        maintaining the same returns series as baseline, we pass the selection gate
+        but trigger a returns correlation hard reject.
         """
         synthetic_prices = _make_synthetic_prices()
         fake_instance = _make_fake_provider(synthetic_prices)
 
-        # Edit uses BASELINE_STRATEGY code (allocates to LOW) with a different config.
-        # Since the strategy logic is unchanged, returns are identical to the baseline,
-        # so it cannot beat the incumbent in quality gates.
+        # Edit uses BASELINE_STRATEGY code with a different config.
         same_returns_edit = AgentEdit(
             strategy_code=BASELINE_STRATEGY,
             config_yaml=IMPROVED_CONFIG,
@@ -410,7 +404,26 @@ class TestDiversityGateIntegration:
         )
         mock_provider = MockProvider(response=same_returns_edit)
 
+        from typing import Any
+
         from autobacktest.config import settings
+        from autobacktest.orchestrator import _eval_single_candidate
+
+        original_eval = _eval_single_candidate
+
+        def mock_eval(*args: Any, **kwargs: Any) -> Any:
+            r, ret, cfg, err = original_eval(*args, **kwargs)
+            if r is not None and args[1] == BASELINE_STRATEGY and args[2] == IMPROVED_CONFIG:
+                import copy
+
+                r = copy.deepcopy(r)
+                r.in_sample_metrics.sharpe_ratio = 5.0
+                r.observed_sharpe = 5.0
+                r.deflated_sharpe = 5.0
+                r.in_sample_metrics.max_drawdown = 0.1
+                r.in_sample_metrics.turnover = 1.0
+                r.regime_passed = True
+            return r, ret, cfg, err
 
         with (
             patch.object(settings, "enable_identical_behavior_guard", False),
@@ -418,6 +431,7 @@ class TestDiversityGateIntegration:
                 "autobacktest.evaluator.evaluate.CachedDataProvider",
                 return_value=fake_instance,
             ),
+            patch("autobacktest.orchestrator._eval_single_candidate", side_effect=mock_eval),
         ):
             result = run_optimization(
                 program_path=project_root / "program.md",
@@ -445,10 +459,7 @@ class TestDiversityGateIntegration:
         assert "candidates" in ev
         cand = ev["candidates"][0]
         assert cand["passed"] is False
-        # Post-quality diversity check: identical returns now rejected at 'gate' stage
-        # (selection gate catches it before reaching the post-quality diversity check).
-        # It must NOT be rejected at diversity_config (config gate no longer hard-rejects).
-        assert cand["stage"] != "diversity_config"
+        assert cand["stage"] == "diversity_returns"
 
         # Verification: the failed attempt is recorded in the ledger
         import sqlite3
@@ -462,6 +473,7 @@ class TestDiversityGateIntegration:
         conn.close()
         assert len(rows) >= 2  # baseline (iter 0) + rejection (iter 1)
         assert rows[-1][1] == 0  # accepted=False
+        assert rows[-1][2] == "diversity_tier2_returns"
 
     def test_identical_candidates_consume_iteration(self, project_root: Path) -> None:
         """Identical candidates are rejected and the iteration budget is consumed.
