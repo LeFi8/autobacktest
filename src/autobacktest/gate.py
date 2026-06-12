@@ -94,6 +94,13 @@ def _get_in_sample_metric_val(report: EvaluationReport, target_metric: TargetMet
     Infinity and NaN are capped to 0.0 so that a "risk-free" strategy
     (e.g. all-non-negative-returns producing +inf Sortino) does not
     dominate or derail the lexicographic gate.
+
+    Args:
+        report: Candidate evaluation report.
+        target_metric: Which metric to extract (Sharpe, Sortino, or IR).
+
+    Returns:
+        The metric value, capped to 0.0 for NaN/Inf.
     """
     if target_metric == TargetMetric.SHARPE:
         val = report.in_sample_metrics.sharpe_ratio
@@ -112,9 +119,17 @@ def _get_in_sample_metric_val(report: EvaluationReport, target_metric: TargetMet
 def _get_compare_metric_val(report: EvaluationReport, target_metric: TargetMetric, compare_metric: str) -> float:
     """Return the value used by the select-gate improvement comparison.
 
-    'deflated' -> report.deflated_sharpe (DSR, robust to overfitting).
-    'raw'      -> in-sample target_metric (legacy Sharpe/Sortino/IR).
+    ``"deflated"`` → ``report.deflated_sharpe`` (DSR, robust to overfitting).
+    ``"raw"`` → in-sample target metric (legacy Sharpe/Sortino/IR).
     NaN/Inf are capped to 0.0 for consistent comparison.
+
+    Args:
+        report: Evaluation report to extract the metric from.
+        target_metric: Metric choice (used only when ``compare_metric`` is ``"raw"``).
+        compare_metric: ``"deflated"`` for DSR or ``"raw"`` for in-sample metric.
+
+    Returns:
+        The comparison metric value, capped to 0.0 for NaN/Inf.
     """
     if compare_metric == "deflated":
         val = report.deflated_sharpe
@@ -126,7 +141,12 @@ def _get_compare_metric_val(report: EvaluationReport, target_metric: TargetMetri
 
 
 def _write_gates_passed(report: EvaluationReport, checks: dict[str, bool]) -> None:
-    """Write gate outcomes to the report."""
+    """Write gate outcomes to the report's ``gates_passed`` dict.
+
+    Args:
+        report: Evaluation report to update.
+        checks: Mapping of gate name to pass/fail boolean.
+    """
     report.gates_passed.update(checks)
 
 
@@ -245,9 +265,19 @@ def _resolve_select_config(
 
     Resolution priority: explicit argument > config object attribute/key > schema default.
 
-    Returns a 10-tuple of resolved values:
-    (dd_limit, turnover_limit, pbo_limit, min_improvement, min_return_ratio,
-     require_dsr, tradeoff, floor, compare_metric, improvement_tol).
+    Args:
+        config: StrategyConfig or dict providing fallback values, or ``None``.
+        dd_limit: Explicit drawdown limit override, or ``None`` for config default.
+        turnover_limit: Explicit turnover limit override, or ``None`` for config default.
+        pbo_limit: Explicit PBO limit override, or ``None`` for config default.
+        min_improvement: Explicit min improvement override, or ``None`` for config default.
+        min_return_ratio: Explicit min return ratio override, or ``None`` for config default.
+        require_dsr_non_degradation: Explicit DSR requirement override, or ``None`` for config default.
+
+    Returns:
+        10-tuple of resolved values: (dd_limit, turnover_limit, pbo_limit,
+        min_improvement, min_return_ratio, require_dsr, tradeoff, floor,
+        compare_metric, improvement_tol).
     """
     dd_limit = dd_limit if dd_limit is not None else _get_config_val(config, "max_drawdown_limit", 0.20)
     turnover_limit = turnover_limit if turnover_limit is not None else _get_config_val(config, "turnover_limit", 2.0)
@@ -615,6 +645,14 @@ def confirm(
        ``report.holdout_deflated_sharpe >= baseline.holdout_deflated_sharpe - eps``
        with ``holdout_min_improvement`` tolerance (default 0.0 → strict non-degradation).
 
+    Args:
+        report: Candidate evaluation report (must have holdout metrics populated).
+        baseline: Incumbent evaluation report, or ``None`` for first iteration.
+        dd_limit: Max holdout drawdown threshold. Resolved from config if ``None``.
+        turnover_limit: Max holdout turnover threshold. Resolved from config if ``None``.
+        holdout_min_improvement: Tolerance for holdout DSR comparison. Resolved from config if ``None``.
+        config: StrategyConfig or dict providing fallback values for unresolved parameters.
+
     Returns:
         GateResult: Decision outcome. Each call counts as one holdout peek.
     """
@@ -699,16 +737,24 @@ def accept(
 ) -> GateResult:
     """Backward-compatible wrapper: composes ``select`` + ``confirm``.
 
-    Intended for the standalone CLI ``evaluate`` path.  During an
-    optimisation run the orchestrator calls ``select`` and ``confirm``
+    Intended for the standalone CLI ``evaluate`` path. During an
+    optimization run the orchestrator calls ``select`` and ``confirm``
     as separate stages.
 
-    The ``require_dsr_non_degradation`` parameter is propagated to the
-    underlying ``select`` gate.  When ``None`` the value is resolved
-    from the ``config`` (default ``True``).
+    Args:
+        report: Candidate evaluation report.
+        baseline: Incumbent evaluation report, or ``None`` for first iteration.
+        target_metric: Metric choice for improvement comparison (default SHARPE).
+        dd_limit: Max drawdown threshold. Resolved from config if ``None``.
+        turnover_limit: Max turnover threshold. Resolved from config if ``None``.
+        min_improvement: Minimum metric improvement over baseline. Resolved from config if ``None``.
+        require_dsr_non_degradation: Enforce DSR non-degradation. Resolved from config if ``None``.
+        min_return_ratio: Minimum fraction of baseline return. Resolved from config if ``None``.
+        pbo_limit: Maximum PBO threshold. Resolved from config if ``None``.
+        config: StrategyConfig or dict providing fallback values.
 
-    The ``config`` may also carry ``metric_return_tradeoff`` and
-    ``metric_floor`` for hybrid gating (see :func:`select`).
+    Returns:
+        GateResult: Decision outcome from the composed select + confirm gates.
     """
     sel = select(
         report,

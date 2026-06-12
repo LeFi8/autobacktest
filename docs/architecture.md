@@ -77,7 +77,7 @@ graph TD
     end
 
     subgraph Strategies
-        STRAT[strategies/*.py]
+        STRAT[strategies/<name>/]
     end
 
     CLI --> CMDS
@@ -132,7 +132,7 @@ Provides user subcommands utilizing `typer` and formats leaderboard responses vi
 - `report`: Displays runs leaderboard from SQLite tracking ledger.
 - `reset`: Reverts strategy codes to baseline states and purges run logs.
 - `evaluate`: Evaluates a standalone strategy directly without the optimization loop.
-- `init-strategy`: Interactive wizard that scaffolds a new strategy. Prompts for universe, benchmark, risk limits, and custom parameters, validates via `StrategyConfig`, and generates `configs/{name}.yaml` and `strategies/{name}.py` boilerplate.
+- `init-strategy`: Interactive wizard that scaffolds a new strategy. Prompts for universe, benchmark, risk limits, and custom parameters, validates via `StrategyConfig`, and generates `strategies/{name}/config.yaml` and `strategies/{name}/strategy.py` boilerplate.
 - `spa`: Runs Hansen's Superior Predictive Ability (SPA) test against the ledger to determine whether any candidate significantly outperforms the baseline after correcting for data-snooping bias.
 - `llm-test`: Tests an LLM prompt against preflight checks without running the full optmization loop.
 

@@ -59,7 +59,18 @@ _LEVEL_AGG_FUNCS = {"mean", "sum", "std", "min", "max"}
 
 
 def _get_call_name(node: ast.Call) -> str | None:
-    """Return the bare function/method name from a Call node, or None."""
+    """Return the bare function/method name from a ``Call`` AST node.
+
+    Handles both direct calls (``func_name(...)``) and method calls
+    (``obj.method_name(...)``).
+
+    Args:
+        node: The ``ast.Call`` node to extract the name from.
+
+    Returns:
+        The function/method name string, or ``None`` if the call target
+        is not a simple ``Name`` or ``Attribute`` node.
+    """
     func = node.func
     if isinstance(func, ast.Name):
         return func.id
@@ -69,9 +80,15 @@ def _get_call_name(node: ast.Call) -> str | None:
 
 
 class _PandasDeprecationTransformer(ast.NodeTransformer):
-    """Rewrites deprecated pandas API patterns in-place on the AST."""
+    """Rewrites deprecated pandas API patterns in-place on the AST.
+
+    Handles frequency alias remapping (``'M'`` → ``'ME'`` for DatetimeIndex,
+    ``'ME'`` → ``'M'`` for Period), ``groupby(axis=...)`` removal,
+    ``fillna(method=...)`` replacement, and ``level=`` aggregation rewrites.
+    """
 
     def __init__(self) -> None:
+        """Initialize the transformer with an empty fixes log."""
         self.fixes_applied: list[str] = []
 
     def _remap_first_arg(self, node: ast.Call, alias_map: dict[str, str], context: str) -> None:
@@ -185,6 +202,18 @@ class _PandasDeprecationTransformer(ast.NodeTransformer):
         return new_call
 
     def visit_Call(self, node: ast.Call) -> ast.AST:
+        """Visit a ``Call`` node and apply all applicable pandas deprecation fixes.
+
+        Applies fixes in order: groupby axis removal, fillna method replacement,
+        level aggregation rewrite, and frequency alias remapping. Returns the
+        (possibly replaced) node.
+
+        Args:
+            node: The ``ast.Call`` node to transform.
+
+        Returns:
+            The original or transformed node.
+        """
         self.generic_visit(node)
         name = _get_call_name(node)
         if name is None:
@@ -206,16 +235,15 @@ class _PandasDeprecationTransformer(ast.NodeTransformer):
 
 
 class _MissingImportInjector(ast.NodeTransformer):
-    """Injects ``from typing import Any`` when ``Any`` is used in type annotations
-    but not imported.  This is a common LLM mistake that causes a hard runtime
-    :class:`NameError` in the sandboxed subprocess.
+    """Injects ``from typing import Any`` when ``Any`` is used but not imported.
 
-    The import is placed after the module docstring (if one exists) to avoid
-    breaking Python's docstring recognition — any statement before a string
-    literal at module level prevents it from being registered as ``__doc__``.
+    This is a common LLM mistake that causes a hard runtime ``NameError`` in
+    the sandboxed subprocess. The import is placed after the module docstring
+    (if one exists) to avoid breaking Python's docstring recognition.
     """
 
     def __init__(self) -> None:
+        """Initialize the injector with an empty fixes log."""
         self.fixes_applied: list[str] = []
 
     @staticmethod
@@ -267,21 +295,36 @@ class _MissingImportInjector(ast.NodeTransformer):
         self.fixes_applied.append("Injected missing `from typing import Any`")
 
     def visit_Module(self, node: ast.Module) -> ast.AST:
+        """Visit the module root and inject ``from typing import Any`` if needed.
+
+        Checks whether ``Any`` is used anywhere in the module (as a name or
+        in string annotations) and whether it's already imported. If usage
+        exists but no import, inserts one after the module docstring.
+
+        Args:
+            node: The ``ast.Module`` root node.
+
+        Returns:
+            The (possibly modified) module node.
+        """
         if self._detect_any_usage(node) and not self._detect_typing_any_import(node):
             self._inject_typing_any_import(node)
         return self.generic_visit(node)
 
 
 class _WeightRenormalizer(ast.NodeTransformer):
-    """Injects a final weight-renormalization step before ``return`` inside
-    ``generate_signals`` when the function does not already perform one.
+    """Injects a final weight-renormalization step before ``return`` in ``generate_signals``.
 
     Float-accumulation errors from multiple sequential normalisation / capping
     passes routinely cause row sums to drift above the ``1.0 + 1e-5`` tolerance
-    enforced by :func:`~autobacktest.strategy.contract.validate_output`.
+    enforced by ``validate_output``. This transformer adds
+    ``weights = weights.clip(lower=0.0)`` and
+    ``weights = weights.div(weights.sum(axis=1), axis=0).fillna(0.0)``
+    before the final ``return`` statement when not already present.
     """
 
     def __init__(self) -> None:
+        """Initialize the renormalizer with an empty fixes log."""
         self.fixes_applied: list[str] = []
 
     # ------------------------------------------------------------------
@@ -357,6 +400,18 @@ class _WeightRenormalizer(ast.NodeTransformer):
     # transformer hook
     # ------------------------------------------------------------------
     def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
+        """Visit function definitions and inject renormalization into ``generate_signals``.
+
+        Locates the final ``return <var>`` statement, checks whether
+        renormalization (``.clip(lower=0.0)``) already exists, and if not,
+        inserts the clip + div + fillna statements before the return.
+
+        Args:
+            node: The ``ast.FunctionDef`` node to transform.
+
+        Returns:
+            The original or modified function node.
+        """
         self.generic_visit(node)
 
         if node.name != "generate_signals":

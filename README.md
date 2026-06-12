@@ -58,12 +58,12 @@ Full visual reports, equity curves, and strategy summaries land in `runs/<run_id
 
 ## Creating your own strategy
 
-Each strategy has two files matching by name stem:
+Each strategy lives in a subdirectory with two files:
 
 | File | Purpose |
 |---|---|
-| `strategies/<name>.py` | Signal generation — exports `generate_signals(prices, config)` |
-| `configs/<name>.yaml` | Parameters — universe, limits, Pydantic-validated fields |
+| `strategies/<name>/strategy.py` | Signal generation — exports `generate_signals(prices, config)` |
+| `strategies/<name>/config.yaml` | Parameters — universe, limits, Pydantic-validated fields |
 
 **Scaffold a new strategy:**
 
@@ -87,7 +87,7 @@ to `program-<name>.md` — files matching `program-*.md` are git-ignored by defa
 uv run autobacktest run --program program.md --strategy my_strategy --iterations 10
 ```
 
-See `strategies/equal_weight.py` and `configs/equal_weight.yaml` for a complete reference strategy.
+See `strategies/equal_weight/strategy.py` and `strategies/equal_weight/config.yaml` for a complete reference strategy.
 
 ---
 
@@ -143,7 +143,7 @@ Use `uv run autobacktest --help` for full flag details.
 ## Testing & quality
 
 ```bash
-uv run pytest          # 395+ tests
+uv run pytest          # 447+ tests
 uv run ruff check .    # linting (line-length 120, target py312)
 uv run mypy src/       # strict type checking
 ```
@@ -154,8 +154,7 @@ uv run mypy src/       # strict type checking
 
 ```
 autobacktest/
-├── strategies/         # Signal code (<name>.py + <name>.yaml)
-├── configs/            # Parameters per strategy
+├── strategies/         # Strategy subdirectories (<name>/strategy.py + config.yaml)
 ├── src/autobacktest/   # Core engine
 │   ├── cli.py          # Typer entrypoint
 │   ├── commands/       # Subcommand implementations (run, report, evaluate, etc.)
@@ -182,6 +181,7 @@ Detailed documentation is available in [`docs/`](docs/):
 |---|---|
 | [`docs/index.md`](docs/index.md) | Documentation hub with full table of contents |
 | [`docs/about-project.md`](docs/about-project.md) | Project overview, goals, and primary interaction flows |
+| [`docs/strategy-guide.md`](docs/strategy-guide.md) | Complete guide to creating, configuring, and optimizing strategies |
 | [`docs/architecture.md`](docs/architecture.md) | System architecture and component design |
 | [`docs/api-reference.md`](docs/api-reference.md) | Full API reference for CLI and core modules |
 | [`docs/developer-setup.md`](docs/developer-setup.md) | Environment setup and development workflow |

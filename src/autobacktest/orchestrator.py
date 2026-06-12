@@ -167,6 +167,13 @@ class OrchestratorResult:
 
 
 class _OptimizationState:
+    """Mutable state container for a single optimization run.
+
+    Encapsulates all loop variables, resources (ledger, git, lessons, eval cache),
+    and iteration-level state transitions. Initialized by ``setup()`` and cleaned
+    up by ``cleanup()``.
+    """
+
     def __init__(
         self,
         program_path: Path,
@@ -185,6 +192,24 @@ class _OptimizationState:
         early_stop_patience: int = settings.early_stop_patience,
         quiet: bool = False,
     ):
+        """Initialize optimization state with all loop parameters.
+
+        Args:
+            program_path: Path to the markdown program objective file.
+            strategy_name: Name of the target strategy (stem, no extension).
+            iterations: Total number of optimization iterations to run.
+            provider: LLM provider instance for generating candidate mutations.
+            run_dir: Directory for writing the run database and event log.
+            strategies_dir: Directory containing strategy ``.py`` files.
+            configs_dir: Directory containing strategy ``.yaml`` config files.
+            target_metric: Metric to optimize (Sharpe, Sortino, or Information Ratio).
+            repo_path: Git repository root for strategy commit/rollback.
+            start_date: Backtest start date (inclusive, ``YYYY-MM-DD``).
+            end_date: Backtest end date (exclusive, ``YYYY-MM-DD``).
+            holdout_peek_limit: Maximum holdout peeks before early termination.
+            early_stop_patience: Consecutive failed iterations before early stop.
+            quiet: When True, suppress non-critical warnings.
+        """
         self.program_path = program_path
         self.strategy_name = strategy_name
         self.iterations = iterations
@@ -240,6 +265,18 @@ class _OptimizationState:
         self.dataset_hash: Any = None
 
     def setup(self, resume: str | None) -> None:
+        """Initialize all resources: parse program, resolve strategy paths, create ledger.
+
+        Handles both new runs and resume scenarios. When resuming, checks out
+        the existing run branch and recovers state from the ledger.
+
+        Args:
+            resume: Run ID to resume, or ``None`` for a fresh run.
+
+        Raises:
+            FileNotFoundError: If the strategy or config files don't exist.
+            ValueError: If the resume branch cannot be checked out.
+        """
         self.spec = parse_program(self.program_path)
 
         new_strat_path = self.strategies_dir / self.strategy_name / "strategy.py"
@@ -308,6 +345,13 @@ class _OptimizationState:
         self._setup_incumbent(resume)
 
     def _setup_baseline(self) -> None:
+        """Evaluate the baseline strategy and record it as iteration 0 in the ledger.
+
+        Loads the current strategy code, runs a full walk-forward + holdout
+        evaluation, deflates the DSR, records the attempt, and audits the
+        baseline against gate constraints. Sets ``self.incumbent`` and
+        ``self.incumbent_returns``.
+        """
         baseline_fn = _load_signals(self.strat_path)
         _baseline_code = self.strat_path.read_text(encoding="utf-8")
         baseline_report, baseline_returns = evaluate_strategy_detailed(
@@ -384,6 +428,12 @@ class _OptimizationState:
                 )
 
     def _resume_incumbent(self) -> None:
+        """Recover the incumbent state from the ledger when resuming a run.
+
+        Queries the ledger for the latest accepted attempt, deserializes
+        the evaluation report and returns, and restores holdout returns.
+        Falls back to a zero-value report if no accepted attempts exist.
+        """
         rows = (
             self.ledger._conn()
             .execute(
@@ -454,6 +504,15 @@ class _OptimizationState:
             self.incumbent_returns = pd.Series(dtype=float)
 
     def _setup_incumbent(self, resume: str | None) -> None:
+        """Initialize the incumbent by either evaluating the baseline or resuming.
+
+        Checks whether a baseline record already exists in the ledger (for resume),
+        and delegates to ``_setup_baseline()`` or ``_resume_incumbent()`` accordingly.
+        Stores the initial baseline snapshot in ``self.baseline_at_start``.
+
+        Args:
+            resume: Run ID to resume, or ``None`` for a fresh run.
+        """
         baseline_exists = False
         if resume:
             check_baseline = (
@@ -472,6 +531,13 @@ class _OptimizationState:
         self.baseline_at_start = self.incumbent
 
     def prepare_iteration(self) -> None:
+        """Prepare mode and temperature for the upcoming iteration.
+
+        Checks the stuck threshold and forces explore mode if exceeded.
+        Adjusts the LLM provider's temperature based on the current mode
+        and rolling failure rate: exploit mode uses minimum temperature,
+        explore mode scales temperature by recent failure rate.
+        """
         if self.consecutive_no_accept >= STUCK_THRESHOLD:
             if self.mode != "explore":
                 logger.info("Stuck threshold reached, forcing EXPLORE mode.")
@@ -490,6 +556,18 @@ class _OptimizationState:
                 self.provider.temperature = self.min_temp + (self.start_temp - self.min_temp) * failure_rate
 
     def build_context(self, k: int) -> AgentContext:
+        """Construct the immutable context passed to the LLM for candidate generation.
+
+        Assembles current strategy code, config YAML, evaluation report,
+        lessons, attempt history, explored config summary, and mode
+        information into an ``AgentContext`` dataclass.
+
+        Args:
+            k: Current 1-indexed iteration number.
+
+        Returns:
+            Fully populated ``AgentContext`` for the LLM.
+        """
         current_code = self.strat_path.read_text(encoding="utf-8")
         current_yaml = self.cfg_path.read_text(encoding="utf-8")
         historical_configs = self.ledger.fetch_configs(self.dataset_hash)
@@ -522,6 +600,19 @@ class _OptimizationState:
         )
 
     def _apply_jitter(self, k: int, i: int, ev: dict[str, Any], all_tried: list[str]) -> None:
+        """Attempt config jitter to salvage a candidate that failed Tier 1 diversity.
+
+        When a candidate's config is too similar to historical attempts,
+        ``jitter_config()`` perturbs numeric parameters within bounded
+        ranges. If the jittered config passes preflight validation, the
+        candidate is updated in-place.
+
+        Args:
+            k: Current iteration number (used for jitter seed).
+            i: Candidate index within the iteration (used for jitter seed).
+            ev: Mutable candidate dict to update with jittered config.
+            all_tried: Pool of all previously tried config YAML strings.
+        """
         import hashlib
 
         seed_bytes = f"{ev['config_yaml']}_{k}_{i}".encode()
@@ -562,6 +653,23 @@ class _OptimizationState:
             ev["jitter_attempted"] = True
 
     def _process_raw_edit(self, k: int, edit: AgentEdit, directive: str, ctx: AgentContext) -> dict[str, Any]:
+        """Process a raw LLM edit through repair, validation, and preflight.
+
+        Ingests lessons from the edit, applies codemod repairs (pandas
+        deprecation fix, import injection, weight renormalization), runs
+        preflight validation, and optionally attempts LLM-based repair
+        on failure.
+
+        Args:
+            k: Current iteration number.
+            edit: Raw ``AgentEdit`` from the LLM provider.
+            directive: Candidate directive string for diversity guidance.
+            ctx: Current ``AgentContext`` for LLM repair calls.
+
+        Returns:
+            Mutable dict with keys ``'edit'``, ``'valid'``, ``'config_yaml'``,
+            ``'strategy_code'``, ``'config_similarity'``, and validation metadata.
+        """
         self.n_llm_ok += 1
         if edit.lessons_text is not None and edit.lessons_text.strip():
             self.lesson_store.ingest_markdown(edit.lessons_text, self.strategy_name)
@@ -588,6 +696,17 @@ class _OptimizationState:
     def _diversity_config_pool(
         self, historical_configs: list[str], batch_configs: list[str], current_yaml: str
     ) -> list[str]:
+        """Build the config pool for diversity comparison based on the configured mode.
+
+        Args:
+            historical_configs: All historical config YAML strings from the ledger.
+            batch_configs: Configs from other candidates in the current iteration.
+            current_yaml: The current incumbent config YAML.
+
+        Returns:
+            Combined pool of config strings to compare against, filtered
+            by ``settings.diversity_compare_mode``.
+        """
         mode = settings.diversity_compare_mode
         if mode == "incumbent":
             base = [current_yaml]
@@ -609,6 +728,21 @@ class _OptimizationState:
         batch_configs: list[str],
         current_yaml: str,
     ) -> None:
+        """Check Tier 1 config diversity and optionally apply jitter salvage.
+
+        Computes max config similarity against the pool. If similarity
+        exceeds the threshold and jitter is enabled, attempts ``_apply_jitter``
+        to perturb the config. Does NOT hard-reject — candidates always
+        proceed to backtest; the similarity score is recorded for later use.
+
+        Args:
+            k: Current iteration number.
+            i: Candidate index within the iteration.
+            ev: Mutable candidate dict to update with similarity score.
+            historical_configs: All historical config YAML strings.
+            batch_configs: Configs from other candidates in this iteration.
+            current_yaml: The current incumbent config YAML.
+        """
         if not settings.enable_config_diversity_gate:
             ev["config_similarity"] = 0.0
             return
@@ -622,6 +756,15 @@ class _OptimizationState:
         # NO hard reject here — candidate always proceeds to backtest
 
     def _check_exploit_gate(self, ev: dict[str, Any], current_yaml: str) -> None:
+        """Reject exploit-mode candidates that are identical to the incumbent config.
+
+        In exploit mode, returning the same config unchanged is always rejected
+        to force at least one parameter change per iteration.
+
+        Args:
+            ev: Mutable candidate dict to mark as invalid if identical.
+            current_yaml: The current incumbent config YAML.
+        """
         e_config_yaml = ev["config_yaml"]
         max_sim = max_config_similarity(e_config_yaml, [current_yaml])
         if max_sim >= 0.999:
@@ -630,6 +773,16 @@ class _OptimizationState:
             ev["detail"] = "Exploit candidate is identical to the incumbent config; no change to evaluate."
 
     def _check_identical_behavior(self, ev: dict[str, Any], current_code: str) -> None:
+        """Reject candidates whose weights are identical to the incumbent on synthetic prices.
+
+        Runs ``compare_signals_to_incumbent`` with a small epsilon to detect
+        strategies that produce functionally identical allocation signals
+        despite different code.
+
+        Args:
+            ev: Mutable candidate dict to mark as invalid if behaviorally identical.
+            current_code: The current incumbent strategy source code.
+        """
         from autobacktest.strategy.validator import compare_signals_to_incumbent
 
         is_identical, diff = compare_signals_to_incumbent(
@@ -650,6 +803,17 @@ class _OptimizationState:
             )
 
     def _validate_diversity_and_guards(self, k: int, candidate_results: list[dict[str, Any]]) -> None:
+        """Run all diversity and guard checks on the candidate batch.
+
+        Orchestrates Tier 1 config diversity (explore mode), exploit-mode
+        identical-config guard, and identical-behavior guard across all
+        valid candidates. Batch configs are accumulated so later candidates
+        in the same iteration compare against earlier ones.
+
+        Args:
+            k: Current iteration number.
+            candidate_results: List of mutable candidate dicts to validate.
+        """
         historical_configs = self.ledger.fetch_configs(self.dataset_hash)
         current_yaml = self.cfg_path.read_text(encoding="utf-8")
         current_code = self.strat_path.read_text(encoding="utf-8")
@@ -679,6 +843,21 @@ class _OptimizationState:
         progress_task: Any,
         progress: Any,
     ) -> list[dict[str, Any]]:
+        """Generate N candidates in parallel and run pre-validation on each.
+
+        Calls ``_generate_candidates`` to spawn parallel LLM edits, processes
+        each through repair and preflight validation, then runs diversity
+        and guard checks on the batch.
+
+        Args:
+            k: Current iteration number.
+            ctx: Agent context for LLM calls.
+            progress_task: Rich progress task ID for updating the description.
+            progress: Rich ``Progress`` instance.
+
+        Returns:
+            List of candidate result dicts with validation metadata.
+        """
         n = getattr(settings, "n_candidates", 3)
         raw_edits = _generate_candidates(self.provider, ctx, n)
         n_gen = sum(1 for e in raw_edits if e is not None)
@@ -712,6 +891,21 @@ class _OptimizationState:
         progress_task: Any,
         progress: Any,
     ) -> list[dict[str, Any]]:
+        """Backtest all valid candidates in parallel via walk-forward evaluation.
+
+        Filters to candidates that passed preflight, evaluates each using
+        ``_eval_single_candidate`` in a thread pool, and stores the evaluation
+        report and returns in each candidate dict.
+
+        Args:
+            k: Current iteration number.
+            candidate_results: List of candidate dicts from pre-validation.
+            progress_task: Rich progress task ID.
+            progress: Rich ``Progress`` instance.
+
+        Returns:
+            List of evaluated candidate dicts (subset that had ``valid=True``).
+        """
         to_eval = [ev for ev in candidate_results if ev.get("valid")]
         progress.update(
             progress_task,
@@ -859,6 +1053,21 @@ class _OptimizationState:
         progress_task: Any,
         progress: Any,
     ) -> tuple[dict[str, Any] | None, int]:
+        """Run the two-phase gate system and select the winning candidate.
+
+        Phase 1 (select): Runs in-sample DSR deflation and the select gate
+        on all valid candidates. Phase 2 (confirm): Confirms only the top
+        select-passer against the holdout, consuming one peek.
+
+        Args:
+            k: Current iteration number.
+            candidate_results: List of evaluated candidate dicts.
+            progress_task: Rich progress task ID.
+            progress: Rich ``Progress`` instance.
+
+        Returns:
+            Tuple of (winner dict or None, peeks consumed this iteration).
+        """
         progress.update(progress_task, description=f"[cyan]Iter {k}/{self.iterations} | Running gates...")
         peeks_this_iteration: int = 0
 
@@ -897,6 +1106,23 @@ class _OptimizationState:
         return None, peeks_this_iteration
 
     def commit_winner(self, k: int, winner: dict[str, Any]) -> str | None:
+        """Commit the winning strategy to git and update the incumbent state.
+
+        Writes the new strategy code and config to disk, records the attempt
+        in the ledger, commits to git, and updates all incumbent state
+        (report, returns, mode, counters). Rolls back on failure.
+
+        Args:
+            k: Current iteration number.
+            winner: The winning candidate dict with ``'edit'``, ``'_report'``,
+                and ``'_returns'`` keys.
+
+        Returns:
+            Git commit SHA, or ``None`` if commit failed and was rolled back.
+
+        Raises:
+            Exception: Re-raises after rollback if the commit fails.
+        """
         w_edit = winner["edit"]
         w_report = winner["_report"]
         w_returns = winner["_returns"]
@@ -966,6 +1192,18 @@ class _OptimizationState:
     def record_candidates(
         self, k: int, candidate_results: list[dict[str, Any]], winner: dict[str, Any] | None, sha: str | None
     ) -> None:
+        """Record all evaluated candidates (winner + rejected) in the ledger.
+
+        The winner is marked as ``committed=True``; all other evaluated
+        candidates are recorded as rejected with their specific rejection
+        reason derived from the validation stage.
+
+        Args:
+            k: Current iteration number.
+            candidate_results: Full list of candidate result dicts.
+            winner: The winning candidate dict, or ``None`` if no winner.
+            sha: Git commit SHA of the winner, or ``None``.
+        """
         rejection_reason_map = {
             "diversity_config": "diversity_tier1_config",
             "diversity_returns": "diversity_tier2_returns",
@@ -1027,6 +1265,16 @@ class _OptimizationState:
                 _record(ev, accepted=is_winner, committed=is_winner)
 
     def update_parameter_importance(self, event: dict[str, Any]) -> None:
+        """Compute Spearman rank correlations between config parameters and target metric.
+
+        Fetches historical parameter/metric pairs from the ledger, computes
+        parameter importance, and ingests significant findings as lessons
+        for the LLM. Updates ``self.last_importance`` for config jitter.
+        Failures are logged but never raise.
+
+        Args:
+            event: Mutable event dict to store importance results.
+        """
         try:
             imp_configs, imp_metrics = self.ledger.fetch_param_importance_data(self.dataset_hash)
             importance = compute_parameter_importance(
@@ -1047,6 +1295,17 @@ class _OptimizationState:
             logger.warning("Parameter importance computation failed", exc_info=True)
 
     def _build_candidate_failure_item(self, ev: dict[str, Any]) -> dict[str, Any]:
+        """Build a serializable summary dict for a failed candidate.
+
+        Extracts rejection stage, detail, gate info, metrics, tokens, cost,
+        and jitter metadata from the candidate dict for ledger/event storage.
+
+        Args:
+            ev: Candidate dict with validation/rejection metadata.
+
+        Returns:
+            Dict suitable for JSON serialization and ledger storage.
+        """
         edit = ev.get("edit")
         rp = ev.get("_report")
         fail_item: dict[str, Any] = {
@@ -1080,6 +1339,15 @@ class _OptimizationState:
         return fail_item
 
     def _build_candidate_success_item(self, ev: dict[str, Any], is_winner: bool) -> dict[str, Any]:
+        """Build a serializable summary dict for a gate-passing candidate.
+
+        Args:
+            ev: Candidate dict with evaluation report and metrics.
+            is_winner: True if this candidate was the iteration winner.
+
+        Returns:
+            Dict suitable for JSON serialization and ledger storage.
+        """
         rp = ev.get("_report")
         edit = ev.get("edit")
         pass_item: dict[str, Any] = {
@@ -1112,6 +1380,19 @@ class _OptimizationState:
     def _build_candidates_summary(
         self, candidate_results: list[dict[str, Any]], winner: dict[str, Any] | None
     ) -> list[dict[str, Any]]:
+        """Build a complete summary list of all candidates for the event log.
+
+        Dispatches to ``_build_candidate_failure_item`` or
+        ``_build_candidate_success_item`` for each candidate based on
+        its validation state.
+
+        Args:
+            candidate_results: List of all candidate result dicts.
+            winner: The winning candidate dict, or ``None``.
+
+        Returns:
+            List of summary dicts suitable for JSON serialization.
+        """
         summary_list = []
         for ev in candidate_results:
             if ev.get("llm_error"):
@@ -1130,6 +1411,23 @@ class _OptimizationState:
         _iter_cost: float,
         candidate_results: list[dict[str, Any]],
     ) -> str:
+        """Format a Rich console summary line for a failed iteration.
+
+        Increments failure counters, checks exploit stall, extracts the best
+        failure for retry context, and formats a concise red status line
+        with mode, temperature, generation count, validation count, and
+        aggregated rejection reasons.
+
+        Args:
+            k: Current iteration number.
+            n_gen: Number of candidates that passed LLM generation.
+            _iter_n_val: Number of candidates that reached evaluation.
+            _iter_cost: Cost incurred this iteration.
+            candidate_results: List of all candidate result dicts.
+
+        Returns:
+            Rich-formatted string for console output.
+        """
         self.consecutive_no_accept += 1
         if self.mode == "exploit":
             self.exploit_stall += 1
@@ -1183,6 +1481,26 @@ class _OptimizationState:
         _iter_n_val: int,
         progress: Any,
     ) -> dict[str, Any]:
+        """Build the event dict and print the iteration summary to the console.
+
+        Constructs the full event record (candidates, gate outcome, commit),
+        computes iteration cost delta, and prints either a green success
+        line or a red failure line to the Rich console.
+
+        Args:
+            k: Current iteration number.
+            candidate_results: List of all candidate result dicts.
+            winner: The winning candidate dict, or ``None``.
+            sha: Git commit SHA of the winner, or ``None``.
+            _iter_prev_cost: Total cost before this iteration started.
+            _iter_incumbent_sharpe: Incumbent Sharpe before this iteration.
+            n_gen: Number of candidates that passed LLM generation.
+            _iter_n_val: Number of candidates that reached evaluation.
+            progress: Rich ``Progress`` instance for console output.
+
+        Returns:
+            Complete event dict for writing to the event log.
+        """
         event: dict[str, Any] = {
             "iteration": k,
             "strategy": self.strategy_name,
@@ -1301,6 +1619,14 @@ class _OptimizationState:
         return False
 
     def cleanup(self) -> None:
+        """Release resources and refresh the final incumbent's DSR.
+
+        Restores the LLM provider's original temperature, recalculates
+        the effective trials and deflated Sharpe for the final incumbent,
+        refreshes the holdout DSR, and closes the event log, lesson store,
+        and ledger connections. All operations are best-effort with
+        suppressed exceptions.
+        """
         if self.start_temp is not None:
             self.provider.temperature = self.start_temp
         if self.incumbent is not None:

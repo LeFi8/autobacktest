@@ -54,6 +54,11 @@ class ConfigFingerprint:
         self.set_fields = set_fields or {}
 
     def __repr__(self) -> str:
+        """Return a concise string representation showing numeric and set keys.
+
+        Returns:
+            String like ``ConfigFingerprint(numeric_keys=[...], set_keys=[...])``.
+        """
         return f"ConfigFingerprint(numeric_keys={list(self.numeric_params)}, set_keys={list(self.set_fields)})"
 
 
@@ -91,7 +96,17 @@ def _parse_config_to_flat(config_yaml: str) -> dict[str, Any]:
 
 
 def _normalize(value: float, lo: float, hi: float) -> float:
-    """Min-max normalise *value* into the closed interval [0, 1]."""
+    """Min-max normalise *value* into the closed interval [0, 1].
+
+    Args:
+        value: The raw numeric value to normalise.
+        lo: Lower bound of the normalisation range.
+        hi: Upper bound of the normalisation range.
+
+    Returns:
+        Normalised value in [0, 1]. Returns 0.5 when ``hi <= lo``
+        (degenerate range).
+    """
     if hi <= lo:
         return 0.5
     clipped = max(lo, min(value, hi))
@@ -136,9 +151,18 @@ def extract_config_fingerprint(config_yaml: str) -> ConfigFingerprint:
 # Pairwise similarity helpers
 # ---------------------------------------------------------------------------
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
-    """Cosine similarity between two equally-sized vectors.
+    """Compute cosine similarity between two numeric vectors.
 
-    Returns 0.5 when both vectors are zero or empty.
+    Handles unequal lengths by padding the shorter vector with 0.5 (neutral).
+    Returns 0.5 when both vectors are zero or empty (neutral default).
+    Returns 0.0 when exactly one vector has zero norm.
+
+    Args:
+        a: First numeric vector.
+        b: Second numeric vector.
+
+    Returns:
+        Cosine similarity in [-1, 1], or 0.5 for degenerate cases.
     """
     if not a or not b:
         return 0.5
@@ -164,9 +188,16 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
 
 
 def _jaccard(a: set[str], b: set[str]) -> float:
-    """Jaccard similarity coefficient for two sets.
+    """Compute Jaccard similarity coefficient for two sets.
 
-    Returns 0.5 when both sets are empty.
+    Returns 0.5 when both sets are empty (neutral default).
+
+    Args:
+        a: First set of string members.
+        b: Second set of string members.
+
+    Returns:
+        Jaccard coefficient in [0, 1], or 0.5 for empty sets.
     """
     if not a and not b:
         return 0.5
@@ -188,11 +219,19 @@ def _align_numeric_vectors(
     """Align two numeric-param dicts into equal-length normalised vectors.
 
     Keys present in only one dict are filled with 0.5 (neutral similarity).
-    Unknown keys (not in :data:`KNOWN_RANGES`) are min-max normalised
+    Unknown keys (not in ``KNOWN_RANGES``) are min-max normalised
     using *global_min* / *global_max* if available, otherwise kept as-is.
 
+    Args:
+        a: First numeric parameter dict (param_name → raw value).
+        b: Second numeric parameter dict (param_name → raw value).
+        global_min: Per-key minimum values across all historical configs
+            for normalising unknown parameters. ``None`` to skip.
+        global_max: Per-key maximum values across all historical configs
+            for normalising unknown parameters. ``None`` to skip.
+
     Returns:
-        (va, vb) two lists of the same length.
+        (va, vb) two lists of the same length, ready for cosine comparison.
     """
     all_keys = sorted(set(a) | set(b))
     va: list[float] = []
@@ -245,11 +284,16 @@ def _align_numeric_vectors(
 # Public API: config similarity
 # ---------------------------------------------------------------------------
 def config_similarity(a: ConfigFingerprint, b: ConfigFingerprint) -> float:
-    """Weighted similarity between two config fingerprints.
+    """Compute weighted similarity between two config fingerprints.
 
-    ``similarity = 0.7 x cosine(numeric) + 0.3 x mean(jaccard of set fields)``
+    Formula: ``similarity = 0.7 * cosine(numeric) + 0.3 * mean(jaccard of set fields)``
 
-    Returns a float in ``[0, 1]`` where 1.0 means structurally identical.
+    Args:
+        a: First config fingerprint.
+        b: Second config fingerprint.
+
+    Returns:
+        Similarity score in [0, 1] where 1.0 means structurally identical.
     """
     # Numeric similarity
     va, vb = _align_numeric_vectors(a.numeric_params, b.numeric_params)
@@ -414,7 +458,17 @@ def _collect_explored_params(
     historical_configs: list[str],
     max_configs: int,
 ) -> tuple[dict[str, set[float]], dict[str, set[str]]]:
-    """Extract numeric and set parameter values from historical configs."""
+    """Extract numeric and set parameter values from historical configs.
+
+    Args:
+        historical_configs: List of previously attempted config YAML strings.
+        max_configs: Maximum number of recent configs to process.
+
+    Returns:
+        Tuple of (numeric_values, set_values) where numeric_values maps
+        parameter names to sets of tried float values, and set_values
+        maps parameter names to sets of tried string members.
+    """
     numeric_values: dict[str, set[float]] = {}
     set_values: dict[str, set[str]] = {}
 
@@ -434,7 +488,15 @@ def _collect_explored_params(
 
 
 def _format_numeric_param_line(param: str, values: set[float]) -> str:
-    """Format a single numeric parameter line for the explored space summary."""
+    """Format a single numeric parameter line for the explored space summary.
+
+    Args:
+        param: Parameter name.
+        values: Set of tried numeric values.
+
+    Returns:
+        Markdown-formatted line like ``- **param**: [1, 2, 3, ...]``.
+    """
     sorted_vals: list[float] = sorted(values)
     formatted_vals = []
     for v in sorted_vals:
@@ -452,7 +514,15 @@ def _format_numeric_param_line(param: str, values: set[float]) -> str:
 
 
 def _format_set_param_line(param: str, values: set[str]) -> str:
-    """Format a single set parameter line for the explored space summary."""
+    """Format a single set parameter line for the explored space summary.
+
+    Args:
+        param: Parameter name.
+        values: Set of tried string members.
+
+    Returns:
+        Markdown-formatted line like ``- **param**: {A, B, C, ...}``.
+    """
     sorted_vals: list[str] = sorted(values)
     truncated = len(sorted_vals) > 8
     if truncated:

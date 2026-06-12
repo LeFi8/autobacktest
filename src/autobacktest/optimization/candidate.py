@@ -222,7 +222,27 @@ def _attempt_llm_repair(
 ) -> tuple[bool, str | None, str | None, bool, AgentEdit]:
     """Attempt LLM-based repair rounds to fix a failed candidate.
 
-    Returns (ok, err_code, err_detail, repair_applied, updated_edit).
+    Sends the failed code/config and error details back to the LLM with a
+    repair instruction. Up to ``settings.max_repair_attempts`` rounds are
+    attempted. Each round applies codemod repair and re-validates.
+
+    Args:
+        ctx: Current agent context for building the repair prompt.
+        edit: The original failed ``AgentEdit``.
+        ev: Mutable candidate dict for directive and metadata.
+        provider: LLM provider for repair generation calls.
+        validate_fn: Validation function (``validate_candidate``) to re-check.
+        strategy_name: Target strategy name for temp file creation.
+        strategies_dir: Directory for temporary strategy ``.py`` files.
+        configs_dir: Directory for temporary config ``.yaml`` files.
+        lessons_text: Current lessons markdown for the repair context.
+        err_code: Initial validation error code.
+        err_detail: Initial validation error detail message.
+
+    Returns:
+        Tuple of (ok, err_code, err_detail, repair_applied, updated_edit).
+        ``ok`` is True if repair succeeded. ``repair_applied`` is True if
+        at least one LLM repair round was attempted.
     """
     current_edit = edit
     for _attempt_idx in range(settings.max_repair_attempts):
