@@ -69,6 +69,20 @@ class StrategyConfig(BaseModel):
         "'raw' uses the in-sample target_metric (Sharpe/Sortino/Information Ratio). "
         "Unit of min_improvement follows this setting.",
     )
+    """Controls which metric the select gate uses when evaluating whether a
+    candidate improves over the incumbent.
+
+    ``"deflated"`` (default) compares Deflated Sharpe Ratio (DSR), which
+    accounts for multiple-testing bias and is the most robust choice.
+    ``"raw"`` compares the in-sample target metric directly (Sharpe,
+    Sortino, or Information Ratio).  The unit of ``min_improvement``
+    follows this setting.
+
+    Introduced to allow users who trust their trial count to opt into
+    raw metric comparison for tighter control, while keeping DSR as the
+    safe default.
+    """
+
     select_improvement_tol: float = Field(
         0.02,
         ge=0.0,
@@ -76,6 +90,17 @@ class StrategyConfig(BaseModel):
         "A candidate is accepted when its comparison metric >= incumbent's metric minus this "
         "tolerance, so near-ties are not rejected.",
     )
+    """Tolerance for near-tie comparisons in the select gate.
+
+    When comparing the candidate's metric against the incumbent, a
+    candidate is accepted if its metric >= (incumbent - tolerance).
+    This prevents rejecting functionally equivalent strategies due to
+    floating-point noise or marginal rounding differences.
+
+    Default ``0.02`` means a candidate whose Sharpe is within 0.02 of
+    the incumbent is still accepted.  Set to ``0.0`` to require strict
+    improvement.
+    """
 
     @field_validator("select_compare_metric")
     @classmethod

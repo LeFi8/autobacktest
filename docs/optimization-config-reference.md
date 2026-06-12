@@ -138,6 +138,11 @@ All vars are prefixed `AUTOBACKTEST_`. Set in `.env` (copy from `.env.dist`).
 | `AUTOBACKTEST_ENABLE_CONFIG_DIVERSITY_GATE` | `enable_config_diversity_gate` | `True` | Enable config similarity diversity gate |
 | `AUTOBACKTEST_DIVERSITY_CONFIG_THRESHOLD` | `diversity_config_threshold` | `0.95` | Cosine similarity threshold (0.0–1.0) |
 | `AUTOBACKTEST_DIVERSITY_RETURNS_THRESHOLD` | `diversity_returns_threshold` | `0.95` | Returns Pearson correlation threshold (0.0–1.0) |
+| `AUTOBACKTEST_DIVERSITY_COMPARE_MODE` | `diversity_compare_mode` | `"recent"` | Config comparison scope: `"recent"` (last N) or `"all"` |
+| `AUTOBACKTEST_DIVERSITY_RECENT_N` | `diversity_recent_n` | `5` | Number of recent configs to compare in `"recent"` mode |
+| `AUTOBACKTEST_DIVERSITY_HARD_THRESHOLD` | `diversity_hard_threshold` | `0.999` | Absolute hard similarity threshold (always rejects above) |
+| `AUTOBACKTEST_DIVERSITY_RETURNS_PENALTY` | `diversity_returns_penalty` | `0.0` | Penalty subtracted from returns correlation score |
+| `AUTOBACKTEST_EVAL_MAX_WORKERS` | `eval_max_workers` | `4` | Thread pool size for parallel walk-forward evaluation |
 
 ### 3.8 Other
 
@@ -177,6 +182,8 @@ Defined in `strategy/config_schema.py:StrategyConfig`. Validated by Pydantic v2 
 | `dsr_floor` | `float\|None` | `None` | — | _reserved_ | Not currently used |
 | `metric_return_tradeoff` | `float` | `0.0` | ge=0.0 | **select (soft)** | Metric reduction tolerated per 1pp (0.01) increase in annualized return; `0.0` disables |
 | `metric_floor` | `float\|None` | `None` | — | **select (soft)** | Absolute target-metric floor; candidates below this are always rejected. Unit matches `target_metric` (Sharpe/Sortino/IR). |
+| `select_compare_metric` | `str` | `deflated` | `deflated`\|`raw` | **select (soft)** | Metric for improvement comparison: `"deflated"` uses DSR (overfit-adjusted), `"raw"` uses in-sample target metric. |
+| `select_improvement_tol` | `float` | `0.02` | ≥ 0.0 | **select (soft)** | Tolerance for near-tie comparisons — candidate accepted when metric ≥ incumbent − tolerance. |
 
 > [!TIP]
 > `select_min_return_ratio` — Lower to `0.25` if your goal is risk-adjusted improvement (Sharpe/Sortino) at the cost of some return. Keep at `0.5` if absolute return matters.
@@ -354,6 +361,11 @@ Called from `stress_testing.py` with `n_paths=1000`.
 | `AUTOBACKTEST_DEFAULT_START_DATE` | env | `2015-01-01` |
 | `AUTOBACKTEST_DIVERSITY_CONFIG_THRESHOLD` | env | `0.95` |
 | `AUTOBACKTEST_DIVERSITY_RETURNS_THRESHOLD` | env | `0.95` |
+| `AUTOBACKTEST_DIVERSITY_COMPARE_MODE` | env | `"recent"` |
+| `AUTOBACKTEST_DIVERSITY_RECENT_N` | env | `5` |
+| `AUTOBACKTEST_DIVERSITY_HARD_THRESHOLD` | env | `0.999` |
+| `AUTOBACKTEST_DIVERSITY_RETURNS_PENALTY` | env | `0.0` |
+| `AUTOBACKTEST_EVAL_MAX_WORKERS` | env | `4` |
 | `AUTOBACKTEST_EARLY_STOP_PATIENCE` | env | `10` |
 | `AUTOBACKTEST_ENABLE_CANDIDATE_DIRECTIVES` | env | `True` |
 | `AUTOBACKTEST_ENABLE_CODEMOD_REPAIR` | env | `True` |
@@ -403,6 +415,8 @@ Called from `stress_testing.py` with `n_paths=1000`.
 | `min_improvement` | YAML | `0.0` |
 | `metric_floor` | YAML | `None` |
 | `metric_return_tradeoff` | YAML | `0.0` |
+| `select_compare_metric` | YAML | `deflated` |
+| `select_improvement_tol` | YAML | `0.02` |
 | `momentum_lookback` | YAML | `12` |
 | `params` | YAML | `{}` |
 | `pbo_limit` | YAML | `None` |

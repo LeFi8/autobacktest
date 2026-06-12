@@ -305,6 +305,8 @@ Unified configuration validator inheriting from `pydantic.BaseModel` with ``extr
 | `dsr_floor` | `float\|None` | `None` | Optional absolute DSR floor (reserved) |
 | `metric_return_tradeoff` | `float` | `0.0` | Metric reduction tolerated per 1pp (0.01) increase in annualized return; `0.0` disables |
 | `metric_floor` | `float\|None` | `None` | Absolute target-metric floor below which candidates are always rejected; `None` disables |
+| `select_compare_metric` | `str` | `"deflated"` | Metric for select-gate improvement comparison: `"deflated"` (DSR, overfit-adjusted) or `"raw"` (in-sample Sharpe/Sortino/IR) |
+| `select_improvement_tol` | `float` | `0.02` | Tolerance for near-tie comparisons — candidate accepted when metric ≥ incumbent − tolerance |
 
 **Methods:**
 - `from_yaml(path: Path) -> StrategyConfig`: Parses YAML file and instantiates schema.
@@ -720,6 +722,11 @@ Manages system configuration settings loaded from environment variables with saf
 - `identical_behavior_epsilon`: Maximum absolute weight difference below which signals are considered identical (default: `1e-6`).
 - `diversity_config_threshold`: Config similarity threshold for Tier 1 diversity gate (default: `0.95`).
 - `diversity_returns_threshold`: Returns correlation threshold for Tier 2 diversity gate (default: `0.95`).
+- `diversity_compare_mode`: How to scope config similarity comparison — `"recent"` (last N configs) or `"all"` (default: `"recent"`).
+- `diversity_recent_n`: Number of most recent configs to compare in `"recent"` mode (default: `5`).
+- `diversity_hard_threshold`: Absolute hard similarity threshold that always rejects regardless of mode (default: `0.999`).
+- `diversity_returns_penalty`: Penalty subtracted from returns correlation score before threshold comparison (default: `0.0`).
+- `eval_max_workers`: Thread pool size for parallel walk-forward window evaluation (default: `4`).
 - `quiet`: Suppress non-critical warnings (default: `False`).
 - `db_timeout`: Database block lock timeout limit (default: `15.0`).
 - `parsed_safe_imports` (property): Resolved set of whitelisted import names.

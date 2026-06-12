@@ -180,10 +180,12 @@ Detailed documentation is available in [`docs/`](docs/):
 
 | File | Description |
 |---|---|
+| [`docs/index.md`](docs/index.md) | Documentation hub with full table of contents |
 | [`docs/about-project.md`](docs/about-project.md) | Project overview, goals, and primary interaction flows |
 | [`docs/architecture.md`](docs/architecture.md) | System architecture and component design |
 | [`docs/api-reference.md`](docs/api-reference.md) | Full API reference for CLI and core modules |
 | [`docs/developer-setup.md`](docs/developer-setup.md) | Environment setup and development workflow |
+| [`docs/optimization-config-reference.md`](docs/optimization-config-reference.md) | Complete configuration parameter catalog |
 
 ---
 
