@@ -1,5 +1,7 @@
 # Developer Setup & Installation Guide
 
+> [Documentation Hub](index.md) | [About Project](about-project.md) | [Architecture](architecture.md) | [API Reference](api-reference.md)
+
 This document describes how to set up the development environment, execute the test suite, run static checks, and configure pre-commit hooks.
 
 ## Prerequisites

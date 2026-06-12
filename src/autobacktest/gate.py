@@ -164,9 +164,27 @@ def select(
        optionally adjusted by ``metric_return_tradeoff``:
        ``candidate > baseline + min_improvement - tradeoff_coeff * (cand_ret - base_ret) * 100``
        where ``tradeoff_coeff`` is per-1pp (0.01) return increase.
-    7. Annualized return must be at least ``min_return_ratio`` of baseline return.
-    8. DSR non-degradation: always-on when baseline is present
+       The metric used for comparison is determined by ``select_compare_metric``:
+       ``"deflated"`` uses DSR (overfit-adjusted), ``"raw"`` uses the in-sample
+       target metric directly.
+    7. Near-tie tolerance: candidate accepted when metric >= incumbent - ``select_improvement_tol``
+       (config key ``select_improvement_tol``, default ``0.02``).
+    8. Annualized return must be at least ``min_return_ratio`` of baseline return.
+    9. DSR non-degradation: always-on when baseline is present
        (config can disable via ``require_dsr_non_degradation: false``).
+
+    Args:
+        report: Evaluation report for the candidate strategy.
+        baseline: Evaluation report for the current incumbent strategy, or ``None``
+            for the first iteration (skips baseline-dependent checks).
+        target_metric: Metric choice for improvement comparison (default SHARPE).
+        dd_limit: Max drawdown threshold. Resolved from config if ``None``.
+        turnover_limit: Max turnover threshold. Resolved from config if ``None``.
+        min_improvement: Minimum metric improvement over baseline. Resolved from config if ``None``.
+        require_dsr_non_degradation: Enforce DSR non-degradation. Resolved from config if ``None``.
+        min_return_ratio: Minimum fraction of baseline return. Resolved from config if ``None``.
+        pbo_limit: Maximum PBO threshold. Resolved from config if ``None``.
+        config: StrategyConfig or dict providing fallback values for unresolved parameters.
 
     Returns:
         GateResult: Decision outcome. The holdout is **never** consulted.
@@ -223,7 +241,14 @@ def _resolve_select_config(
     min_return_ratio: float | None,
     require_dsr_non_degradation: bool | None,
 ) -> tuple[float, float, float | None, float, float, bool, float, float | None, str, float]:
-    """Resolve select gate parameters from explicit args or config object."""
+    """Resolve select gate parameters from explicit args or config object.
+
+    Resolution priority: explicit argument > config object attribute/key > schema default.
+
+    Returns a 10-tuple of resolved values:
+    (dd_limit, turnover_limit, pbo_limit, min_improvement, min_return_ratio,
+     require_dsr, tradeoff, floor, compare_metric, improvement_tol).
+    """
     dd_limit = dd_limit if dd_limit is not None else _get_config_val(config, "max_drawdown_limit", 0.20)
     turnover_limit = turnover_limit if turnover_limit is not None else _get_config_val(config, "turnover_limit", 2.0)
     pbo_limit = pbo_limit if pbo_limit is not None else _get_config_val(config, "pbo_limit", None)
@@ -261,7 +286,22 @@ def _check_hard_gates(
     turnover_limit: float,
     pbo_limit: float | None,
 ) -> GateResult:
-    """Check hard constraints: drawdown, regime, turnover, PBO."""
+    """Check hard constraints: drawdown, regime, turnover, PBO.
+
+    These checks are evaluated first and cause immediate rejection when failed.
+    NaN values in any metric are treated as gate failures.
+
+    Args:
+        report: Candidate evaluation report.
+        dd_limit: Maximum allowed in-sample max drawdown.
+        turnover_limit: Maximum allowed in-sample annualized turnover.
+        pbo_limit: Maximum allowed Probability of Backtest Overfitting, or ``None``
+            to skip the PBO check.
+
+    Returns:
+        GateResult: Decision outcome. If rejected, ``failed_gate`` indicates which
+        check failed (``"max_drawdown"``, ``"regimes"``, ``"turnover"``, or ``"pbo"``).
+    """
     max_dd = report.in_sample_metrics.max_drawdown
     max_dd_passed = not (math.isnan(max_dd) or max_dd > dd_limit)
 
@@ -343,7 +383,26 @@ def _check_soft_gates(
 ) -> GateResult:
     """Check soft constraints: metric improvement, return floor, DSR non-degradation.
 
-    The absolute ``metric_floor`` is enforced unconditionally (no baseline required).
+    Evaluation order:
+    1. Absolute ``metric_floor`` — enforced unconditionally (no baseline required).
+    2. Metric improvement with optional return tradeoff (requires baseline).
+    3. Return ratio floor (requires baseline).
+    4. DSR non-degradation (requires baseline, controlled by ``require_dsr``).
+
+    Args:
+        report: Candidate evaluation report.
+        baseline: Incumbent evaluation report, or ``None`` for first iteration.
+        target_metric: Metric choice for improvement comparison.
+        min_improvement: Minimum metric improvement over baseline.
+        min_return_ratio: Minimum fraction of baseline annualized return.
+        require_dsr: Whether to enforce DSR non-degradation.
+        tradeoff_coeff: Metric reduction tolerated per 1pp return increase (``0.0`` disables).
+        metric_floor: Absolute metric floor below which candidates are always rejected.
+        compare_metric: ``"deflated"`` for DSR or ``"raw"`` for in-sample metric.
+        improvement_tol: Near-tie tolerance — candidate accepted when metric >= incumbent - tol.
+
+    Returns:
+        GateResult: Decision outcome.
     """
     if metric_floor is not None:
         candidate_val = _get_in_sample_metric_val(report, target_metric)
@@ -392,6 +451,29 @@ def _check_metric_improvement(
 
     The absolute ``metric_floor`` is NOT checked here — it is enforced by the
     caller (``_check_soft_gates``) before this function is reached.
+
+    When ``compare_metric`` is ``"deflated"``, the Deflated Sharpe Ratio (DSR)
+    is used for comparison (robust to overfitting). When ``"raw"``, the in-sample
+    target metric (Sharpe/Sortino/IR) is used directly.
+
+    The ``improvement_tol`` parameter allows near-tie acceptance: the candidate
+    is accepted when its metric >= baseline metric + min_improvement - improvement_tol.
+
+    When ``tradeoff_coeff > 0.0``, the required metric threshold is reduced by
+    ``tradeoff_coeff * (candidate_return - baseline_return) * 100``, allowing
+    candidates with higher returns to pass with lower metric improvement.
+
+    Args:
+        report: Candidate evaluation report.
+        baseline: Incumbent evaluation report.
+        target_metric: Metric choice for comparison (when compare_metric is ``"raw"``).
+        min_improvement: Minimum metric improvement over baseline.
+        tradeoff_coeff: Metric reduction tolerated per 1pp return increase.
+        compare_metric: ``"deflated"`` for DSR or ``"raw"`` for in-sample metric.
+        improvement_tol: Near-tie tolerance for acceptance.
+
+    Returns:
+        GateResult: Decision outcome.
     """
     candidate_val = _get_compare_metric_val(report, target_metric, compare_metric)
     baseline_val = _get_compare_metric_val(baseline, target_metric, compare_metric)
@@ -440,7 +522,20 @@ def _check_return_floor(
     baseline: EvaluationReport,
     min_return_ratio: float,
 ) -> GateResult:
-    """Check candidate return is at least min_return_ratio of baseline."""
+    """Check candidate return is at least min_return_ratio of baseline.
+
+    When the baseline has positive annualized return, the candidate's
+    annualized return must be at least ``min_return_ratio * baseline_return``.
+    If baseline return is zero or negative, this check is always passed.
+
+    Args:
+        report: Candidate evaluation report.
+        baseline: Incumbent evaluation report.
+        min_return_ratio: Minimum fraction of baseline return (0.0 to 1.0).
+
+    Returns:
+        GateResult: Decision outcome. On failure, ``failed_gate`` is ``"min_return_ratio"``.
+    """
     cand_ret = report.in_sample_metrics.annualized_return
     base_ret = baseline.in_sample_metrics.annualized_return
     if math.isnan(cand_ret):
@@ -463,7 +558,18 @@ def _check_dsr_non_degradation(
     report: EvaluationReport,
     baseline: EvaluationReport,
 ) -> GateResult:
-    """Check candidate DSR does not degrade below baseline DSR."""
+    """Check candidate DSR does not degrade below baseline DSR.
+
+    Uses an epsilon of 1e-6 for floating-point comparison. If the baseline DSR
+    is NaN, the check is automatically passed (no valid baseline to compare against).
+
+    Args:
+        report: Candidate evaluation report.
+        baseline: Incumbent evaluation report.
+
+    Returns:
+        GateResult: Decision outcome. On failure, ``failed_gate`` is ``"dsr_non_degradation"``.
+    """
     eps = 1e-6
     cand_dsr = report.deflated_sharpe
     base_dsr = baseline.deflated_sharpe

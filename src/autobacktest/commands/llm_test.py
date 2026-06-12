@@ -26,8 +26,18 @@ def _llm_test_impl(
     strategies_dir = settings.strategies_dir
     configs_dir = settings.configs_dir
 
-    strategy_path = strategies_dir / f"{strategy}.py"
-    config_path = configs_dir / f"{strategy}.yaml"
+    new_strategy_path = strategies_dir / strategy / "strategy.py"
+    new_config_path = strategies_dir / strategy / "config.yaml"
+    if new_strategy_path.exists() and new_config_path.exists():
+        strategy_path = new_strategy_path
+        config_path = new_config_path
+        test_strategies_dir = strategies_dir / strategy
+        test_configs_dir = strategies_dir / strategy
+    else:
+        strategy_path = strategies_dir / f"{strategy}.py"
+        config_path = configs_dir / f"{strategy}.yaml"
+        test_strategies_dir = strategies_dir
+        test_configs_dir = configs_dir
 
     if not strategy_path.exists():
         typer.echo(f"Error: Strategy file not found at {strategy_path}")
@@ -78,7 +88,7 @@ def _llm_test_impl(
 
     typer.echo(f"Reasoning:\n{edit.reasoning}\n")
 
-    _run_preflight_on_candidate(edit, strategy, strategies_dir, configs_dir)
+    _run_preflight_on_candidate(edit, strategy, test_strategies_dir, test_configs_dir)
 
 
 def _run_preflight_on_candidate(
@@ -88,8 +98,14 @@ def _run_preflight_on_candidate(
     configs_dir: Path,
 ) -> None:
     """Write candidate to temp files, run preflight, output result."""
-    candidate_py_path = strategies_dir / f"{strategy}.py.candidate"
-    candidate_yaml_path = configs_dir / f"{strategy}.yaml.candidate"
+    if (strategies_dir / "strategy.py").exists():
+        candidate_py_path = strategies_dir / "strategy.py.candidate"
+    else:
+        candidate_py_path = strategies_dir / f"{strategy}.py.candidate"
+    if (configs_dir / "config.yaml").exists():
+        candidate_yaml_path = configs_dir / "config.yaml.candidate"
+    else:
+        candidate_yaml_path = configs_dir / f"{strategy}.yaml.candidate"
     temp_name = f"{strategy}_candidate_{uuid.uuid4().hex}"
     temp_py_path = strategies_dir / f"{temp_name}.py"
     temp_yaml_path = configs_dir / f"{temp_name}.yaml"

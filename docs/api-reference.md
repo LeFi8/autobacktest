@@ -409,8 +409,13 @@ def select(
        optionally adjusted by metric_return_tradeoff:
        candidate > baseline + min_improvement - tradeoff_coeff * (cand_ret - base_ret) * 100
        where tradeoff_coeff is per-1pp (0.01) return increase.
-    7. Annualized return >= baseline's annualized return * min_return_ratio (default 0.5)
-    8. DSR non-degradation: candidate's in-sample DSR does not degrade below baseline's
+       The metric used for comparison is determined by select_compare_metric:
+       "deflated" uses DSR (overfit-adjusted), "raw" uses the in-sample
+       target metric directly.
+    7. Near-tie tolerance: candidate accepted when metric >= incumbent - select_improvement_tol
+       (config key select_improvement_tol, default 0.02).
+    8. Annualized return >= baseline's annualized return * min_return_ratio (default 0.5)
+    9. DSR non-degradation: candidate's in-sample DSR does not degrade below baseline's
        (configurable via require_dsr_non_degradation, always-on by default)
     """
 ```

@@ -320,11 +320,10 @@ def init_strategy_impl(
         raise typer.Exit(code=1)
 
     strategies_dir = settings_obj.strategies_dir
-    configs_dir = settings_obj.configs_dir
-    project_root = strategies_dir.parent
-    strategy_file = strategies_dir / f"{strategy_name}.py"
-    config_file = configs_dir / f"{strategy_name}.yaml"
-    program_file = project_root / f"program-{strategy_name}.md"
+    strategy_dir = strategies_dir / strategy_name
+    strategy_file = strategy_dir / "strategy.py"
+    config_file = strategy_dir / "config.yaml"
+    program_file = strategy_dir / "program.md"
 
     if not _confirm_files_overwrite(strategy_file, config_file, program_file, strategy_name, overwrite):
         raise typer.Exit(code=0)
@@ -404,8 +403,7 @@ def init_strategy_impl(
         typer.echo(f"\nConfiguration validation failed: {e}")
         raise typer.Exit(code=1) from None
 
-    strategies_dir.mkdir(parents=True, exist_ok=True)
-    configs_dir.mkdir(parents=True, exist_ok=True)
+    strategy_dir.mkdir(parents=True, exist_ok=True)
 
     with config_file.open("w", encoding="utf-8") as f:
         yaml.safe_dump(validated_config.model_dump(), f, default_flow_style=False, sort_keys=False)

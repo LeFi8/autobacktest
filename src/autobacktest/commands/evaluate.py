@@ -47,7 +47,11 @@ def register_command(app: typer.Typer) -> None:
             raise typer.Exit(code=1)
 
         strategy_name = strategy_path.stem
-        config_path = settings.configs_dir / f"{strategy_name}.yaml"
+        config_path = strategy_path.parent / "config.yaml"
+        if not config_path.exists():
+            config_path = strategy_path.parent / f"{strategy_name}.yaml"
+        if not config_path.exists():
+            config_path = settings.configs_dir / f"{strategy_name}.yaml"
         if not config_path.exists():
             config_path = strategy_path.resolve().parent.parent / "configs" / f"{strategy_name}.yaml"
 

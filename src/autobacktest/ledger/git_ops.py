@@ -34,10 +34,17 @@ class GitLedger:
         """Expose the absolute path of the git working tree root."""
         return Path(self._repo.working_tree_dir or "")
 
+    def _resolve_rel_paths(self, strategy_name: str) -> tuple[str, str]:
+        """Resolve relative paths for strategy and config based on active layout."""
+        new_strat = f"{self._strategies_dir}/{strategy_name}/strategy.py"
+        new_cfg = f"{self._strategies_dir}/{strategy_name}/config.yaml"
+        if (self.repo_root / new_strat).exists():
+            return new_strat, new_cfg
+        return f"{self._strategies_dir}/{strategy_name}.py", f"{self._configs_dir}/{strategy_name}.yaml"
+
     def ensure_clean(self, strategy_name: str) -> None:
         """Raise ValueError if target strategy/config files have uncommitted changes."""
-        strat_rel = f"{self._strategies_dir}/{strategy_name}.py"
-        cfg_rel = f"{self._configs_dir}/{strategy_name}.yaml"
+        strat_rel, cfg_rel = self._resolve_rel_paths(strategy_name)
         changed = self._repo.git.status("--porcelain", strat_rel, cfg_rel)
         if changed.strip():
             raise ValueError(
@@ -68,16 +75,14 @@ class GitLedger:
         orchestrator runs in an isolated branch/clean checkout.
         Returns the commit hexsha.
         """
-        strat_rel = f"{self._strategies_dir}/{strategy_name}.py"
-        cfg_rel = f"{self._configs_dir}/{strategy_name}.yaml"
+        strat_rel, cfg_rel = self._resolve_rel_paths(strategy_name)
         self._repo.git.add(strat_rel, cfg_rel)
         self._repo.git.commit("-m", message, "--allow-empty")
         return self._repo.head.commit.hexsha
 
     def rollback_strategy(self, strategy_name: str) -> None:
         """Restore strategies/{name}.py, configs/{name}.yaml to HEAD."""
-        strat_rel = f"{self._strategies_dir}/{strategy_name}.py"
-        cfg_rel = f"{self._configs_dir}/{strategy_name}.yaml"
+        strat_rel, cfg_rel = self._resolve_rel_paths(strategy_name)
         self._repo.git.checkout("--", strat_rel, cfg_rel)
 
     @property
@@ -103,8 +108,10 @@ class GitLedger:
             self._repo.heads[primary_branch].checkout()
 
         if strategy_name is not None:
-            strat_rel = f"{self._strategies_dir}/{strategy_name}.py"
-            cfg_rel = f"{self._configs_dir}/{strategy_name}.yaml"
+            strat_rel, cfg_rel = self._resolve_rel_paths(strategy_name)
             self._repo.git.checkout("HEAD", "--", strat_rel, cfg_rel)
         else:
-            self._repo.git.checkout("HEAD", "--", self._strategies_dir, self._configs_dir)
+            paths = [self._strategies_dir]
+            if (self.repo_root / self._configs_dir).exists():
+                paths.append(self._configs_dir)
+            self._repo.git.checkout("HEAD", "--", *paths)

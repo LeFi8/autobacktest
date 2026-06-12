@@ -191,6 +191,12 @@ Defined in `strategy/config_schema.py:StrategyConfig`. Validated by Pydantic v2 
 > [!TIP]
 > **Hybrid gating** (`metric_return_tradeoff` + `metric_floor`) — Set `metric_return_tradeoff: 0.1` to allow the optimizer to accept a candidate whose Sharpe is 0.5 lower than baseline for a 5pp annualized return gain (0.1 × 5 = 0.5). Pair with `metric_floor: 0.5` to prevent unlimited drift; candidates falling below 0.5 are always rejected regardless of return improvement.
 
+> [!TIP]
+> **Metric comparison mode** (`select_compare_metric`) — Set to `"deflated"` (default) for DSR-based comparison that accounts for multiple-testing bias, or `"raw"` to compare in-sample metrics directly. Use `"raw"` when you trust your trial count and want tighter control over metric improvement.
+
+> [!TIP]
+> **Near-tie tolerance** (`select_improvement_tol`) — Default `0.02` accepts candidates within 0.02 of the incumbent's metric, preventing rejection of functionally equivalent strategies due to floating-point noise. Set to `0.0` to require strict improvement.
+
 ---
 
 ## 5. Hardcoded Orchestrator Constants

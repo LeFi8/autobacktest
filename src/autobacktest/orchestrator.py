@@ -90,6 +90,9 @@ class _LRUCache:
     Evicts the least-recently-used entry when the cache exceeds ``maxsize``.
     Maintains the same interface as the previous ``_ThreadSafeDict`` so that
     all callers (``orchestrator.py``, ``evaluate.py``) work without changes.
+
+    Args:
+        maxsize: Maximum number of cached entries (default 36).
     """
 
     def __init__(self, maxsize: int = 36) -> None:
@@ -98,11 +101,17 @@ class _LRUCache:
         self._maxsize = maxsize
 
     def __getitem__(self, key: int) -> tuple[EvaluationReport, pd.Series]:
+        """Retrieve a cached entry by key, promoting it to most-recently-used.
+
+        Raises:
+            KeyError: If the key is not in the cache.
+        """
         with self._lock:
             self._data.move_to_end(key)
             return self._data[key]
 
     def __setitem__(self, key: int, value: tuple[EvaluationReport, pd.Series]) -> None:
+        """Store a value, evicting the LRU entry if at capacity."""
         with self._lock:
             self._data[key] = value
             self._data.move_to_end(key)
@@ -110,12 +119,14 @@ class _LRUCache:
                 self._data.popitem(last=False)
 
     def __contains__(self, key: int) -> bool:
+        """Check whether a key exists in the cache."""
         with self._lock:
             return key in self._data
 
     def get(
         self, key: int, default: tuple[EvaluationReport, pd.Series] | None = None
     ) -> tuple[EvaluationReport, pd.Series] | None:
+        """Retrieve a cached entry, returning *default* if not found."""
         with self._lock:
             if key in self._data:
                 self._data.move_to_end(key)
@@ -231,8 +242,17 @@ class _OptimizationState:
     def setup(self, resume: str | None) -> None:
         self.spec = parse_program(self.program_path)
 
-        self.strat_path = self.strategies_dir / f"{self.strategy_name}.py"
-        self.cfg_path = self.configs_dir / f"{self.strategy_name}.yaml"
+        new_strat_path = self.strategies_dir / self.strategy_name / "strategy.py"
+        new_cfg_path = self.strategies_dir / self.strategy_name / "config.yaml"
+        if new_strat_path.exists() and new_cfg_path.exists():
+            self.strat_path = new_strat_path
+            self.cfg_path = new_cfg_path
+            self.strategies_dir = self.strategies_dir / self.strategy_name
+            self.configs_dir = self.strategies_dir
+        else:
+            self.strat_path = self.strategies_dir / f"{self.strategy_name}.py"
+            self.cfg_path = self.configs_dir / f"{self.strategy_name}.yaml"
+
         if not self.strat_path.exists():
             raise FileNotFoundError(f"Strategy file not found: {self.strat_path}")
         if not self.cfg_path.exists():

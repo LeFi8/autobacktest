@@ -1,4 +1,16 @@
-"""Pydantic v2 strategy configuration schema validation."""
+"""Pydantic v2 strategy configuration schema validation.
+
+Provides ``StrategyConfig``, the unified Pydantic v2 model that validates
+all strategy YAML configuration files. Enforces parameter boundaries,
+types, and flattens custom parameters in ``params`` to avoid root schema
+collisions.
+
+Key features:
+- ``extra="forbid"`` prevents the LLM from injecting arbitrary top-level keys.
+- ``params`` dict holds strategy-specific custom parameters safely.
+- ``constraints_text()`` renders field constraints for LLM prompt injection.
+- ``from_yaml()`` loads and validates a YAML file in a single call.
+"""
 
 from pathlib import Path
 from typing import Any
@@ -149,7 +161,18 @@ class StrategyConfig(BaseModel):
 
     @classmethod
     def from_yaml(cls, path: Path) -> "StrategyConfig":
-        """Load strategy configuration from a YAML file."""
+        """Load and validate a strategy configuration from a YAML file.
+
+        Args:
+            path: Path to the YAML configuration file.
+
+        Returns:
+            Validated ``StrategyConfig`` instance.
+
+        Raises:
+            FileNotFoundError: If the file does not exist.
+            pydantic.ValidationError: If the YAML content fails schema validation.
+        """
         if not path.exists():
             raise FileNotFoundError(f"Config file not found at: {path}")
         with path.open("r", encoding="utf-8") as f:
@@ -157,7 +180,14 @@ class StrategyConfig(BaseModel):
         return cls.model_validate(data)
 
     def to_flat_dict(self) -> dict[str, Any]:
-        """Return a flat dictionary representing the configuration."""
+        """Return a flat dictionary representation of the configuration.
+
+        Flattens the ``params`` sub-dict into the top-level dictionary,
+        preventing key collisions with existing top-level fields.
+
+        Returns:
+            Single-depth dictionary with all configuration values.
+        """
         res = self.model_dump()
         params = res.get("params", {})
         if isinstance(params, dict):
@@ -168,7 +198,16 @@ class StrategyConfig(BaseModel):
 
     @classmethod
     def constraints_text(cls) -> str:
-        """Render schema field constraints and default values as text."""
+        """Render schema field constraints and default values as text.
+
+        Produces a human-readable markdown list of all fields with their
+        type annotations, constraint operators (``>=``, ``>``, ``<=``, ``<``),
+        and default values. Used for LLM prompt injection so the model
+        understands valid parameter ranges.
+
+        Returns:
+            Markdown-formatted string with one line per field.
+        """
         from pydantic_core import PydanticUndefined
 
         lines = []
