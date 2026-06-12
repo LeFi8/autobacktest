@@ -55,5 +55,3 @@ tmp/
 # SQLite databases generated during runs
 lessons.db
 
-# Custom user programs (copy program.md → program-<name>.md to keep custom specs)
-program-*.md
