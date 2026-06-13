@@ -96,15 +96,18 @@ def test_adaptive_temperature_on_continuous_failures(
         repo_path=repo_root,
     )
 
-    # 3 iterations x 3 candidates each = 9 LLM calls. All 3 calls in an
+    # 3 iterations x n_candidates each = total LLM calls. All calls in an
     # iteration share the same temperature (set once per iteration).
-    assert len(provider.recorded_temperatures) == 9
+    from autobacktest.config import settings
+
+    n = settings.n_candidates
+    assert len(provider.recorded_temperatures) == n * 3
 
     # k=1: rolling history is empty -> failure_rate = 0.6. Temp = 0.1 + 0.6 * 0.6 = 0.46
-    assert all(t == pytest.approx(0.46) for t in provider.recorded_temperatures[0:3])
+    assert all(t == pytest.approx(0.46) for t in provider.recorded_temperatures[0:n])
 
     # k=2: k=1 failed -> rolling history [False] -> failure_rate = 1.0. Temp = 0.7
-    assert all(t == pytest.approx(0.7) for t in provider.recorded_temperatures[3:6])
+    assert all(t == pytest.approx(0.7) for t in provider.recorded_temperatures[n : 2 * n])
 
     # k=3: k=1,2 failed -> rolling history [False, False] -> failure_rate = 1.0. Temp = 0.7
-    assert all(t == pytest.approx(0.7) for t in provider.recorded_temperatures[6:9])
+    assert all(t == pytest.approx(0.7) for t in provider.recorded_temperatures[2 * n : 3 * n])

@@ -285,8 +285,10 @@ def test_e2e_full_run_commits_improved_strategy(project_root: Path) -> None:
     assert len(branch_commits) >= 2, f"Expected ≥2 commits on {run_branch}, got {len(branch_commits)}"
 
     # --- MockProvider call count ---
-    # 3 candidates per iteration x 3 iterations = 9 calls
-    expected_calls = 9
+    from autobacktest.config import settings
+
+    # n_candidates per iteration x 3 iterations
+    expected_calls = settings.n_candidates * 3
     assert len(mock_provider.calls) == expected_calls
 
 

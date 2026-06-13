@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from autobacktest.config import settings
 from autobacktest.gate import TargetMetric
 from autobacktest.llm.base import AgentContext, AgentEdit, LLMProvider
 from autobacktest.llm.mock_provider import MockProvider
@@ -527,8 +528,8 @@ class TestDiversityGateIntegration:
             for c in ev.get("candidates", []):
                 assert c.get("stage") != "diversity_config"
 
-        # Provider was called exactly 1 time (3 candidates generated in parallel)
-        assert len(provider.calls) == 3
+        # Provider called once per candidate (n_candidates generated in parallel)
+        assert len(provider.calls) == settings.n_candidates
 
 
 class TestSummarizeExploredSpace:
