@@ -131,7 +131,7 @@ def _get_compare_metric_val(report: EvaluationReport, target_metric: TargetMetri
     Returns:
         The comparison metric value, capped to 0.0 for NaN/Inf.
     """
-    if compare_metric == "deflated":
+    if compare_metric == "deflated" and target_metric == TargetMetric.SHARPE:
         val = report.deflated_sharpe
     else:
         return _get_in_sample_metric_val(report, target_metric)
@@ -523,7 +523,7 @@ def _check_metric_improvement(
         if compare_metric == "deflated":
             base_raw = baseline.observed_sharpe
             base_dsr = baseline.deflated_sharpe
-            scale = (base_dsr / base_raw) if base_raw > 0.0 else 1.0
+            scale = max(0.0, min(1.0, base_dsr / base_raw)) if base_raw > 1e-6 else 0.0
             tradeoff_term *= scale
         required_metric -= tradeoff_term
 

@@ -46,7 +46,7 @@ def register_command(app: typer.Typer) -> None:
             typer.echo(f"Error: Strategy file not found at {strategy_path}")
             raise typer.Exit(code=1)
 
-        strategy_name = strategy_path.stem
+        strategy_name = strategy_path.parent.name if strategy_path.stem == "strategy" else strategy_path.stem
         config_path = strategy_path.parent / "config.yaml"
         if not config_path.exists():
             config_path = strategy_path.parent / f"{strategy_name}.yaml"
