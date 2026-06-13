@@ -285,8 +285,10 @@ def test_e2e_full_run_commits_improved_strategy(project_root: Path) -> None:
     assert len(branch_commits) >= 2, f"Expected ≥2 commits on {run_branch}, got {len(branch_commits)}"
 
     # --- MockProvider call count ---
-    # 3 candidates per iteration x 3 iterations = 9 calls
-    expected_calls = 9
+    from autobacktest.config import settings
+
+    # n_candidates per iteration x 3 iterations
+    expected_calls = settings.n_candidates * 3
     assert len(mock_provider.calls) == expected_calls
 
 
@@ -780,8 +782,13 @@ def test_within_batch_dedup_jitters_second_candidate(project_root: Path) -> None
             assert cands[0].get("jitter_applied") is True or cands[1].get("jitter_applied") is True
 
 
-def test_jitter_disabled_preserves_old_rejection(project_root: Path) -> None:
-    """When jitter is disabled, duplicate configs are rejected with diversity_config."""
+def test_jitter_disabled_no_hard_config_rejection(project_root: Path) -> None:
+    """When jitter is disabled, duplicate configs are NOT hard-rejected at diversity_config.
+
+    With the softened diversity gate, config similarity never causes a hard reject.
+    Candidates always proceed to backtest; only near-exact return duplicates (≥ hard
+    threshold 0.999) are rejected post-quality.
+    """
     from autobacktest.config import settings
 
     synthetic_prices = _make_synthetic_prices()
@@ -828,13 +835,17 @@ def test_jitter_disabled_preserves_old_rejection(project_root: Path) -> None:
                 start_date="2013-01-01",
                 end_date="2025-01-01",
             )
-            # The candidate should be rejected as diversity_config
+            # The candidate must NOT be hard-rejected at diversity_config stage —
+            # the softened gate allows it to proceed to backtest.
+            assert res2.n_committed == 0
             events_path = project_root / "runs" / res2.run_id / "events.jsonl"
             raw = events_path.read_text(encoding="utf-8").strip()
             event = json.loads(raw.split("\n")[0])
             cand = event["candidates"][0]
             assert cand["passed"] is False
-            assert cand["stage"] == "diversity_config"
+            assert cand.get("stage") != "diversity_config", (
+                f"Config similarity should no longer cause a hard reject; got stage={cand.get('stage')!r}"
+            )
 
 
 def test_orchestrator_lookahead_repair_and_jitter_logging(project_root: Path) -> None:
@@ -920,3 +931,56 @@ def test_orchestrator_lookahead_repair_and_jitter_logging(project_root: Path) ->
     assert cand["repair_applied"] is True
     # In this run config similarity was not triggered (empty history), so jitter_applied should be False
     assert cand.get("jitter_applied", False) is False
+
+
+def test_confirm_best_candidate_at_most_one_peek_per_iteration(project_root: Path) -> None:
+    """Confirms that run_gates_and_select_winner consumes at most one holdout peek per iteration.
+
+    Uses n_candidates=3 (all identical IMPROVED_STRATEGY) so select passes for all three,
+    but only the top-ranked candidate proceeds to confirm — exactly 1 peek per iteration.
+    """
+    from autobacktest.config import settings
+
+    synthetic_prices = _make_synthetic_prices()
+    fake_instance = _make_fake_provider(synthetic_prices)
+
+    scripted_edit = AgentEdit(
+        strategy_code=IMPROVED_STRATEGY,
+        config_yaml=IMPROVED_CONFIG,
+        reasoning="Switch to HIGH",
+        raw_response="{}",
+    )
+    mock_provider = MockProvider(response=scripted_edit)
+
+    confirm_calls: list[int] = []
+
+    import autobacktest.gate as gate_mod
+
+    original_confirm = gate_mod.confirm
+
+    def tracking_confirm(*args: object, **kwargs: object) -> object:
+        confirm_calls.append(1)
+        return original_confirm(*args, **kwargs)
+
+    with (
+        patch("autobacktest.orchestrator.confirm", side_effect=tracking_confirm),
+        patch("autobacktest.evaluator.evaluate.CachedDataProvider", return_value=fake_instance),
+        patch.object(settings, "n_candidates", 3),
+    ):
+        result = run_optimization(
+            program_path=project_root / "program.md",
+            strategy_name="toy",
+            iterations=3,
+            provider=mock_provider,
+            run_dir=project_root / "runs",
+            strategies_dir=project_root / "strategies",
+            configs_dir=project_root / "configs",
+            target_metric=TargetMetric.SHARPE,
+            repo_path=project_root,
+            start_date="2013-01-01",
+            end_date="2025-01-01",
+        )
+
+    # At most 1 confirm call per iteration regardless of n_candidates=3
+    assert len(confirm_calls) <= 3, f"Expected ≤3 confirm calls (1/iter x 3 iters), got {len(confirm_calls)}"
+    assert result.n_committed >= 1

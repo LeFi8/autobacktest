@@ -1,4 +1,16 @@
-"""Pydantic v2 strategy configuration schema validation."""
+"""Pydantic v2 strategy configuration schema validation.
+
+Provides ``StrategyConfig``, the unified Pydantic v2 model that validates
+all strategy YAML configuration files. Enforces parameter boundaries,
+types, and flattens custom parameters in ``params`` to avoid root schema
+collisions.
+
+Key features:
+- ``extra="forbid"`` prevents the LLM from injecting arbitrary top-level keys.
+- ``params`` dict holds strategy-specific custom parameters safely.
+- ``constraints_text()`` renders field constraints for LLM prompt injection.
+- ``from_yaml()`` loads and validates a YAML file in a single call.
+"""
 
 from pathlib import Path
 from typing import Any
@@ -62,6 +74,52 @@ class StrategyConfig(BaseModel):
         "Unit matches the configured target_metric (Sharpe, Sortino, or Information Ratio). "
         "If the baseline value is already below this floor, a warning is emitted at setup time.",
     )
+    select_compare_metric: str = Field(
+        "deflated",
+        description="Metric used for the select-gate improvement comparison. "
+        "'deflated' uses Deflated Sharpe Ratio (robust, overfit-adjusted). "
+        "'raw' uses the in-sample target_metric (Sharpe/Sortino/Information Ratio). "
+        "Unit of min_improvement follows this setting.",
+    )
+    """Controls which metric the select gate uses when evaluating whether a
+    candidate improves over the incumbent.
+
+    ``"deflated"`` (default) compares Deflated Sharpe Ratio (DSR), which
+    accounts for multiple-testing bias and is the most robust choice.
+    ``"raw"`` compares the in-sample target metric directly (Sharpe,
+    Sortino, or Information Ratio).  The unit of ``min_improvement``
+    follows this setting.
+
+    Introduced to allow users who trust their trial count to opt into
+    raw metric comparison for tighter control, while keeping DSR as the
+    safe default.
+    """
+
+    select_improvement_tol: float = Field(
+        0.02,
+        ge=0.0,
+        description="Non-negative tolerance for the select-gate improvement comparison. "
+        "A candidate is accepted when its comparison metric >= incumbent's metric minus this "
+        "tolerance, so near-ties are not rejected.",
+    )
+    """Tolerance for near-tie comparisons in the select gate.
+
+    When comparing the candidate's metric against the incumbent, a
+    candidate is accepted if its metric >= (incumbent - tolerance).
+    This prevents rejecting functionally equivalent strategies due to
+    floating-point noise or marginal rounding differences.
+
+    Default ``0.02`` means a candidate whose Sharpe is within 0.02 of
+    the incumbent is still accepted.  Set to ``0.0`` to require strict
+    improvement.
+    """
+
+    @field_validator("select_compare_metric")
+    @classmethod
+    def validate_select_compare_metric(cls, v: str) -> str:
+        if v not in ("deflated", "raw"):
+            raise ValueError("select_compare_metric must be either 'deflated' or 'raw'")
+        return v
 
     @field_validator("mc_bootstrap_method")
     @classmethod
@@ -103,7 +161,18 @@ class StrategyConfig(BaseModel):
 
     @classmethod
     def from_yaml(cls, path: Path) -> "StrategyConfig":
-        """Load strategy configuration from a YAML file."""
+        """Load and validate a strategy configuration from a YAML file.
+
+        Args:
+            path: Path to the YAML configuration file.
+
+        Returns:
+            Validated ``StrategyConfig`` instance.
+
+        Raises:
+            FileNotFoundError: If the file does not exist.
+            pydantic.ValidationError: If the YAML content fails schema validation.
+        """
         if not path.exists():
             raise FileNotFoundError(f"Config file not found at: {path}")
         with path.open("r", encoding="utf-8") as f:
@@ -111,7 +180,14 @@ class StrategyConfig(BaseModel):
         return cls.model_validate(data)
 
     def to_flat_dict(self) -> dict[str, Any]:
-        """Return a flat dictionary representing the configuration."""
+        """Return a flat dictionary representation of the configuration.
+
+        Flattens the ``params`` sub-dict into the top-level dictionary,
+        preventing key collisions with existing top-level fields.
+
+        Returns:
+            Single-depth dictionary with all configuration values.
+        """
         res = self.model_dump()
         params = res.get("params", {})
         if isinstance(params, dict):
@@ -122,7 +198,16 @@ class StrategyConfig(BaseModel):
 
     @classmethod
     def constraints_text(cls) -> str:
-        """Render schema field constraints and default values as text."""
+        """Render schema field constraints and default values as text.
+
+        Produces a human-readable markdown list of all fields with their
+        type annotations, constraint operators (``>=``, ``>``, ``<=``, ``<``),
+        and default values. Used for LLM prompt injection so the model
+        understands valid parameter ranges.
+
+        Returns:
+            Markdown-formatted string with one line per field.
+        """
         from pydantic_core import PydanticUndefined
 
         lines = []

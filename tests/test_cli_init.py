@@ -56,7 +56,7 @@ def test_init_strategy_basic_flow(tmp_path: Path) -> None:
     assert result.exit_code == 0, f"Exit: {result.exit_code}, out: {result.output}"
     assert "Success" in result.output
 
-    config_path = tmp_path / "configs" / "test_momentum.yaml"
+    config_path = tmp_path / "strategies" / "test_momentum" / "config.yaml"
     assert config_path.exists()
     with config_path.open() as f:
         cfg = yaml.safe_load(f)
@@ -67,13 +67,13 @@ def test_init_strategy_basic_flow(tmp_path: Path) -> None:
     assert cfg["momentum_lookback"] == 12
     assert cfg["params"] == {"cash_asset": "BIL"}
 
-    strategy_path = tmp_path / "strategies" / "test_momentum.py"
+    strategy_path = tmp_path / "strategies" / "test_momentum" / "strategy.py"
     assert strategy_path.exists()
     content = strategy_path.read_text()
     assert "def generate_signals" in content
     assert "prices: pd.DataFrame" in content
 
-    program_path = tmp_path / "program-test_momentum.md"
+    program_path = tmp_path / "strategies" / "test_momentum" / "program.md"
     assert program_path.exists()
     program_content = program_path.read_text()
     assert "# Objective" in program_content
@@ -97,9 +97,10 @@ def test_init_strategy_overwrite_prompt_cancelled(tmp_path: Path) -> None:
     """When files exist and user declines overwrite, operation cancels."""
     (tmp_path / "strategies").mkdir()
     (tmp_path / "configs").mkdir()
-    (tmp_path / "strategies" / "existing_strat.py").touch()
-    (tmp_path / "configs" / "existing_strat.yaml").touch()
-    (tmp_path / "program-existing_strat.md").touch()
+    (tmp_path / "strategies" / "existing_strat").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "strategies" / "existing_strat" / "strategy.py").touch()
+    (tmp_path / "strategies" / "existing_strat" / "config.yaml").touch()
+    (tmp_path / "strategies" / "existing_strat" / "program.md").touch()
 
     result = runner.invoke(
         app,
@@ -114,9 +115,10 @@ def test_init_strategy_overwrite_flag(tmp_path: Path) -> None:
     """--overwrite flag skips the confirmation prompt."""
     (tmp_path / "strategies").mkdir()
     (tmp_path / "configs").mkdir()
-    (tmp_path / "strategies" / "overwrite_me.py").write_text("old code", encoding="utf-8")
-    (tmp_path / "configs" / "overwrite_me.yaml").write_text("old: config", encoding="utf-8")
-    (tmp_path / "program-overwrite_me.md").write_text("old: program", encoding="utf-8")
+    (tmp_path / "strategies" / "overwrite_me").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "strategies" / "overwrite_me" / "strategy.py").write_text("old code", encoding="utf-8")
+    (tmp_path / "strategies" / "overwrite_me" / "config.yaml").write_text("old: config", encoding="utf-8")
+    (tmp_path / "strategies" / "overwrite_me" / "program.md").write_text("old: program", encoding="utf-8")
 
     inputs = (
         "\n".join(
@@ -143,10 +145,10 @@ def test_init_strategy_overwrite_flag(tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert "Success" in result.output
 
-    cfg = (tmp_path / "configs" / "overwrite_me.yaml").read_text(encoding="utf-8")
+    cfg = (tmp_path / "strategies" / "overwrite_me" / "config.yaml").read_text(encoding="utf-8")
     assert "old: config" not in cfg
 
-    prog = (tmp_path / "program-overwrite_me.md").read_text(encoding="utf-8")
+    prog = (tmp_path / "strategies" / "overwrite_me" / "program.md").read_text(encoding="utf-8")
     assert "old: program" not in prog
 
 
@@ -220,7 +222,7 @@ def test_init_strategy_custom_params(tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert "Success" in result.output
 
-    config_path = tmp_path / "configs" / "custom_params_test.yaml"
+    config_path = tmp_path / "strategies" / "custom_params_test" / "config.yaml"
     with config_path.open() as f:
         cfg = yaml.safe_load(f)
 
@@ -264,7 +266,7 @@ def test_init_strategy_reserved_key_rejected(tmp_path: Path) -> None:
     assert "reserved schema field" in result.output
     assert "Success" in result.output
 
-    config_path = tmp_path / "configs" / "reserved_key_test.yaml"
+    config_path = tmp_path / "strategies" / "reserved_key_test" / "config.yaml"
     with config_path.open() as f:
         cfg = yaml.safe_load(f)
 
@@ -302,7 +304,7 @@ def test_init_strategy_tz_aware_prices(tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert "Success" in result.output
 
-    strategy_path = tmp_path / "strategies" / "tz_aware_test.py"
+    strategy_path = tmp_path / "strategies" / "tz_aware_test" / "strategy.py"
     assert strategy_path.exists()
 
     import importlib.util
@@ -366,7 +368,7 @@ def test_init_strategy_advanced_params(tmp_path: Path) -> None:
     assert result.exit_code == 0, f"Exit: {result.exit_code}, out: {result.output}"
     assert "Success" in result.output
 
-    config_path = tmp_path / "configs" / "advanced_params_test.yaml"
+    config_path = tmp_path / "strategies" / "advanced_params_test" / "config.yaml"
     assert config_path.exists()
     with config_path.open() as f:
         cfg = yaml.safe_load(f)
@@ -380,7 +382,7 @@ def test_init_strategy_advanced_params(tmp_path: Path) -> None:
     assert cfg["require_dsr_non_degradation"] is True
     assert cfg["mc_bootstrap_method"] == "circular"
 
-    program_path = tmp_path / "program-advanced_params_test.md"
+    program_path = tmp_path / "strategies" / "advanced_params_test" / "program.md"
     assert program_path.exists()
 
 
@@ -403,13 +405,13 @@ def test_init_strategy_silent_basic(tmp_path: Path) -> None:
     assert "Success" in result.output
     assert "?" not in result.output  # no interactive prompts
 
-    cfg_path = tmp_path / "configs" / "silent_test.yaml"
+    cfg_path = tmp_path / "strategies" / "silent_test" / "config.yaml"
     assert cfg_path.exists()
 
-    strat_path = tmp_path / "strategies" / "silent_test.py"
+    strat_path = tmp_path / "strategies" / "silent_test" / "strategy.py"
     assert strat_path.exists()
 
-    prog_path = tmp_path / "program-silent_test.md"
+    prog_path = tmp_path / "strategies" / "silent_test" / "program.md"
     assert prog_path.exists()
 
 
@@ -442,7 +444,7 @@ def test_init_strategy_silent_all_flags(tmp_path: Path) -> None:
     )
     assert result.exit_code == 0, f"Exit: {result.exit_code}, out: {result.output}"
 
-    with (tmp_path / "configs" / "full_test.yaml").open() as f:
+    with (tmp_path / "strategies" / "full_test" / "config.yaml").open() as f:
         cfg = yaml.safe_load(f)
     assert cfg["universe"] == ["A", "B", "C"]
     assert cfg["benchmark"] == "QQQ"
@@ -473,7 +475,7 @@ def test_init_strategy_template_momentum_rotation(tmp_path: Path) -> None:
     assert result.exit_code == 0, f"Exit: {result.exit_code}, out: {result.output}"
     assert "momentum-rotation" in result.output
 
-    content = (tmp_path / "strategies" / "mom_test.py").read_text()
+    content = (tmp_path / "strategies" / "mom_test" / "strategy.py").read_text()
     assert "pct_change" in content  # momentum computation
     assert "top_n" in content  # top-N selection
 
@@ -561,7 +563,7 @@ def test_init_strategy_template_executes_equal_weight(tmp_path: Path) -> None:
     import numpy as np
     import pandas as pd
 
-    spec = importlib.util.spec_from_file_location("ew_exec", tmp_path / "strategies" / "ew_exec.py")
+    spec = importlib.util.spec_from_file_location("ew_exec", tmp_path / "strategies" / "ew_exec" / "strategy.py")
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -601,7 +603,7 @@ def test_init_strategy_template_executes_momentum(tmp_path: Path) -> None:
     import numpy as np
     import pandas as pd
 
-    spec = importlib.util.spec_from_file_location("mom_exec", tmp_path / "strategies" / "mom_exec.py")
+    spec = importlib.util.spec_from_file_location("mom_exec", tmp_path / "strategies" / "mom_exec" / "strategy.py")
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)

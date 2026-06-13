@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from autobacktest.config import settings
 from autobacktest.gate import TargetMetric
 from autobacktest.llm.base import AgentContext, AgentEdit, LLMProvider
 from autobacktest.llm.mock_provider import MockProvider
@@ -327,12 +328,18 @@ class TestReturnsCorrelation:
 class TestDiversityGateIntegration:
     """Integration tests: diversity gates wired in orchestrator loop."""
 
-    def test_orchestrator_skips_tier1(self, project_root: Path) -> None:
-        """Edit with config identical to baseline → Tier 1 rejects before backtest."""
+    def test_orchestrator_skips_identical_candidate(self, project_root: Path) -> None:
+        """Edit with config and code identical to baseline → rejected before backtest.
+
+        With the softened diversity gate, config similarity no longer causes a hard
+        diversity_config rejection. Instead, identical candidates are caught by the
+        identical_behavior_guard (stage='identical_behavior') or, if that is disabled,
+        by the selection gate (stage='gate') since they cannot improve over the incumbent.
+        """
         synthetic_prices = _make_synthetic_prices()
         fake_instance = _make_fake_provider(synthetic_prices)
 
-        # Edit has same config as baseline → 100% config similarity → Tier 1 reject
+        # Edit is fully identical to baseline (same code + same config)
         same_config_edit = AgentEdit(
             strategy_code=BASELINE_STRATEGY,
             config_yaml=STRATEGY_CONFIG,
@@ -359,12 +366,12 @@ class TestDiversityGateIntegration:
                 end_date="2025-01-01",
             )
 
-        # No accepted edit (diversity gate rejected it)
+        # No accepted edit (rejected before or at quality gates)
         assert result.n_committed == 0
 
-        # Event must contain a diversity rejection in candidates array.
-        # With the config gate disabled by default, identical candidates proceed to backtest
-        # and are caught by the behavioral returns-correlation gate instead.
+        # Event must contain a rejection in candidates array.
+        # Identical candidates are caught by identical_behavior_guard or selection gate.
+        # Config similarity must NOT cause a hard diversity_config rejection any more.
         events_path = project_root / "runs" / result.run_id / "events.jsonl"
         assert events_path.exists()
         events = [json.loads(ln) for ln in events_path.read_text().strip().split("\n") if ln]
@@ -373,19 +380,23 @@ class TestDiversityGateIntegration:
         assert "candidates" in ev
         cand = ev["candidates"][0]
         assert cand["passed"] is False
-        assert cand["stage"] in ("diversity_config", "diversity_returns")
+        assert cand["stage"] != "diversity_config"  # config gate no longer hard-rejects
 
         # No winner (all rejected)
         assert "winner" not in ev
 
-    def test_orchestrator_rejects_tier2(self, project_root: Path) -> None:
-        """Edit with returns nearly identical to baseline → Tier 2 rejects post-backtest."""
+    def test_orchestrator_rejects_duplicate_strategy(self, project_root: Path) -> None:
+        """Edit with returns nearly identical to baseline -> rejected at returns diversity stage.
+
+        With the softened diversity gate, returns-diversity is checked POST quality.
+        By mocking the evaluation to yield a higher Sharpe for the candidate while
+        maintaining the same returns series as baseline, we pass the selection gate
+        but trigger a returns correlation hard reject.
+        """
         synthetic_prices = _make_synthetic_prices()
         fake_instance = _make_fake_provider(synthetic_prices)
 
-        # Edit uses BASELINE_STRATEGY code (allocates to LOW) with a different config
-        # to pass Tier 1. Since the strategy logic is unchanged, returns are nearly
-        # identical to the baseline → Tier 2 rejects.
+        # Edit uses BASELINE_STRATEGY code with a different config.
         same_returns_edit = AgentEdit(
             strategy_code=BASELINE_STRATEGY,
             config_yaml=IMPROVED_CONFIG,
@@ -394,7 +405,26 @@ class TestDiversityGateIntegration:
         )
         mock_provider = MockProvider(response=same_returns_edit)
 
+        from typing import Any
+
         from autobacktest.config import settings
+        from autobacktest.orchestrator import _eval_single_candidate
+
+        original_eval = _eval_single_candidate
+
+        def mock_eval(*args: Any, **kwargs: Any) -> Any:
+            r, ret, cfg, err = original_eval(*args, **kwargs)
+            if r is not None and args[1] == BASELINE_STRATEGY and args[2] == IMPROVED_CONFIG:
+                import copy
+
+                r = copy.deepcopy(r)
+                r.in_sample_metrics.sharpe_ratio = 5.0
+                r.observed_sharpe = 5.0
+                r.deflated_sharpe = 5.0
+                r.in_sample_metrics.max_drawdown = 0.1
+                r.in_sample_metrics.turnover = 1.0
+                r.regime_passed = True
+            return r, ret, cfg, err
 
         with (
             patch.object(settings, "enable_identical_behavior_guard", False),
@@ -402,6 +432,7 @@ class TestDiversityGateIntegration:
                 "autobacktest.evaluator.evaluate.CachedDataProvider",
                 return_value=fake_instance,
             ),
+            patch("autobacktest.orchestrator._eval_single_candidate", side_effect=mock_eval),
         ):
             result = run_optimization(
                 program_path=project_root / "program.md",
@@ -417,10 +448,10 @@ class TestDiversityGateIntegration:
                 end_date="2025-01-01",
             )
 
-        # No accepted edit (Tier 2 diversity gate rejected)
+        # No accepted edit (candidate does not beat incumbent)
         assert result.n_committed == 0
 
-        # Event must contain the diversity rejection in candidates array
+        # Event must contain a rejection in candidates array
         events_path = project_root / "runs" / result.run_id / "events.jsonl"
         assert events_path.exists()
         events = [json.loads(ln) for ln in events_path.read_text().strip().split("\n") if ln]
@@ -431,8 +462,7 @@ class TestDiversityGateIntegration:
         assert cand["passed"] is False
         assert cand["stage"] == "diversity_returns"
 
-        # Verification that Tier 2 rejection was recorded in the ledger:
-        # the failed attempt's config should be available for future diversity checks
+        # Verification: the failed attempt is recorded in the ledger
         import sqlite3
 
         ledger_path = project_root / "runs" / "ledger.db"
@@ -442,20 +472,22 @@ class TestDiversityGateIntegration:
             (result.run_id,),
         ).fetchall()
         conn.close()
-        assert len(rows) >= 2  # baseline (iter 0) + tier 2 rejection (iter 1)
+        assert len(rows) >= 2  # baseline (iter 0) + rejection (iter 1)
         assert rows[-1][1] == 0  # accepted=False
-        assert rows[-1][2] == "diversity_tier2_returns"  # specific rejection reason
+        assert rows[-1][2] == "diversity_tier2_returns"
 
-    def test_diversity_retry_exhausted_consumes_iteration(self, project_root: Path) -> None:
-        """Tier-1 diversity retry: no retries → iteration budget consumed immediately.
+    def test_identical_candidates_consume_iteration(self, project_root: Path) -> None:
+        """Identical candidates are rejected and the iteration budget is consumed.
 
-        When a too-similar config is proposed, the iteration is consumed immediately
-        with no retries, and n_committed stays 0.
+        With the softened diversity gate, config similarity no longer causes hard
+        diversity_config rejections. Identical candidates are caught by
+        identical_behavior_guard or the selection gate. The iteration is consumed
+        immediately with no commits.
         """
         synthetic_prices = _make_synthetic_prices()
         fake_instance = _make_fake_provider(synthetic_prices)
 
-        # Every call returns the same config → always fails diversity
+        # Every call returns the same config → always fails (identical behavior or gate)
         same_config_edit = AgentEdit(
             strategy_code=BASELINE_STRATEGY,
             config_yaml=STRATEGY_CONFIG,
@@ -483,24 +515,21 @@ class TestDiversityGateIntegration:
                 end_date="2025-01-01",
             )
 
-        # No commit — failed diversity
+        # No commit — all candidates rejected
         assert result.n_committed == 0
 
-        # Event must record the diversity rejection in candidates array
+        # Event must record rejections in candidates array (at some stage, not diversity_config)
         events_path = project_root / "runs" / result.run_id / "events.jsonl"
         events = [json.loads(ln) for ln in events_path.read_text().strip().split("\n") if ln]
-        # Find the diversity-rejected event (either config or returns gate).
-        # With the config gate disabled by default, identical candidates proceed to
-        # backtest and are caught by the behavioral returns-correlation gate.
-        rejected = [
-            e
-            for e in events
-            if any(c.get("stage") in ("diversity_config", "diversity_returns") for c in e.get("candidates", []))
-        ]
+        rejected = [e for e in events if any(not c.get("passed") for c in e.get("candidates", []))]
         assert len(rejected) >= 1
+        # Config similarity must NOT cause diversity_config hard rejections any more
+        for ev in rejected:
+            for c in ev.get("candidates", []):
+                assert c.get("stage") != "diversity_config"
 
-        # Provider was called exactly 1 time (3 candidates generated in parallel)
-        assert len(provider.calls) == 3
+        # Provider called once per candidate (n_candidates generated in parallel)
+        assert len(provider.calls) == settings.n_candidates
 
 
 class TestSummarizeExploredSpace:

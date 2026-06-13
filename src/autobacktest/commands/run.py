@@ -157,7 +157,7 @@ def _render_rich_summary(
 
 
 def _run_impl(
-    program: str,
+    program: str | None,
     strategy: str,
     iterations: int,
     provider: str | None,
@@ -207,7 +207,15 @@ def _run_impl(
             max_tokens=settings.llm_max_tokens,
         )
 
-    program_path = Path(program)
+    if program:
+        program_path = Path(program)
+    else:
+        new_layout_path = settings.strategies_dir / strategy / "program.md"
+        if new_layout_path.exists():
+            program_path = new_layout_path
+        else:
+            fallback_path = Path(f"program-{strategy}.md")
+            program_path = fallback_path if fallback_path.exists() else Path("program.md")
     run_dir_path = Path(run_dir) if run_dir else settings.run_dir
 
     try:
@@ -244,8 +252,14 @@ def _generate_reports_and_charts(
     quiet: bool,
 ) -> None:
     """Generate reports, charts, and summary after an optimization run."""
-    strategy_path = settings.strategies_dir / f"{strategy}.py"
-    config_path = settings.configs_dir / f"{strategy}.yaml"
+    new_strategy_path = settings.strategies_dir / strategy / "strategy.py"
+    new_config_path = settings.strategies_dir / strategy / "config.yaml"
+    if new_strategy_path.exists() and new_config_path.exists():
+        strategy_path = new_strategy_path
+        config_path = new_config_path
+    else:
+        strategy_path = settings.strategies_dir / f"{strategy}.py"
+        config_path = settings.configs_dir / f"{strategy}.yaml"
     strategy_code = strategy_path.read_text(encoding="utf-8") if strategy_path.exists() else ""
     config_yaml = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
     program_text = program_path.read_text(encoding="utf-8") if program_path.exists() else ""
@@ -318,7 +332,8 @@ def _generate_reports_and_charts(
         )
 
     report_path = output_dir / "strategy_report.md"
-    config_path = settings.configs_dir / f"{strategy}.yaml"
+    new_config_path = settings.strategies_dir / strategy / "config.yaml"
+    config_path = new_config_path if new_config_path.exists() else settings.configs_dir / f"{strategy}.yaml"
     _render_rich_summary(
         result,
         iterations,
@@ -330,8 +345,8 @@ def _generate_reports_and_charts(
 def register_command(app: typer.Typer) -> None:
     @app.command()
     def run(
-        program: str = typer.Option(
-            ...,
+        program: str | None = typer.Option(
+            None,
             "--program",
             "-p",
             help="Path to program.md objective and constraints.",

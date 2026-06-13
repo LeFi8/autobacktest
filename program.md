@@ -32,6 +32,6 @@ and historical performance context all help the LLM understand what it's working
 
 ---
 
-**Tip:** See `strategies/equal_weight.py` and `configs/equal_weight.yaml` for a complete reference
+**Tip:** See `strategies/equal_weight/strategy.py` and `strategies/equal_weight/config.yaml` for a complete reference
 strategy. Use `uv run autobacktest init-strategy --name my_strategy` to scaffold
 a new one.

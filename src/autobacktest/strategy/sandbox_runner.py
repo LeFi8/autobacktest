@@ -343,9 +343,14 @@ def run_checks():
                 bad_row = diff.max(axis=1) > 1e-7
                 if bad_row.any():
                     first_bad_date = common_idx[bad_row.values][0].strftime("%Y-%m-%d")
+                    max_diff = float(diff.values.max())
+                    worst_col = str(diff.max(axis=0).idxmax())
                     msg = (
-                        f"Lookahead bias sniff test failed. Rebalance signals at "
-                        f"'{first_bad_date}' changed when future data was appended to the price history."
+                        f"Lookahead bias sniff test failed. Signal for '{worst_col}' at "
+                        f"'{first_bad_date}' changed when future data was appended to the price history "
+                        f"(max weight delta {max_diff:.4f}). Ensure no feature depends on "
+                        "future rows (e.g. avoid .shift(-n), forward-fills, or rolling "
+                        "windows without .shift(1))."
                     )
                 else:
                     msg = "Lookahead bias sniff test failed."
@@ -389,12 +394,17 @@ def run_checks():
                     w_s_c = w_shifted_clean.loc[warmup_idx]
 
                     if not np.allclose(w_b_s.values, w_s_c.values, rtol=0.0, atol=1e-5):
+                        shift_diff = np.abs(w_b_s.values - w_s_c.values)
+                        max_shift_diff = float(shift_diff.max())
+                        n_bad_cells = int((shift_diff > 1e-5).sum())
                         return {
                             "passed": False,
                             "error_code": "lookahead_detected",
                             "detail": (
-                                "Lookahead Shift Test failed: signals did not shift consistently"
-                                " with price history shift."
+                                f"Lookahead Shift Test failed: signals did not shift consistently"
+                                f" with price history shift — max post-warmup discrepancy {max_shift_diff:.4f}"
+                                f" across {n_bad_cells} weight cell(s) (tolerance 1e-5)."
+                                f" Ensure all features use .shift(1) and avoid .shift(-n)."
                             ),
                         }
         except Exception as e:

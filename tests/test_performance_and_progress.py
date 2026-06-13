@@ -107,6 +107,7 @@ None.
         mock_report.dataset_hash = "abc"
         mock_report.observed_sharpe = 1.5
         mock_report.deflated_sharpe = 1.4
+        mock_report.holdout_deflated_sharpe = 1.3
         mock_report.effective_trials = 1
         mock_report.holdout_metrics.sharpe_ratio = 1.5
         mock_report.holdout_metrics.max_drawdown = 0.05
@@ -114,6 +115,7 @@ None.
         mock_report.in_sample_metrics.sharpe_ratio = 1.5
         mock_report.in_sample_metrics.max_drawdown = 0.05
         mock_report.in_sample_metrics.turnover = 0.2
+        mock_report.in_sample_metrics.annualized_return = 0.15
         mock_report.regime_passed = True
         mock_report.holdout_net_returns = dummy_returns
         mock_report.to_json.return_value = "{}"

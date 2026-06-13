@@ -105,6 +105,12 @@ class LLMError(Exception):
         self.finish_reason = finish_reason
 
     def __str__(self) -> str:
+        """Return a structured string representation for logging and debugging.
+
+        Returns:
+            Human-readable error string with provider, model, detail,
+            retryability, and finish reason.
+        """
         return (
             f"LLMError(provider='{self.provider}', model='{self.model}', "
             f"detail='{self.detail}', retryable={self.retryable}, "
@@ -113,7 +119,13 @@ class LLMError(Exception):
 
 
 class LLMProvider(ABC):
-    """Abstract base class defining the contract for LLM drivers."""
+    """Abstract base class defining the contract for LLM drivers.
+
+    Concrete implementations (e.g. ``LiteLLMProvider``, ``MockProvider``)
+    must implement ``generate_edit`` and the ``provider_name`` property.
+    The ``temperature`` attribute is set by the orchestrator to control
+    exploration vs. exploitation during the optimization loop.
+    """
 
     temperature: float
 
@@ -135,5 +147,9 @@ class LLMProvider(ABC):
     @property
     @abstractmethod
     def provider_name(self) -> str:
-        """Return the unique string identification of the provider."""
+        """Return the unique string identification of the provider.
+
+        Returns:
+            Provider identifier (e.g. ``"openai"``, ``"anthropic"``, ``"mock"``).
+        """
         pass

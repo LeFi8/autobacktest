@@ -1,5 +1,7 @@
 # Developer Setup & Installation Guide
 
+> [Documentation Hub](index.md) | [About Project](about-project.md) | [Strategy Guide](strategy-guide.md) | [Architecture](architecture.md) | [API Reference](api-reference.md)
+
 This document describes how to set up the development environment, execute the test suite, run static checks, and configure pre-commit hooks.
 
 ## Prerequisites
@@ -139,11 +141,11 @@ Three files are created:
 
 | File | Purpose |
 |---|---|
-| ``configs/{name}.yaml`` | Full Pydantic-validated strategy configuration |
-| ``strategies/{name}.py`` | Runnable signal-generation code (edit to implement your logic) |
+| ``strategies/{name}/config.yaml`` | Full Pydantic-validated strategy configuration |
+| ``strategies/{name}/strategy.py`` | Runnable signal-generation code (edit to implement your logic) |
 | ``program-{name}.md`` | LLM objective / constraints document for optimization |
 
-The generated code is a **starting point** — edit ``strategies/{name}.py`` to implement
+The generated code is a **starting point** — edit ``strategies/{name}/strategy.py`` to implement
 your custom signal logic before running the optimization loop.
 
 #### Run the Optimization Loop
@@ -157,6 +159,29 @@ Audit whether optimized strategies significantly outperform the baseline after
 correcting for data-snooping bias:
 ```bash
 uv run autobacktest spa --run-id <run_id> --accepted-only
+```
+
+**Flags:**
+
+| Flag | Default | Description |
+|---|---|---|
+| `--run-id` | _required_ | Run identifier to audit (from `report` output) |
+| `--accepted-only` | `False` | Only include gate-accepted candidates (excludes rejected attempts) |
+
+The SPA test returns three p-value bounds (consistent, upper conservative,
+lower liberal) and the observed test statistic. A p-value < 0.05 indicates
+the best candidate significantly outperforms the baseline after correcting
+for data-snooping bias.
+
+### 8. Raw JSON Output
+Use the `--json` flag with the `run` command to output raw JSON instead of
+the Rich dashboard. Useful for scripting or piping to other tools:
+```bash
+uv run autobacktest run \
+  --program program.md \
+  --strategy equal_weight \
+  --iterations 5 \
+  --json
 ```
 
 

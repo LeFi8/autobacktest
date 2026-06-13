@@ -1,7 +1,0 @@
-# Ignore all other strategies
-*
-
-# Templates
-!equal_weight.yaml
-!momentum_rotation.yaml
-

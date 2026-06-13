@@ -2,5 +2,7 @@
 *
 
 # Templates
-!equal_weight.py
-!momentum_rotation.py
+!equal_weight/
+!equal_weight/**
+!momentum_rotation/
+!momentum_rotation/**

@@ -28,27 +28,96 @@ load_dotenv()
 
 
 def _env_str(key: str, default: str) -> Any:
+    """Create a Pydantic Field that reads a string value from an environment variable.
+
+    Args:
+        key: Environment variable name (e.g. ``AUTOBACKTEST_LLM_MODEL``).
+        default: Fallback value when the env var is unset or empty.
+
+    Returns:
+        A ``Field`` with a ``default_factory`` that resolves the env var at access time.
+    """
     return Field(default_factory=lambda: os.getenv(key, default))
 
 
 def _env_int(key: str, default: str) -> Any:
+    """Create a Pydantic Field that reads an integer value from an environment variable.
+
+    Args:
+        key: Environment variable name.
+        default: Fallback value as a string (converted to ``int`` at access time).
+
+    Returns:
+        A ``Field`` with a ``default_factory`` that resolves and casts the env var.
+    """
     return Field(default_factory=lambda: int(os.getenv(key, default)))
 
 
 def _env_float(key: str, default: str) -> Any:
+    """Create a Pydantic Field that reads a float value from an environment variable.
+
+    Args:
+        key: Environment variable name.
+        default: Fallback value as a string (converted to ``float`` at access time).
+
+    Returns:
+        A ``Field`` with a ``default_factory`` that resolves and casts the env var.
+    """
     return Field(default_factory=lambda: float(os.getenv(key, default)))
 
 
 def _env_bool(key: str, default: str) -> Any:
+    """Create a Pydantic Field that reads a boolean value from an environment variable.
+
+    Truthy values are ``"true"``, ``"1"``, and ``"1"`` (case-insensitive).
+
+    Args:
+        key: Environment variable name.
+        default: Fallback value as a string.
+
+    Returns:
+        A ``Field`` with a ``default_factory`` that resolves and parses the env var.
+    """
     return Field(default_factory=lambda: os.getenv(key, default).lower() in ("true", "1", "yes"))
 
 
 def _env_path(key: str, default: str) -> Any:
+    """Create a Pydantic Field that reads a Path value from an environment variable.
+
+    Args:
+        key: Environment variable name.
+        default: Fallback value as a string (converted to ``Path`` at access time).
+
+    Returns:
+        A ``Field`` with a ``default_factory`` that resolves and wraps the env var.
+    """
     return Field(default_factory=lambda: Path(os.getenv(key, default)))
 
 
 class Settings(BaseModel):
-    """Settings manager loaded from env variables with safe fallbacks."""
+    """Central configuration singleton for AutoBacktest.
+
+    All fields are resolved lazily from environment variables (prefixed
+    ``AUTOBACKTEST_``) via ``default_factory`` closures. Environment variables
+    can be set at any point before the first field access — typically loaded
+    from ``.env`` via ``python-dotenv`` on module import.
+
+    Configuration categories:
+    - **LLM Client**: provider, model, temperature, token limits, caching
+    - **Backtest Windows**: start/end dates, holdout period length
+    - **System Directories**: run dir, cache dir, strategies dir, configs dir
+    - **Optimization Loop**: candidate count, parallelism, early stopping
+    - **Safety Gates**: file size, complexity, import whitelist, sandbox timeout
+    - **Repair & Salvage**: codemod, LLM repair, config jitter, JSON salvage
+    - **Diversity Gates**: config similarity, returns correlation thresholds
+    - **Verbosity**: warning suppression
+    - **Storage**: SQLite timeout
+
+    Properties:
+        parsed_safe_imports: Resolved set of whitelisted import module names.
+        ledger_db_path: Full path to the SQLite ledger database file.
+        lessons_db_path: Full path to the SQLite lessons database file.
+    """
 
     # --- LLM CLIENT CONFIGURATION ---
     llm_provider: str = _env_str("AUTOBACKTEST_LLM_PROVIDER", "litellm")
@@ -72,7 +141,8 @@ class Settings(BaseModel):
     ledger_db_name: str = _env_str("AUTOBACKTEST_LEDGER_DB_NAME", "ledger.db")
 
     # --- OPTIMIZATION LOOP ---
-    n_candidates: int = _env_int("AUTOBACKTEST_N_CANDIDATES", "3")
+    n_candidates: int = _env_int("AUTOBACKTEST_N_CANDIDATES", "10")
+    eval_max_workers: int = _env_int("AUTOBACKTEST_EVAL_MAX_WORKERS", "4")
     importance_min_attempts: int = _env_int("AUTOBACKTEST_IMPORTANCE_MIN_ATTEMPTS", "6")
     importance_p_threshold: float = _env_float("AUTOBACKTEST_IMPORTANCE_P_THRESHOLD", "0.20")
     early_stop_patience: int = _env_int("AUTOBACKTEST_EARLY_STOP_PATIENCE", "10")
@@ -101,6 +171,10 @@ class Settings(BaseModel):
     identical_behavior_epsilon: float = _env_float("AUTOBACKTEST_IDENTICAL_BEHAVIOR_EPSILON", "1e-6")
     diversity_config_threshold: float = _env_float("AUTOBACKTEST_DIVERSITY_CONFIG_THRESHOLD", "0.95")
     diversity_returns_threshold: float = _env_float("AUTOBACKTEST_DIVERSITY_RETURNS_THRESHOLD", "0.95")
+    diversity_compare_mode: str = _env_str("AUTOBACKTEST_DIVERSITY_COMPARE_MODE", "recent")
+    diversity_recent_n: int = _env_int("AUTOBACKTEST_DIVERSITY_RECENT_N", "5")
+    diversity_hard_threshold: float = _env_float("AUTOBACKTEST_DIVERSITY_HARD_THRESHOLD", "0.999")
+    diversity_returns_penalty: float = _env_float("AUTOBACKTEST_DIVERSITY_RETURNS_PENALTY", "0.0")
 
     # --- VERBOSITY CONTROL ---
     quiet: bool = _env_bool("AUTOBACKTEST_QUIET", "false")
@@ -110,17 +184,27 @@ class Settings(BaseModel):
 
     @cached_property
     def parsed_safe_imports(self) -> set[str]:
-        """Convert comma-separated imports string into set."""
+        """Parse the comma-separated import whitelist into a set of module names.
+
+        Returns:
+            Set of stripped, non-empty module names from ``safe_imports_whitelist``.
+        """
         return {x.strip() for x in self.safe_imports_whitelist.split(",") if x.strip()}
 
     @property
     def ledger_db_path(self) -> Path:
-        """Resolve full ledger path."""
+        """Resolve the full filesystem path to the SQLite ledger database.
+
+        Composed from ``run_dir / ledger_db_name`` (default: ``runs/ledger.db``).
+        """
         return self.run_dir / self.ledger_db_name
 
     @property
     def lessons_db_path(self) -> Path:
-        """Resolve full lessons database path."""
+        """Resolve the full filesystem path to the SQLite lessons database.
+
+        Always located at ``run_dir / lessons.db``.
+        """
         return self.run_dir / "lessons.db"
 
 

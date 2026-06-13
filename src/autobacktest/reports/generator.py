@@ -385,10 +385,7 @@ def compile_failure_summary(run_dir: Path) -> dict[str, Any]:
 def _add_robustness_section(lines: list[str], report: EvaluationReport) -> None:
     """Add robustness diagnostics section."""
     _h2(lines, "Robustness Diagnostics")
-    _h3(lines, "In-Sample Metrics")
-    _window_table(lines, report.in_sample_metrics, "In-Sample")
-    _h3(lines, "Holdout Metrics")
-    _window_table(lines, report.holdout_metrics, "Holdout")
+    # Note: IS/HO metrics now shown in unified table in Benchmark Comparison section
     _h3(lines, "Monte Carlo Bootstrap (Sharpe)")
     _kv(lines, "5th Percentile", f"{report.mc_sharpe_5th:.4f}")
     _kv(lines, "50th Percentile", f"{report.mc_sharpe_50th:.4f}")
@@ -428,14 +425,20 @@ def _add_benchmark_section(lines: list[str], report: EvaluationReport) -> None:
     _h2(lines, "Benchmark Comparison")
     bench_is = report.benchmark_in_sample_metrics
     bench_ho = report.benchmark_holdout_metrics
+
+    # Unified comparison table
+    _unified_comparison_table(
+        lines,
+        report.in_sample_metrics,
+        bench_is,
+        report.holdout_metrics,
+        bench_ho,
+        report.benchmark_ticker,
+    )
+
+    # Active return metrics if benchmark available
     if bench_is is not None and bench_ho is not None:
         ticker = report.benchmark_ticker
-        lines.append("")
-        _window_table(lines, report.in_sample_metrics, "Strategy (IS)")
-        _window_table(lines, bench_is, f"{ticker} (IS)")
-        lines.append("")
-        _window_table(lines, report.holdout_metrics, "Strategy (HO)")
-        _window_table(lines, bench_ho, f"{ticker} (HO)")
         strat_ho_ret = report.holdout_metrics.annualized_return
         bench_ho_ret = bench_ho.annualized_return
         excess = strat_ho_ret - bench_ho_ret
@@ -590,6 +593,64 @@ def _window_table(lines: list[str], report: WindowReport, label: str) -> None:
     lines.append(f"| Annualized Volatility | {report.annualized_volatility * 100:.2f}% |")
     lines.append(f"| Max Drawdown | {report.max_drawdown * 100:.2f}% |")
     lines.append(f"| Turnover | {report.turnover:.2f}x |")
+
+
+def _unified_comparison_table(
+    lines: list[str],
+    strat_is: WindowReport,
+    bench_is: WindowReport | None,
+    strat_ho: WindowReport,
+    bench_ho: WindowReport | None,
+    bench_ticker: str = "SPY",
+) -> None:
+    """Append a unified comparison table with all metrics in columns."""
+    lines.append("")
+    lines.append("### Performance Comparison")
+    lines.append("")
+
+    if bench_is is not None and bench_ho is not None:
+        lines.append(f"| Metric | Strategy (IS) | {bench_ticker} (IS) | Strategy (HO) | {bench_ticker} (HO) |")
+        lines.append("|--------|--------------|----------|---------------|----------|")
+        lines.append(
+            f"| Sharpe Ratio | {strat_is.sharpe_ratio:.4f} | {bench_is.sharpe_ratio:.4f} "
+            f"| {strat_ho.sharpe_ratio:.4f} | {bench_ho.sharpe_ratio:.4f} |"
+        )
+        lines.append(
+            f"| Sortino Ratio | {strat_is.sortino_ratio:.4f} | {bench_is.sortino_ratio:.4f} "
+            f"| {strat_ho.sortino_ratio:.4f} | {bench_ho.sortino_ratio:.4f} |"
+        )
+        lines.append(
+            f"| Annualized Return | {strat_is.annualized_return * 100:.2f}% | {bench_is.annualized_return * 100:.2f}% "
+            f"| {strat_ho.annualized_return * 100:.2f}% | {bench_ho.annualized_return * 100:.2f}% |"
+        )
+        lines.append(
+            f"| Annualized Volatility | {strat_is.annualized_volatility * 100:.2f}% "
+            f"| {bench_is.annualized_volatility * 100:.2f}% "
+            f"| {strat_ho.annualized_volatility * 100:.2f}% "
+            f"| {bench_ho.annualized_volatility * 100:.2f}% |"
+        )
+        lines.append(
+            f"| Max Drawdown | {strat_is.max_drawdown * 100:.2f}% | {bench_is.max_drawdown * 100:.2f}% "
+            f"| {strat_ho.max_drawdown * 100:.2f}% | {bench_ho.max_drawdown * 100:.2f}% |"
+        )
+        lines.append(
+            f"| Turnover | {strat_is.turnover:.2f}x | {bench_is.turnover:.2f}x "
+            f"| {strat_ho.turnover:.2f}x | {bench_ho.turnover:.2f}x |"
+        )
+    else:
+        lines.append("| Metric | In-Sample | Holdout |")
+        lines.append("|--------|-----------|---------|")
+        lines.append(f"| Sharpe Ratio | {strat_is.sharpe_ratio:.4f} | {strat_ho.sharpe_ratio:.4f} |")
+        lines.append(f"| Sortino Ratio | {strat_is.sortino_ratio:.4f} | {strat_ho.sortino_ratio:.4f} |")
+        lines.append(
+            f"| Annualized Return | {strat_is.annualized_return * 100:.2f}% | {strat_ho.annualized_return * 100:.2f}% |"
+        )
+        lines.append(
+            f"| Annualized Volatility | {strat_is.annualized_volatility * 100:.2f}% "
+            f"| {strat_ho.annualized_volatility * 100:.2f}% |"
+        )
+        lines.append(f"| Max Drawdown | {strat_is.max_drawdown * 100:.2f}% | {strat_ho.max_drawdown * 100:.2f}% |")
+        lines.append(f"| Turnover | {strat_is.turnover:.2f}x | {strat_ho.turnover:.2f}x |")
 
 
 def _render_failure_summary_table(lines: list[str], failure_summary: dict[str, Any]) -> None:

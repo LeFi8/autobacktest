@@ -154,8 +154,16 @@ You operate in a strict execution loop and MUST adhere to the following rules:
 
 
 def parse_lessons(lessons_text: str) -> list[dict[str, str]]:
-    """Parse lessons.md markdown content into a list of parsed lesson dicts.
-    Each dict has keys: 'title', 'type', 'body'.
+    """Parse lessons markdown content into a list of lesson dictionaries.
+
+    Splits on ``### `` H1 headers and extracts the type tag from each lesson body.
+
+    Args:
+        lessons_text: Raw markdown text containing lessons with ``### `` headers.
+
+    Returns:
+        List of dicts, each with keys ``'title'``, ``'type'`` (BUG, DIVERSITY,
+        GATE_REJECTION, PERFORMANCE_INSIGHT, or STRUCTURAL), and ``'body'``.
     """
     if not lessons_text:
         return []
@@ -184,7 +192,22 @@ def parse_lessons(lessons_text: str) -> list[dict[str, str]]:
 
 
 def filter_lessons(lessons_text: str, context_stage: str | None) -> str:
-    """Filter and reconstruct lessons based on the active stage/context."""
+    """Filter and reconstruct lessons based on the active optimization stage.
+
+    Prioritizes lessons whose type matches the current failure stage (e.g.,
+    BUG lessons for validation errors, DIVERSITY lessons for diversity gate
+    failures). STRUCTURAL lessons are always included as general guidance.
+
+    Args:
+        lessons_text: Raw lessons markdown text.
+        context_stage: Current optimization stage (``'validation'``,
+            ``'eval_error'``, ``'diversity_config'``, ``'diversity_returns'``,
+            ``'gate'``), or ``None`` to return all lessons unfiltered.
+
+    Returns:
+        Filtered lessons as a markdown string. Returns the original text
+        unfiltered when no stage-specific filtering applies.
+    """
     if not lessons_text:
         return "No lessons recorded yet."
 
@@ -217,6 +240,16 @@ def filter_lessons(lessons_text: str, context_stage: str | None) -> str:
 
 
 def _text_block(text: str, cache: bool = False) -> dict[str, Any]:
+    """Create an Anthropic-style text content block with optional cache control.
+
+    Args:
+        text: The text content for this block.
+        cache: When True, attaches ``cache_control: {"type": "ephemeral"}`` to
+            mark this block as a cache breakpoint for Anthropic's prompt caching.
+
+    Returns:
+        Dict suitable for inclusion in a ``content`` list for Anthropic tool use.
+    """
     block: dict[str, Any] = {"type": "text", "text": text}
     if cache:
         block["cache_control"] = {"type": "ephemeral"}
@@ -224,6 +257,19 @@ def _text_block(text: str, cache: bool = False) -> dict[str, Any]:
 
 
 def _format_previous_attempt_hint(error_code: str, detail: str) -> str:
+    """Return a contextual remediation hint for a specific validation error.
+
+    Maps each error code to targeted advice that helps the LLM understand
+    what went wrong and how to fix it.
+
+    Args:
+        error_code: The ``ValidationError`` string code (e.g.,
+            ``'lookahead_detected'``, ``'ast_blocked_import'``).
+        detail: The original error detail message from the validation check.
+
+    Returns:
+        Markdown-formatted remediation hint, or empty string for unknown codes.
+    """
     if error_code == "lookahead_detected":
         return (
             "\nLookahead bias was detected via a shifted-rerun test, "
@@ -281,6 +327,20 @@ def _format_previous_attempt_hint(error_code: str, detail: str) -> str:
 
 
 def _format_evaluation_report(context: AgentContext) -> str:
+    """Format the incumbent's in-sample evaluation report for the LLM prompt.
+
+    Renders walk-forward aggregate metrics (Sharpe, Sortino, IR, drawdown,
+    turnover), DSR, regime test results, and per-fold Sharpe range when
+    multiple windows exist.
+
+    Args:
+        context: The current agent context containing the evaluation report.
+
+    Returns:
+        Formatted markdown string describing the evaluation results, or
+        ``"First iteration (no prior evaluation report exists)."``
+        when no report is available.
+    """
     if context.evaluation_report is None:
         return "First iteration (no prior evaluation report exists)."
 
@@ -316,6 +376,16 @@ def _format_evaluation_report(context: AgentContext) -> str:
 
 
 def _attempt_fmt(val: Any, default: float = 0.0) -> str:
+    """Format a metric value to 4 decimal places for the attempt history table.
+
+    Args:
+        val: Numeric value to format. ``None`` or non-numeric values fall
+            back to ``default``.
+        default: Fallback value when ``val`` is ``None`` or not convertible.
+
+    Returns:
+        Formatted string like ``"1.2345"`` or ``"-"`` on conversion failure.
+    """
     try:
         return f"{float(val if val is not None else default):.4f}"
     except (TypeError, ValueError):
@@ -323,6 +393,15 @@ def _attempt_fmt(val: Any, default: float = 0.0) -> str:
 
 
 def _attempt_outcome(r: dict[str, Any]) -> str:
+    """Return a human-readable outcome label for an attempt history row.
+
+    Args:
+        r: Attempt record dict with keys like ``'committed'``, ``'accepted'``,
+            and ``'rejection_reason'``.
+
+    Returns:
+        One of ``"committed"``, ``"accepted"``, or ``"rejected (<reason>)"``.
+    """
     if r.get("committed"):
         return "✓ committed"
     if r.get("accepted"):
@@ -332,18 +411,48 @@ def _attempt_outcome(r: dict[str, Any]) -> str:
 
 
 def _attempt_fingerprint_repr(r: dict[str, Any]) -> str:
+    """Return a truncated string representation of a config fingerprint.
+
+    Args:
+        r: Attempt record dict containing ``'config_fingerprint'``.
+
+    Returns:
+        Truncated fingerprint string (max 60 chars) for display in the
+        attempt history table.
+    """
     fp = r.get("config_fingerprint", {})
     s = str(fp)
     return s[:60] + "..." if len(s) > 60 else s
 
 
 def _attempt_ho_flag(r: dict[str, Any]) -> str:
+    """Return holdout confirmation flag for an attempt history row.
+
+    Args:
+        r: Attempt record dict containing ``'holdout_confirmed'``.
+
+    Returns:
+        ``"HO"`` if holdout was confirmed, empty string otherwise.
+    """
     if r.get("holdout_confirmed"):
         return "✓ HO"
     return ""
 
 
 def _format_attempt_history(context: AgentContext) -> str:
+    """Render the attempt history as a markdown table for the LLM prompt.
+
+    Shows all committed attempts and up to 25 most recent non-committed
+    attempts. Each row includes iteration number, outcome, target metric,
+    DSR, regime status, rejection reason, config fingerprint, and
+    holdout flag.
+
+    Args:
+        context: Agent context with ``attempt_history`` list.
+
+    Returns:
+        Markdown table string, or empty string if no history exists.
+    """
     if not context.attempt_history:
         return ""
 
@@ -384,6 +493,16 @@ def _format_attempt_history(context: AgentContext) -> str:
 
 
 def _format_previous_validation(attempt: dict[str, Any], lines: list[str]) -> None:
+    """Append validation failure details to the previous attempt section.
+
+    Formats the error code, detail, and failed code/config. For
+    ``lookahead_detected`` errors, includes an extended explanation
+    of common causes and fixes.
+
+    Args:
+        attempt: Attempt record dict with validation failure details.
+        lines: Mutable list of markdown lines to append to.
+    """
     error_code = attempt.get("error_code", "")
     detail = attempt.get("detail", "")
     lines.append(f"**Error:** `{error_code}`")
@@ -408,6 +527,12 @@ def _format_previous_validation(attempt: dict[str, Any], lines: list[str]) -> No
 
 
 def _format_previous_diversity_config(attempt: dict[str, Any], lines: list[str]) -> None:
+    """Append config diversity gate failure details to the previous attempt section.
+
+    Args:
+        attempt: Attempt record dict with config diversity rejection details.
+        lines: Mutable list of markdown lines to append to.
+    """
     detail = attempt.get("detail", "")
     lines.append(f"**Detail:** {detail}")
     config = attempt.get("candidate_config_yaml", "")
@@ -416,6 +541,12 @@ def _format_previous_diversity_config(attempt: dict[str, Any], lines: list[str])
 
 
 def _format_previous_eval_error(attempt: dict[str, Any], lines: list[str]) -> None:
+    """Append evaluation error details to the previous attempt section.
+
+    Args:
+        attempt: Attempt record dict with evaluation error details.
+        lines: Mutable list of markdown lines to append to.
+    """
     detail = attempt.get("detail", "")
     lines.append(f"**Error:** {detail}")
     code = attempt.get("candidate_strategy_code", "")
@@ -427,6 +558,14 @@ def _format_previous_eval_error(attempt: dict[str, Any], lines: list[str]) -> No
 
 
 def _format_previous_diversity_returns(attempt: dict[str, Any], lines: list[str]) -> None:
+    """Append returns correlation diversity failure details to the previous attempt section.
+
+    Includes the detail message, observed metrics, and the rejected config YAML.
+
+    Args:
+        attempt: Attempt record dict with returns diversity rejection details.
+        lines: Mutable list of markdown lines to append to.
+    """
     detail = attempt.get("detail", "")
     lines.append(f"**Detail:** {detail}")
     metrics = attempt.get("candidate_metrics", {})
@@ -440,6 +579,15 @@ def _format_previous_diversity_returns(attempt: dict[str, Any], lines: list[str]
 
 
 def _format_previous_gate(attempt: dict[str, Any], lines: list[str]) -> None:
+    """Append gate rejection details to the previous attempt section.
+
+    Includes rejection reason, failed gate name, candidate metrics,
+    and the failed code/config.
+
+    Args:
+        attempt: Attempt record dict with gate rejection details.
+        lines: Mutable list of markdown lines to append to.
+    """
     rejection_reason = attempt.get("rejection_reason", "")
     failed_gate = attempt.get("failed_gate", "")
     lines.append(f"**Rejection reason:** {rejection_reason}")
@@ -458,6 +606,20 @@ def _format_previous_gate(attempt: dict[str, Any], lines: list[str]) -> None:
 
 
 def _format_previous_attempt(context: AgentContext) -> str:
+    """Build the previous attempt failure section for the LLM prompt.
+
+    Dispatches to the appropriate sub-formatter based on the failure stage
+    (validation, diversity_config, eval_error, diversity_returns, gate).
+    Appends a diagnostic instruction telling the LLM to fix the specific
+    error rather than regenerating the same code.
+
+    Args:
+        context: Agent context with ``last_attempt`` dict.
+
+    Returns:
+        Formatted markdown string for the previous attempt section,
+        or empty string if no previous attempt exists.
+    """
     if context.last_attempt is None:
         return ""
 
@@ -488,6 +650,19 @@ def _format_previous_attempt(context: AgentContext) -> str:
 
 
 def _format_performance_target(context: AgentContext) -> str:
+    """Render the performance target section showing incumbent metrics and gate limits.
+
+    When an evaluation report exists, shows the incumbent's in-sample
+    walk-forward metrics (Sharpe, Sortino, IR, drawdown, turnover) and
+    the hard gate limits the candidate must pass. Always includes a
+    warning about the hidden OOS holdout confirmation gate.
+
+    Args:
+        context: Agent context with optional ``evaluation_report``.
+
+    Returns:
+        Formatted markdown string with performance targets and gate limits.
+    """
     if context.evaluation_report is not None:
         rep = context.evaluation_report
         m = rep.in_sample_metrics
@@ -532,6 +707,19 @@ def _format_performance_target(context: AgentContext) -> str:
 
 
 def _format_repair_request(context: AgentContext) -> str:
+    """Render the repair request section when the LLM's previous edit failed preflight.
+
+    Shows the failed code, failed config, error code, and error detail,
+    along with a contextual remediation hint. Instructs the LLM to make
+    only the minimal fix required.
+
+    Args:
+        context: Agent context with ``repair_request`` dict.
+
+    Returns:
+        Formatted markdown string for the repair section, or empty string
+        when no repair request is active.
+    """
     if not context.repair_request:
         return ""
 
@@ -555,6 +743,19 @@ def _format_repair_request(context: AgentContext) -> str:
 
 
 def _format_last_iteration_failures(context: AgentContext) -> str:
+    """Render a summary of all candidate failures from the previous iteration.
+
+    Lists each failed candidate with its stage, error code, detail, and
+    parameters, helping the LLM avoid repeating the same mistakes across
+    parallel candidates.
+
+    Args:
+        context: Agent context with ``last_iteration_failures`` list.
+
+    Returns:
+        Formatted markdown string with numbered failure entries,
+        or empty string if no failures occurred.
+    """
     if not context.last_iteration_failures:
         return ""
 

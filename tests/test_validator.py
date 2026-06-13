@@ -949,3 +949,36 @@ universe:
     )
     assert not is_identical
     assert abs(diff - 0.5) < 1e-6
+
+
+def test_validator_lookahead_sniff_message_contains_ticker_and_magnitude(mock_dirs: tuple[Path, Path]) -> None:
+    """Lookahead sniff failure message should include ticker name and weight delta."""
+    strat_dir, conf_dir = mock_dirs
+
+    strat_file = strat_dir / "lookahead_detail.py"
+    strat_file.write_text(
+        """
+import pandas as pd
+
+def generate_signals(prices: pd.DataFrame, config: dict) -> pd.DataFrame:
+    weights = pd.DataFrame(0.0, index=prices.index, columns=prices.columns)
+    # LEAKAGE: weights on day t read prices from the VERY LAST day
+    # of the entire DataFrame (future data!)
+    last_val = prices.iloc[-1]["SPY"]
+    if "SPY" in weights.columns:
+        weights["SPY"] = last_val / (last_val + 1.0)
+    return weights
+""",
+        encoding="utf-8",
+    )
+
+    conf_file = conf_dir / "lookahead_detail.yaml"
+    conf_file.write_text("universe: [SPY]\n", encoding="utf-8")
+
+    res = preflight("lookahead_detail", strat_dir, conf_dir)
+    assert not res.passed
+    assert res.error_code == ValidationError.LOOKAHEAD_DETECTED
+    # Message should name the ticker that leaked
+    assert "SPY" in res.detail
+    # Message should include a numeric weight delta
+    assert "weight delta" in res.detail
