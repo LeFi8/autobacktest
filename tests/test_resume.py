@@ -12,8 +12,11 @@ from tests.test_holdout_cap import _make_canned_report
 from tests.test_orchestrator_e2e import BASELINE_STRATEGY, STRATEGY_CONFIG, _make_fake_provider, _make_synthetic_prices
 
 
+@pytest.mark.slow
+@pytest.mark.usefixtures("mock_validate_candidate_pass")
 def test_resume_optimization_picks_up_correctly(
-    project_root_with_lessons: Path, monkeypatch: pytest.MonkeyPatch
+    project_root_with_lessons: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     synthetic_prices = _make_synthetic_prices()
     fake_instance = _make_fake_provider(synthetic_prices)
@@ -82,8 +85,11 @@ def test_resume_optimization_picks_up_correctly(
     assert result_2.run_id == saved_run_id
 
 
+@pytest.mark.slow
+@pytest.mark.usefixtures("mock_validate_candidate_pass")
 def test_resume_reconstructs_holdout_net_returns(
-    project_root_with_lessons: Path, monkeypatch: pytest.MonkeyPatch
+    project_root_with_lessons: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     synthetic_prices = _make_synthetic_prices()
     fake_instance = _make_fake_provider(synthetic_prices)

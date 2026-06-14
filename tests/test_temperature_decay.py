@@ -77,6 +77,8 @@ params:
     return prog_file, strat_dir, conf_dir, tmp_path
 
 
+@pytest.mark.slow
+@pytest.mark.usefixtures("mock_validate_candidate_pass")
 def test_adaptive_temperature_on_continuous_failures(
     mock_project: tuple[Path, Path, Path, Path],
 ) -> None:

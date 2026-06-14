@@ -6,6 +6,7 @@ from unittest.mock import patch
 import git
 import numpy as np
 import pandas as pd
+import pytest
 
 from autobacktest.gate import TargetMetric
 from autobacktest.llm.base import AgentEdit
@@ -95,6 +96,8 @@ class FakeProvider:
         return self.prices[available]
 
 
+@pytest.mark.slow
+@pytest.mark.usefixtures("mock_validate_candidate_pass")
 def test_characterization_orchestrator_run(tmp_path: Path) -> None:
     strat_dir = tmp_path / "strategies"
     cfg_dir = tmp_path / "configs"

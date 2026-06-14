@@ -9,12 +9,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-import matplotlib
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-
-matplotlib.use("Agg")
 
 from autobacktest.evaluator.report import EvaluationReport, WindowReport
 
@@ -45,6 +41,11 @@ def plot_equity_curves(
     Returns:
         Path to the saved ``equity_curves.png`` file.
     """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
     output_dir.mkdir(parents=True, exist_ok=True)
     baseline_cum = (1 + baseline_returns).cumprod()
     final_cum = (1 + final_returns).cumprod()
@@ -200,6 +201,11 @@ def plot_mc_histogram(
     Returns:
         Path to the saved ``mc_histogram.png`` file, or ``None`` if no data.
     """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
     if mc_sharpes is None or mc_sharpes.size == 0:
         return None
     fig, ax = plt.subplots(figsize=(10, 6))
@@ -244,6 +250,11 @@ def plot_walk_forward_bars(
     Returns:
         Path to the saved ``walk_forward_bars.png`` file, or ``None`` if no data.
     """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
     if not walk_forward_metrics:
         return None
     labels = [f"WF-{i + 1}" for i in range(len(walk_forward_metrics))]

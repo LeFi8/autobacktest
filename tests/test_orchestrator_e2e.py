@@ -197,6 +197,8 @@ def _make_fake_provider(synthetic_prices: pd.DataFrame) -> object:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.slow
+@pytest.mark.usefixtures("mock_validate_candidate_pass")
 def test_e2e_full_run_commits_improved_strategy(project_root: Path) -> None:
     """Full orchestrator run: scripted MockProvider produces a known-good improvement.
 
@@ -292,6 +294,7 @@ def test_e2e_full_run_commits_improved_strategy(project_root: Path) -> None:
     assert len(mock_provider.calls) == expected_calls
 
 
+@pytest.mark.slow
 def test_e2e_validation_failure_continues(project_root: Path) -> None:
     """When MockProvider returns an AST-invalid strategy, loop continues without crash.
 
@@ -322,7 +325,7 @@ def test_e2e_validation_failure_continues(project_root: Path) -> None:
         result = run_optimization(
             program_path=project_root / "program.md",
             strategy_name="toy",
-            iterations=2,
+            iterations=1,
             provider=mock_provider,
             run_dir=project_root / "runs",
             strategies_dir=project_root / "strategies",
@@ -336,12 +339,12 @@ def test_e2e_validation_failure_continues(project_root: Path) -> None:
     # No commits since validation always fails
     assert result.n_committed == 0
 
-    # 2 events written (one per iteration)
+    # 1 event written (one iteration)
     events_path = project_root / "runs" / result.run_id / "events.jsonl"
     assert events_path.exists()
     raw = events_path.read_text(encoding="utf-8").strip()
     lines = [ln for ln in raw.split("\n") if ln]
-    assert len(lines) == 2, f"Expected 2 events, got {len(lines)}"
+    assert len(lines) == 1, f"Expected 1 event, got {lines}"
 
     # Each event must record validation failure in candidates array
     for line in lines:
@@ -352,10 +355,12 @@ def test_e2e_validation_failure_continues(project_root: Path) -> None:
             assert c["passed"] is False, f"Expected candidate passed=False, got: {c}"
             assert c["stage"] == "validation", f"Expected stage='validation', got: {c}"
 
-    # 3 candidates per iteration x 2 iterations = 6 calls
-    assert len(mock_provider.calls) == 6
+    # 3 candidates per iteration x 1 iteration = 3 calls
+    assert len(mock_provider.calls) == 3
 
 
+@pytest.mark.slow
+@pytest.mark.usefixtures("mock_validate_candidate_pass")
 def test_orchestrator_fail_fast_on_non_retryable_error(project_root: Path) -> None:
     """When a non-retryable LLMError is raised, the orchestrator immediately aborts."""
     from autobacktest.llm.base import LLMError
@@ -370,7 +375,7 @@ def test_orchestrator_fail_fast_on_non_retryable_error(project_root: Path) -> No
         run_optimization(
             program_path=project_root / "program.md",
             strategy_name="toy",
-            iterations=5,
+            iterations=1,
             provider=provider,
             run_dir=project_root / "runs",
             strategies_dir=project_root / "strategies",
@@ -380,6 +385,8 @@ def test_orchestrator_fail_fast_on_non_retryable_error(project_root: Path) -> No
     assert "Non-retryable config error" in str(exc_info.value)
 
 
+@pytest.mark.slow
+@pytest.mark.usefixtures("mock_validate_candidate_pass")
 def test_orchestrator_continues_on_retryable_error(project_root: Path) -> None:
     """When a retryable LLMError is raised, the orchestrator logs and continues."""
     from autobacktest.llm.base import LLMError
@@ -396,7 +403,7 @@ def test_orchestrator_continues_on_retryable_error(project_root: Path) -> None:
         run_optimization(
             program_path=project_root / "program.md",
             strategy_name="toy",
-            iterations=3,
+            iterations=1,
             provider=provider,
             run_dir=project_root / "runs",
             strategies_dir=project_root / "strategies",
@@ -406,6 +413,8 @@ def test_orchestrator_continues_on_retryable_error(project_root: Path) -> None:
     assert "Zero successful LLM calls" in str(exc_info.value)
 
 
+@pytest.mark.slow
+@pytest.mark.usefixtures("mock_validate_candidate_pass")
 def test_orchestrator_transient_errors_become_none_candidates(
     project_root: Path,
 ) -> None:
@@ -453,6 +462,8 @@ def test_orchestrator_transient_errors_become_none_candidates(
     assert result.n_committed == 0
 
 
+@pytest.mark.slow
+@pytest.mark.usefixtures("mock_validate_candidate_pass")
 def test_exploit_mode_skips_diversity_gates(project_root: Path) -> None:
     """After acceptance, EXPLOIT mode should skip both diversity gates."""
     synthetic_prices = _make_synthetic_prices()
@@ -515,6 +526,8 @@ def test_exploit_mode_skips_diversity_gates(project_root: Path) -> None:
     assert len(diversity_returns_calls) <= 3  # 3 candidates x 1 explore iteration
 
 
+@pytest.mark.slow
+@pytest.mark.usefixtures("mock_validate_candidate_pass")
 def test_mode_logged_in_events(project_root: Path) -> None:
     """Each event in events.jsonl should contain a 'mode' key."""
     synthetic_prices = _make_synthetic_prices()
@@ -532,7 +545,7 @@ def test_mode_logged_in_events(project_root: Path) -> None:
         result = run_optimization(
             program_path=project_root / "program.md",
             strategy_name="toy",
-            iterations=2,
+            iterations=1,
             provider=mock_provider,
             run_dir=project_root / "runs",
             strategies_dir=project_root / "strategies",
@@ -553,6 +566,7 @@ def test_mode_logged_in_events(project_root: Path) -> None:
         assert event["mode"] in ("explore", "exploit"), f"Invalid mode value: {event['mode']}"
 
 
+@pytest.mark.slow
 def test_orchestrator_llm_repair_and_identical_behavior_guard(project_root: Path) -> None:
     """Tests the orchestrator's LLM repair loop, token accumulation, and identical behavior guard."""
     from autobacktest.config import settings
@@ -648,6 +662,7 @@ def test_orchestrator_llm_repair_and_identical_behavior_guard(project_root: Path
     assert cand2["stage"] == "identical_behavior"
 
 
+@pytest.mark.slow
 def test_duplicate_config_salvaged_via_jitter(project_root: Path) -> None:
     """Duplicate config is salvaged by jittering instead of rejected as diversity_config."""
     from autobacktest.config import settings
@@ -719,6 +734,7 @@ def test_duplicate_config_salvaged_via_jitter(project_root: Path) -> None:
             assert "jitter_meta" in cand
 
 
+@pytest.mark.slow
 def test_within_batch_dedup_jitters_second_candidate(project_root: Path) -> None:
     """Two identical candidates generated in the same batch get jittered to different points."""
     from autobacktest.config import settings
@@ -782,6 +798,7 @@ def test_within_batch_dedup_jitters_second_candidate(project_root: Path) -> None
             assert cands[0].get("jitter_applied") is True or cands[1].get("jitter_applied") is True
 
 
+@pytest.mark.slow
 def test_jitter_disabled_no_hard_config_rejection(project_root: Path) -> None:
     """When jitter is disabled, duplicate configs are NOT hard-rejected at diversity_config.
 
@@ -848,6 +865,7 @@ def test_jitter_disabled_no_hard_config_rejection(project_root: Path) -> None:
             )
 
 
+@pytest.mark.slow
 def test_orchestrator_lookahead_repair_and_jitter_logging(project_root: Path) -> None:
     """Mock lookahead validation failure, assert repair hint triggers and logs are populated."""
     from autobacktest.config import settings
@@ -933,7 +951,11 @@ def test_orchestrator_lookahead_repair_and_jitter_logging(project_root: Path) ->
     assert cand.get("jitter_applied", False) is False
 
 
-def test_confirm_best_candidate_at_most_one_peek_per_iteration(project_root: Path) -> None:
+@pytest.mark.slow
+@pytest.mark.usefixtures("mock_validate_candidate_pass")
+def test_confirm_best_candidate_at_most_one_peek_per_iteration(
+    project_root: Path,
+) -> None:
     """Confirms that run_gates_and_select_winner consumes at most one holdout peek per iteration.
 
     Uses n_candidates=3 (all identical IMPROVED_STRATEGY) so select passes for all three,

@@ -5,9 +5,12 @@
 ```bash
 uv sync                          # install deps
 uv run autobacktest --help       # list subcommands
-uv run pytest                    # full test suite
+uv run pytest                    # full test suite (all 447 tests)
+uv run pytest -m "not slow"      # fast feedback (skip slow E2E tests, ~3-5s)
+uv run pytest -m "not sandbox"   # skip sandbox subprocess tests
 uv run pytest -x --cov=src/autobacktest  # with coverage
 uv run pytest tests/test_gate.py -x -k "test_name"  # single test
+uv run pytest -n auto            # parallel execution via pytest-xdist
 uv run ruff check .              # lint (line-length 120, target py312)
 uv run ruff format . --check     # formatter check
 uv run mypy src/                 # typecheck (--strict)
@@ -43,7 +46,6 @@ No `.pre-commit-config.yaml` exists — skip `pre-commit install`.
 | `runs/lessons.db` | SQLite-backed LLM lesson store (replaces flat `lessons.md`) |
 | `strategies/<name>/strategy.py` | Strategy signal code |
 | `strategies/<name>/config.yaml` | Strategy parameters (Pydantic-validated) |
-| `.antigravity/` | Removed from repo — local IDE/agent config (git-ignored) |
 | `docs/` | Comprehensive docs: architecture, API reference, setup |
 | `src/autobacktest/optimization/` | Candidate gen, eval mgmt, ledger persistence helpers |
 | `src/autobacktest/commands/` | CLI subcommand implementations (7 subcommands, 8 files) |

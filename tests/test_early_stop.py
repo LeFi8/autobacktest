@@ -131,6 +131,8 @@ class IterationCountingProvider(MockProvider):
         return super().generate_edit(context)
 
 
+@pytest.mark.slow
+@pytest.mark.usefixtures("mock_validate_candidate_pass")
 def test_early_stop_fires_before_all_iterations(
     mock_project: tuple[Path, Path, Path, Path],
     monkeypatch: pytest.MonkeyPatch,
@@ -187,6 +189,8 @@ def test_early_stop_fires_before_all_iterations(
     assert result.n_committed == 0
 
 
+@pytest.mark.slow
+@pytest.mark.usefixtures("mock_validate_candidate_pass")
 def test_early_stop_counter_resets_on_acceptance(
     mock_project: tuple[Path, Path, Path, Path],
     monkeypatch: pytest.MonkeyPatch,

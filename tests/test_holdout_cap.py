@@ -9,7 +9,7 @@ from autobacktest.gate import GateResult
 from autobacktest.llm.base import AgentEdit
 from autobacktest.llm.mock_provider import MockProvider
 from autobacktest.orchestrator import run_optimization
-from tests.test_orchestrator_e2e import BASELINE_STRATEGY, STRATEGY_CONFIG, _make_fake_provider, _make_synthetic_prices
+from tests.test_orchestrator_e2e import BASELINE_STRATEGY, STRATEGY_CONFIG, _make_fake_provider
 
 
 def _make_canned_report(sharpe: float = 1.0) -> tuple[EvaluationReport, pd.Series]:
@@ -46,8 +46,13 @@ def _make_canned_report(sharpe: float = 1.0) -> tuple[EvaluationReport, pd.Serie
     return report, returns
 
 
-def test_holdout_peek_limit_early_termination(project_root_with_lessons: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    synthetic_prices = _make_synthetic_prices()
+@pytest.mark.slow
+@pytest.mark.usefixtures("mock_validate_candidate_pass")
+def test_holdout_peek_limit_early_termination(
+    project_root_with_lessons: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    synthetic_prices: pd.DataFrame,
+) -> None:
     fake_instance = _make_fake_provider(synthetic_prices)
 
     # 1. Patch evaluation to always return valid report

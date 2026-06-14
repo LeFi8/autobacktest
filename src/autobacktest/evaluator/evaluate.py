@@ -12,7 +12,6 @@ import pandas as pd
 
 from autobacktest.config import settings
 from autobacktest.data.cache import CachedDataProvider
-from autobacktest.data.yfinance_provider import YFinanceProvider
 from autobacktest.evaluator.backtest import run_vectorized_backtest
 from autobacktest.evaluator.costs import calculate_turnover_and_costs
 from autobacktest.evaluator.deflated_sharpe import calculate_psr_dsr
@@ -104,6 +103,8 @@ def _fetch_and_join_prices(
     Raises:
         ValueError: When any required ticker returns an empty price series.
     """
+    from autobacktest.data.yfinance_provider import YFinanceProvider
+
     raw_provider = YFinanceProvider()
     provider = CachedDataProvider(raw_provider, cache_dir=str(settings.cache_dir))
     prices = provider.get_prices(tickers, start_date, end_date)
