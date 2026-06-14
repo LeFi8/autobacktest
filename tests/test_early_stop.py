@@ -132,10 +132,10 @@ class IterationCountingProvider(MockProvider):
 
 
 @pytest.mark.slow
+@pytest.mark.usefixtures("mock_validate_candidate_pass")
 def test_early_stop_fires_before_all_iterations(
     mock_project: tuple[Path, Path, Path, Path],
     monkeypatch: pytest.MonkeyPatch,
-    mock_validate_candidate_pass: None,  # noqa: ARG001
 ) -> None:
     """Early-stop exits the loop once consecutive_no_accept reaches EARLY_STOP_PATIENCE.
 
@@ -190,10 +190,10 @@ def test_early_stop_fires_before_all_iterations(
 
 
 @pytest.mark.slow
+@pytest.mark.usefixtures("mock_validate_candidate_pass")
 def test_early_stop_counter_resets_on_acceptance(
     mock_project: tuple[Path, Path, Path, Path],
     monkeypatch: pytest.MonkeyPatch,
-    mock_validate_candidate_pass: None,  # noqa: ARG001
 ) -> None:
     """After an acceptance the consecutive counter resets and the loop continues.
 

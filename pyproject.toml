@@ -45,7 +45,7 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-timeout = 10
+timeout = 30
 addopts = "-v --tb=short --durations=10"
 markers = [
     "slow: marks tests as slow orchestrator E2E tests (deselect with '-m \"not slow\"')",

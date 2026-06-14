@@ -97,7 +97,8 @@ class FakeProvider:
 
 
 @pytest.mark.slow
-def test_characterization_orchestrator_run(tmp_path: Path, mock_validate_candidate_pass: None) -> None:  # noqa: ARG001
+@pytest.mark.usefixtures("mock_validate_candidate_pass")
+def test_characterization_orchestrator_run(tmp_path: Path) -> None:
     strat_dir = tmp_path / "strategies"
     cfg_dir = tmp_path / "configs"
     run_dir = tmp_path / "runs"

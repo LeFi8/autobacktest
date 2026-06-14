@@ -198,7 +198,8 @@ def _make_fake_provider(synthetic_prices: pd.DataFrame) -> object:
 
 
 @pytest.mark.slow
-def test_e2e_full_run_commits_improved_strategy(project_root: Path, mock_validate_candidate_pass: None) -> None:  # noqa: ARG001
+@pytest.mark.usefixtures("mock_validate_candidate_pass")
+def test_e2e_full_run_commits_improved_strategy(project_root: Path) -> None:
     """Full orchestrator run: scripted MockProvider produces a known-good improvement.
 
     The IMPROVED_STRATEGY (HIGH asset, ~0.1%/day drift) beats the BASELINE
@@ -359,7 +360,8 @@ def test_e2e_validation_failure_continues(project_root: Path) -> None:
 
 
 @pytest.mark.slow
-def test_orchestrator_fail_fast_on_non_retryable_error(project_root: Path, mock_validate_candidate_pass: None) -> None:  # noqa: ARG001
+@pytest.mark.usefixtures("mock_validate_candidate_pass")
+def test_orchestrator_fail_fast_on_non_retryable_error(project_root: Path) -> None:
     """When a non-retryable LLMError is raised, the orchestrator immediately aborts."""
     from autobacktest.llm.base import LLMError
     from autobacktest.llm.mock_provider import MockProvider
@@ -384,7 +386,8 @@ def test_orchestrator_fail_fast_on_non_retryable_error(project_root: Path, mock_
 
 
 @pytest.mark.slow
-def test_orchestrator_continues_on_retryable_error(project_root: Path, mock_validate_candidate_pass: None) -> None:  # noqa: ARG001
+@pytest.mark.usefixtures("mock_validate_candidate_pass")
+def test_orchestrator_continues_on_retryable_error(project_root: Path) -> None:
     """When a retryable LLMError is raised, the orchestrator logs and continues."""
     from autobacktest.llm.base import LLMError
     from autobacktest.llm.mock_provider import MockProvider
@@ -411,9 +414,9 @@ def test_orchestrator_continues_on_retryable_error(project_root: Path, mock_vali
 
 
 @pytest.mark.slow
+@pytest.mark.usefixtures("mock_validate_candidate_pass")
 def test_orchestrator_transient_errors_become_none_candidates(
     project_root: Path,
-    mock_validate_candidate_pass: None,  # noqa: ARG001
 ) -> None:
     """When a retryable LLMError is raised, the candidate is skipped (no retry).
 
@@ -460,7 +463,8 @@ def test_orchestrator_transient_errors_become_none_candidates(
 
 
 @pytest.mark.slow
-def test_exploit_mode_skips_diversity_gates(project_root: Path, mock_validate_candidate_pass: None) -> None:  # noqa: ARG001
+@pytest.mark.usefixtures("mock_validate_candidate_pass")
+def test_exploit_mode_skips_diversity_gates(project_root: Path) -> None:
     """After acceptance, EXPLOIT mode should skip both diversity gates."""
     synthetic_prices = _make_synthetic_prices()
     fake_instance = _make_fake_provider(synthetic_prices)
@@ -523,7 +527,8 @@ def test_exploit_mode_skips_diversity_gates(project_root: Path, mock_validate_ca
 
 
 @pytest.mark.slow
-def test_mode_logged_in_events(project_root: Path, mock_validate_candidate_pass: None) -> None:  # noqa: ARG001
+@pytest.mark.usefixtures("mock_validate_candidate_pass")
+def test_mode_logged_in_events(project_root: Path) -> None:
     """Each event in events.jsonl should contain a 'mode' key."""
     synthetic_prices = _make_synthetic_prices()
     fake_instance = _make_fake_provider(synthetic_prices)
@@ -947,9 +952,9 @@ def test_orchestrator_lookahead_repair_and_jitter_logging(project_root: Path) ->
 
 
 @pytest.mark.slow
+@pytest.mark.usefixtures("mock_validate_candidate_pass")
 def test_confirm_best_candidate_at_most_one_peek_per_iteration(
     project_root: Path,
-    mock_validate_candidate_pass: None,  # noqa: ARG001
 ) -> None:
     """Confirms that run_gates_and_select_winner consumes at most one holdout peek per iteration.
 
