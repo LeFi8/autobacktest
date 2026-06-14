@@ -18,6 +18,8 @@ def mock_dirs(tmp_path: Path) -> tuple[Path, Path]:
     return strat_dir, conf_dir
 
 
+@pytest.mark.slow
+@pytest.mark.sandbox
 def test_sandboxed_valid_strategy_passes(mock_dirs: tuple[Path, Path]) -> None:
     """Verifies that a valid strategy passes all subprocess sandboxed validations."""
     strat_dir, conf_dir = mock_dirs
@@ -53,6 +55,8 @@ benchmark: SPY
     assert res.error_code is None
 
 
+@pytest.mark.slow
+@pytest.mark.sandbox
 def test_sandboxed_timeout_abort(mock_dirs: tuple[Path, Path]) -> None:
     """Verifies that an infinite loop inside strategy execution is aborted via subprocess timeout."""
     strat_dir, conf_dir = mock_dirs
@@ -90,6 +94,8 @@ benchmark: SPY
     assert "exceeded limit" in res.detail or "timed out" in res.detail
 
 
+@pytest.mark.slow
+@pytest.mark.sandbox
 def test_sandboxed_crash_isolation(mock_dirs: tuple[Path, Path]) -> None:
     """Verifies that a division-by-zero or exception inside strategy does not crash the parent process."""
     strat_dir, conf_dir = mock_dirs
@@ -123,6 +129,7 @@ benchmark: SPY
     assert "division by zero" in res.detail
 
 
+@pytest.mark.sandbox
 def test_sandboxed_system_pollution_isolation(mock_dirs: tuple[Path, Path]) -> None:
     """Verifies that environment mutations inside the strategy are isolated to the subprocess."""
     strat_dir, conf_dir = mock_dirs
@@ -163,6 +170,7 @@ benchmark: SPY
         os.environ["AUTOBACKTEST_SAFE_IMPORTS_WHITELIST"] = old_whitelist
 
 
+@pytest.mark.sandbox
 def test_ast_blocks_format_string_dunder_exploit(mock_dirs: tuple[Path, Path]) -> None:
     """Verifies that dunder access via .format() is blocked by AST checker.
 

@@ -424,7 +424,7 @@ def test_calculate_complexity_comprehension() -> None:
     assert _calculate_complexity(func) == 2
 
 
-def test_preflight_rejects_overly_long_function() -> None:
+def test_preflight_rejects_overly_long_function(monkeypatch: pytest.MonkeyPatch) -> None:
     """preflight rejects a function exceeding max_function_lines."""
     lines = ["import pandas as pd\n", "\n", "def generate_signals(prices, config):\n"]
     for i in range(120):
@@ -432,20 +432,16 @@ def test_preflight_rejects_overly_long_function() -> None:
     lines.append("    return pd.DataFrame()\n")
     code = "".join(lines)
     # Override to a low limit for testing
-    original = settings.max_function_lines
-    settings.max_function_lines = 50
-    try:
-        mock_dirs_result = _run_with_code(code)
-        assert mock_dirs_result is not None
-        res = mock_dirs_result
-        assert not res.passed
-        assert res.error_code == ValidationError.AST_LINE_LIMIT_EXCEEDED
-        assert "exceeding the limit" in res.detail
-    finally:
-        settings.max_function_lines = original
+    monkeypatch.setattr(settings, "max_function_lines", 50)
+    mock_dirs_result = _run_with_code(code)
+    assert mock_dirs_result is not None
+    res = mock_dirs_result
+    assert not res.passed
+    assert res.error_code == ValidationError.AST_LINE_LIMIT_EXCEEDED
+    assert "exceeding the limit" in res.detail
 
 
-def test_preflight_rejects_overly_complex_function() -> None:
+def test_preflight_rejects_overly_complex_function(monkeypatch: pytest.MonkeyPatch) -> None:
     """preflight rejects a function exceeding max_cyclomatic_complexity."""
     code = (
         "import pandas as pd\n"
@@ -490,17 +486,13 @@ def test_preflight_rejects_overly_complex_function() -> None:
         "    return pd.DataFrame()\n"
     )
     # 1 (base) + 18 (ifs) = 19 > default 15
-    original = settings.max_cyclomatic_complexity
-    settings.max_cyclomatic_complexity = 5
-    try:
-        mock_dirs_result = _run_with_code(code)
-        assert mock_dirs_result is not None
-        res = mock_dirs_result
-        assert not res.passed
-        assert res.error_code == ValidationError.AST_CYCLOMATIC_COMPLEXITY_EXCEEDED
-        assert "cyclomatic complexity" in res.detail
-    finally:
-        settings.max_cyclomatic_complexity = original
+    monkeypatch.setattr(settings, "max_cyclomatic_complexity", 5)
+    mock_dirs_result = _run_with_code(code)
+    assert mock_dirs_result is not None
+    res = mock_dirs_result
+    assert not res.passed
+    assert res.error_code == ValidationError.AST_CYCLOMATIC_COMPLEXITY_EXCEEDED
+    assert "cyclomatic complexity" in res.detail
 
 
 # ---------------------------------------------------------------------------

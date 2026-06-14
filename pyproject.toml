@@ -34,12 +34,23 @@ autobacktest = "autobacktest.cli:app"
 dev = [
     "pytest>=8.0.0",
     "pytest-cov>=4.1.0",
+    "pytest-xdist>=3.5.0",
+    "pytest-timeout>=2.2.0",
     "hypothesis>=6.98.0",
     "vcrpy>=6.0.0",
     "ruff>=0.3.0",
     "mypy>=1.9.0",
     "pre-commit>=3.6.0",
     "types-pyyaml>=6.0.12.20240311",
+]
+
+[tool.pytest.ini_options]
+timeout = 10
+addopts = "-v --tb=short --durations=10"
+markers = [
+    "slow: marks tests as slow orchestrator E2E tests (deselect with '-m \"not slow\"')",
+    "e2e: end-to-end orchestrator tests",
+    "sandbox: tests that spawn subprocesses for sandbox validation",
 ]
 
 [build-system]

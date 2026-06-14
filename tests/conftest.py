@@ -2,6 +2,8 @@ import warnings
 from pathlib import Path
 
 import git
+import numpy as np
+import pandas as pd
 import pytest
 
 from autobacktest.config import settings
@@ -60,3 +62,35 @@ def project_root_with_lessons(tmp_path: Path) -> Path:
     store.close()
 
     return tmp_path
+
+
+@pytest.fixture(scope="session")
+def synthetic_prices() -> pd.DataFrame:
+    """Session-scoped synthetic price DataFrame (12yr daily, 2 assets)."""
+    dates = pd.bdate_range(start="2013-01-01", end="2025-01-01")
+    n = len(dates)
+    rng = np.random.default_rng(42)
+    high_returns = rng.normal(0.001, 0.002, n)
+    low_returns = rng.normal(0.0001, 0.002, n)
+    return pd.DataFrame(
+        {
+            "HIGH": 100.0 * np.exp(np.cumsum(high_returns)),
+            "LOW": 100.0 * np.exp(np.cumsum(low_returns)),
+        },
+        index=dates,
+    )
+
+
+@pytest.fixture
+def mock_validate_candidate_pass():
+    """Monkeypatch _validate_candidate to return a passing result.
+
+    Use in E2E tests that don't need to test sandbox validation itself.
+    The sandbox is tested separately in test_sandboxed_validator.py.
+    """
+    from unittest.mock import patch
+
+    # _validate_candidate returns (passed, error_code, error_detail)
+    pass_result = (True, None, None)
+    with patch("autobacktest.orchestrator._validate_candidate", return_value=pass_result):
+        yield

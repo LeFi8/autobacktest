@@ -6,6 +6,7 @@ from unittest.mock import patch
 import git
 import numpy as np
 import pandas as pd
+import pytest
 
 from autobacktest.gate import TargetMetric
 from autobacktest.llm.base import AgentEdit
@@ -95,7 +96,8 @@ class FakeProvider:
         return self.prices[available]
 
 
-def test_characterization_orchestrator_run(tmp_path: Path) -> None:
+@pytest.mark.slow
+def test_characterization_orchestrator_run(tmp_path: Path, mock_validate_candidate_pass: None) -> None:  # noqa: ARG001
     strat_dir = tmp_path / "strategies"
     cfg_dir = tmp_path / "configs"
     run_dir = tmp_path / "runs"

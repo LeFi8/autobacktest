@@ -46,7 +46,10 @@ def _make_canned_report(sharpe: float = 1.0) -> tuple[EvaluationReport, pd.Serie
     return report, returns
 
 
-def test_holdout_peek_limit_early_termination(project_root_with_lessons: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.slow
+def test_holdout_peek_limit_early_termination(
+    project_root_with_lessons: Path, monkeypatch: pytest.MonkeyPatch, mock_validate_candidate_pass: None
+) -> None:  # noqa: ARG001, E501
     synthetic_prices = _make_synthetic_prices()
     fake_instance = _make_fake_provider(synthetic_prices)
 

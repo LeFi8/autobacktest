@@ -131,9 +131,11 @@ class IterationCountingProvider(MockProvider):
         return super().generate_edit(context)
 
 
+@pytest.mark.slow
 def test_early_stop_fires_before_all_iterations(
     mock_project: tuple[Path, Path, Path, Path],
     monkeypatch: pytest.MonkeyPatch,
+    mock_validate_candidate_pass: None,  # noqa: ARG001
 ) -> None:
     """Early-stop exits the loop once consecutive_no_accept reaches EARLY_STOP_PATIENCE.
 
@@ -187,9 +189,11 @@ def test_early_stop_fires_before_all_iterations(
     assert result.n_committed == 0
 
 
+@pytest.mark.slow
 def test_early_stop_counter_resets_on_acceptance(
     mock_project: tuple[Path, Path, Path, Path],
     monkeypatch: pytest.MonkeyPatch,
+    mock_validate_candidate_pass: None,  # noqa: ARG001
 ) -> None:
     """After an acceptance the consecutive counter resets and the loop continues.
 

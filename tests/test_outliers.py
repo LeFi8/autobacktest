@@ -6,10 +6,10 @@ from autobacktest.data.base import DataProvider
 from autobacktest.data.cache import CachedDataProvider
 
 
-def test_outlier_detection_and_cleaning():
+def test_outlier_detection_and_cleaning(tmp_path):
     # Setup mock data provider
     base_provider = MagicMock(spec=DataProvider)
-    cache_provider = CachedDataProvider(base_provider)
+    cache_provider = CachedDataProvider(base_provider, cache_dir=str(tmp_path))
 
     # 6-day prices series for a single ticker 'SPY'
     # Upward spike on day 3 (indices: 0, 1, 2, 3, 4, 5)
@@ -34,9 +34,9 @@ def test_outlier_detection_and_cleaning():
     assert cleaned.loc[dates[5], "SPY"] == 96.0
 
 
-def test_outlier_downward_spike():
+def test_outlier_downward_spike(tmp_path):
     base_provider = MagicMock(spec=DataProvider)
-    cache_provider = CachedDataProvider(base_provider)
+    cache_provider = CachedDataProvider(base_provider, cache_dir=str(tmp_path))
 
     # Downward spike: 100 -> 40 (60% decrease) -> 90 (125% increase)
     dates = pd.date_range("2023-01-01", periods=5, freq="D")

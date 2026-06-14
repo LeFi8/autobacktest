@@ -89,6 +89,7 @@ def generate_signals(prices: pd.DataFrame, config: dict) -> pd.DataFrame:
     assert "Lookahead bias sniff test failed" in res.detail
 
 
+@pytest.mark.slow
 def test_execution_timeout_sandbox(mock_dirs: tuple[Path, Path]) -> None:
     """Verifies that infinite loops inside strategy trigger timeouts."""
     strat_dir, conf_dir = mock_dirs
@@ -557,6 +558,7 @@ def test_git_ledger_upgrades(tmp_path: Path) -> None:
     assert strat_file.read_text(encoding="utf-8") == "code v1"
 
 
+@pytest.mark.slow
 def test_orchestrator_lessons_persistence(tmp_path: Path) -> None:
     """Verifies that lessons are persisted in the DB across orchestrator iterations."""
     from unittest.mock import patch

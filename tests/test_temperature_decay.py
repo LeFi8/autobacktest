@@ -77,8 +77,10 @@ params:
     return prog_file, strat_dir, conf_dir, tmp_path
 
 
+@pytest.mark.slow
 def test_adaptive_temperature_on_continuous_failures(
     mock_project: tuple[Path, Path, Path, Path],
+    mock_validate_candidate_pass: None,  # noqa: ARG001
 ) -> None:
     """Verifies that in explore mode temperature scales continuously based on rolling failures."""
     prog_file, strat_dir, conf_dir, repo_root = mock_project
