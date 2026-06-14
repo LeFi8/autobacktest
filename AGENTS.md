@@ -46,7 +46,6 @@ No `.pre-commit-config.yaml` exists — skip `pre-commit install`.
 | `runs/lessons.db` | SQLite-backed LLM lesson store (replaces flat `lessons.md`) |
 | `strategies/<name>/strategy.py` | Strategy signal code |
 | `strategies/<name>/config.yaml` | Strategy parameters (Pydantic-validated) |
-| `.antigravity/` | Removed from repo — local IDE/agent config (git-ignored) |
 | `docs/` | Comprehensive docs: architecture, API reference, setup |
 | `src/autobacktest/optimization/` | Candidate gen, eval mgmt, ledger persistence helpers |
 | `src/autobacktest/commands/` | CLI subcommand implementations (7 subcommands, 8 files) |
