@@ -948,8 +948,9 @@ def test_orchestrator_lookahead_repair_and_jitter_logging(project_root: Path) ->
 
 @pytest.mark.slow
 def test_confirm_best_candidate_at_most_one_peek_per_iteration(
-    project_root: Path, mock_validate_candidate_pass: None
-) -> None:  # noqa: ARG001, E501
+    project_root: Path,
+    mock_validate_candidate_pass: None,  # noqa: ARG001
+) -> None:
     """Confirms that run_gates_and_select_winner consumes at most one holdout peek per iteration.
 
     Uses n_candidates=3 (all identical IMPROVED_STRATEGY) so select passes for all three,

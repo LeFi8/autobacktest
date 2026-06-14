@@ -330,8 +330,10 @@ class TestDiversityGateIntegration:
 
     @pytest.mark.slow
     def test_orchestrator_skips_identical_candidate(
-        self, project_root: Path, mock_validate_candidate_pass: None
-    ) -> None:  # noqa: ARG002, E501
+        self,
+        project_root: Path,
+        mock_validate_candidate_pass: None,  # noqa: ARG002
+    ) -> None:
         """Edit with config and code identical to baseline → rejected before backtest.
 
         With the softened diversity gate, config similarity no longer causes a hard
@@ -390,8 +392,10 @@ class TestDiversityGateIntegration:
 
     @pytest.mark.slow
     def test_orchestrator_rejects_duplicate_strategy(
-        self, project_root: Path, mock_validate_candidate_pass: None
-    ) -> None:  # noqa: ARG002, E501
+        self,
+        project_root: Path,
+        mock_validate_candidate_pass: None,  # noqa: ARG002
+    ) -> None:
         """Edit with returns nearly identical to baseline -> rejected at returns diversity stage.
 
         With the softened diversity gate, returns-diversity is checked POST quality.
@@ -484,8 +488,10 @@ class TestDiversityGateIntegration:
 
     @pytest.mark.slow
     def test_identical_candidates_consume_iteration(
-        self, project_root: Path, mock_validate_candidate_pass: None
-    ) -> None:  # noqa: ARG002, E501
+        self,
+        project_root: Path,
+        mock_validate_candidate_pass: None,  # noqa: ARG002
+    ) -> None:
         """Identical candidates are rejected and the iteration budget is consumed.
 
         With the softened diversity gate, config similarity no longer causes hard
