@@ -16,7 +16,7 @@ This project uses `uv` for Python virtual environment and dependency management.
    git clone https://github.com/LeFi8/autobacktest.git
    cd autobacktest
    uv sync
-   cp .env.dist .env   # Configure your LLM API key
+   cp .env.example .env   # Configure your LLM API key
    ```
 
 ## Development Workflow

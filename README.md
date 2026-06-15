@@ -28,7 +28,7 @@ LLM → code edit → preflight check → backtest → gate → commit or rollba
 git clone https://github.com/LeFi8/autobacktest.git
 cd autobacktest
 uv sync
-cp .env.dist .env
+cp .env.example .env
 ```
 
 Edit `.env` to set your API key and any backtest date windows.
@@ -168,7 +168,7 @@ autobacktest/
 ├── runs/               # Run artifacts (git-ignored)
 ├── program.md          # LLM objective + constraints template
 ├── runs/lessons.db     # SQLite-backed LLM lesson store
-└── .env.dist           # Environment template
+└── .env.example        # Environment template
 ```
 
 ---

@@ -60,7 +60,7 @@ graph TB
 
 ## 3. Environment Variables (`.env`)
 
-All vars are prefixed `AUTOBACKTEST_`. Set in `.env` (copy from `.env.dist`).
+All vars are prefixed `AUTOBACKTEST_`. Set in `.env` (copy from `.env.example`).
 
 ### 3.1 LLM Client
 

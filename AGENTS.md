@@ -34,7 +34,7 @@ No `.pre-commit-config.yaml` exists — skip `pre-commit install`.
 - **PBO via CSCV** (`evaluator/cscv.py`): Combinatorially Symmetric Cross-Validation calculates Probability of Backtest Overfitting. Default 10 blocks → 252 train/test split combinations. Stored in `EvaluationReport.pbo`.
 - **Gate** (`gate.py`): Two-phase: `select` (in-sample — max_drawdown ≤ 20%, regime stress tests pass, turnover ≤ 2.0, target metric improvement, min_return_ratio, DSR non-degradation) then `confirm` (holdout — drawdown, turnover, DSR non-degradation). DSR is a hard gate for both phases.
 - **Holdout**: 3 years default (`AUTOBACKTEST_DEFAULT_HOLDOUT_YEARS`). Walk-forward: 5y train / 1y test. All statistical simulations use seed=42.
-- **Config**: `.env` via `python-dotenv`. Copy `.env.dist` → `.env`. `src/autobacktest/config.py` → global `settings` singleton. All env vars prefixed `AUTOBACKTEST_`.
+- **Config**: `.env` via `python-dotenv`. Copy `.env.example` → `.env`. `src/autobacktest/config.py` → global `settings` singleton. All env vars prefixed `AUTOBACKTEST_`.
 - **Cache**: Parquet-backed (`data/cache/`). Run dir is `runs/` (SQLite ledger + event logs). All statistical simulations use seed=42.
 - **Ledger Comparability**: Changing `adaptive_slippage` settings (e.g. enabling it or changing its caps) invalidates comparability of historical metrics stored in the SQLite ledger. Start a fresh ledger (`ledger.db`) if changing these configurations to ensure consistent comparison baselines.
 
@@ -59,7 +59,7 @@ No `.pre-commit-config.yaml` exists — skip `pre-commit install`.
 
 - `AUTOBACKTEST_LITELLM_DEBUG=True` enables verbose LiteLLM logging.
 - `AUTOBACKTEST_LLM_REQUEST_TIMEOUT` defaults to 600s — LLM calls on large strategies can be slow.
-- `AUTOBACKTEST_N_CANDIDATES` controls parallel candidate count per iteration (code default 10, `.env.dist` sets to 3). **Two tests expect this to be exactly 3** — if `.env` sets a different value, those tests fail with `assert len(provider.calls) == 9` or similar. Run with `AUTOBACKTEST_N_CANDIDATES=3 uv run pytest ...` to avoid.
+- `AUTOBACKTEST_N_CANDIDATES` controls parallel candidate count per iteration (code default 10, `.env.example` sets to 3). **Two tests expect this to be exactly 3** — if `.env` sets a different value, those tests fail with `assert len(provider.calls) == 9` or similar. Run with `AUTOBACKTEST_N_CANDIDATES=3 uv run pytest ...` to avoid.
 - `AUTOBACKTEST_QUIET=true` / `--quiet` suppresses numpy all-NaN, yfinance "possibly delisted", and urllib3 warnings.
 - `AUTOBACKTEST_MAX_CYCLOMATIC_COMPLEXITY` defaults to **25** in code (not 20).
 - `AUTOBACKTEST_ENABLE_LLM_REPAIR`, `AUTOBACKTEST_ENABLE_CONFIG_JITTER`, `AUTOBACKTEST_ENABLE_JSON_SALVAGE` are all `true` by default — these are salvage/retry mechanisms for failed candidates.
