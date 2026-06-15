@@ -5,6 +5,8 @@
 [![Python >=3.12](https://img.shields.io/badge/python-≥3.12-blue?logo=python)](pyproject.toml)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 
+Inspired by [autoresearch](https://github.com/karpathy/autoresearch).
+
 **Autonomous, AI-driven quantitative trading strategy optimization.** AutoBacktest
 links LLM agents with deterministic backtesting and statistical validation to
 iteratively refine trading strategies — completely unattended.
