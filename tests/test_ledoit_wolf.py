@@ -89,3 +89,18 @@ def test_ledoit_wolf_fallbacks_and_edge_cases() -> None:
     corr_zeros = _ledoit_wolf_correlation(df_zeros)
     # Should handle zero variance gracefully without crashing and return exactly 1.0 on the diagonal
     np.testing.assert_allclose(np.diag(corr_zeros.values), 1.0, atol=1e-7)
+
+
+def test_ledoit_wolf_warning_on_exception(caplog) -> None:
+    """Verifies that an exception during Ledoit-Wolf shrinkage triggers a warning log."""
+    import logging
+
+    # Pass a dataframe that will cause a TypeError or AttributeError inside standard numpy math
+    df_bad = pd.DataFrame({"A": ["not", "numeric", "strings"]})
+    # Run the function under the warning log capture
+    with caplog.at_level(logging.WARNING):
+        corr = _ledoit_wolf_correlation(df_bad)
+
+    assert any("Ledoit-Wolf shrinkage failed" in record.message for record in caplog.records)
+    # Ensure it still falls back to empirical or empty gracefully
+    assert corr.loc["A", "A"] == 1.0

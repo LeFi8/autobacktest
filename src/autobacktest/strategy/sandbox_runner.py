@@ -153,7 +153,12 @@ def _run_validation_in_subprocess(
     3. Smoke test (756 days synthetic prices).
     4. Optional incumbent comparison for identical-behavior guard.
     5. Lookahead sniff test (compare signals with vs. without future data).
+       Uses a strict absolute tolerance of 1e-7 to check if appending future data
+       affects past weights.
     6. Lookahead shift test (shift prices by 1 day, verify signal shift).
+       Only runs when the strategy's rebalance ratio is >= 0.15 (to bypass shift checks
+       on near-static allocators and avoid false positives). Uses a relaxed absolute
+       tolerance of 1e-5 to allow minor floating-point differences.
 
     Args:
         strategy_name: The strategy name.

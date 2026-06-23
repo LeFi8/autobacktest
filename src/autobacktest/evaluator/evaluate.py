@@ -365,6 +365,7 @@ def evaluate_strategy_detailed(
         adaptive_slippage=flat_config.get("adaptive_slippage", False),
         slippage_vol_window=flat_config.get("slippage_vol_window", 21),
         slippage_vol_cap=flat_config.get("slippage_vol_cap", 3.0),
+        impact_coef=flat_config.get("impact_coef", 0.0),
     )
 
     wf_start = wf_windows[0][2]
@@ -409,6 +410,7 @@ def evaluate_strategy_detailed(
         adaptive_slippage=flat_config.get("adaptive_slippage", False),
         slippage_vol_window=flat_config.get("slippage_vol_window", 21),
         slippage_vol_cap=flat_config.get("slippage_vol_cap", 3.0),
+        impact_coef=flat_config.get("impact_coef", 0.0),
     )
 
     weights = generate_signals_fn(prices, flat_config)
@@ -430,6 +432,7 @@ def evaluate_strategy_detailed(
         adaptive_slippage=flat_config.get("adaptive_slippage", False),
         slippage_vol_window=flat_config.get("slippage_vol_window", 21),
         slippage_vol_cap=flat_config.get("slippage_vol_cap", 3.0),
+        impact_coef=flat_config.get("impact_coef", 0.0),
     )
 
     holdout_prices = prices.loc[holdout_start:holdout_end]
@@ -448,6 +451,7 @@ def evaluate_strategy_detailed(
         adaptive_slippage=flat_config.get("adaptive_slippage", False),
         slippage_vol_window=flat_config.get("slippage_vol_window", 21),
         slippage_vol_cap=flat_config.get("slippage_vol_cap", 3.0),
+        impact_coef=flat_config.get("impact_coef", 0.0),
     )
 
     full_returns, _, daily_weights = run_vectorized_backtest(
@@ -464,6 +468,7 @@ def evaluate_strategy_detailed(
         adaptive_slippage=flat_config.get("adaptive_slippage", False),
         slippage_vol_window=flat_config.get("slippage_vol_window", 21),
         slippage_vol_cap=flat_config.get("slippage_vol_cap", 3.0),
+        impact_coef=flat_config.get("impact_coef", 0.0),
     )
 
     regime_drawdowns, regime_passed, mc_5th, mc_50th, mc_95th, mc_sharpes = run_stress_and_bootstrap_tests(

@@ -29,6 +29,12 @@ def test_default_fallbacks() -> None:
         assert settings.db_timeout == 15.0
         assert settings.ledger_db_path == Path("runs/ledger.db")
 
+        # Optimization loop default parameters
+        assert settings.holdout_peek_limit == 20
+        assert settings.stuck_threshold == 5
+        assert settings.exploit_patience == 3
+        assert settings.min_temp == 0.1
+
         assert "pandas" in settings.parsed_safe_imports
         assert "numpy" in settings.parsed_safe_imports
 
@@ -52,6 +58,10 @@ def test_env_var_override() -> None:
         "AUTOBACKTEST_MAX_FILE_SIZE_KB": "50",
         "AUTOBACKTEST_SAFE_IMPORTS_WHITELIST": "math,typing,my_module",
         "AUTOBACKTEST_DB_TIMEOUT": "5.5",
+        "AUTOBACKTEST_HOLDOUT_PEEK_LIMIT": "12",
+        "AUTOBACKTEST_STUCK_THRESHOLD": "8",
+        "AUTOBACKTEST_EXPLOIT_PATIENCE": "4",
+        "AUTOBACKTEST_MIN_TEMP": "0.05",
     }
 
     with mock.patch.dict(os.environ, custom_env, clear=True):
@@ -72,6 +82,12 @@ def test_env_var_override() -> None:
         assert settings.max_file_size_kb == 50
         assert settings.db_timeout == 5.5
         assert settings.ledger_db_path == Path("test_runs/test_ledger.db")
+
+        # Optimization loop parameters override
+        assert settings.holdout_peek_limit == 12
+        assert settings.stuck_threshold == 8
+        assert settings.exploit_patience == 4
+        assert settings.min_temp == 0.05
 
         # Whitelist parsing checks
         assert settings.parsed_safe_imports == {"math", "typing", "my_module"}

@@ -127,3 +127,53 @@ params:
     dict_val = yaml.safe_load(jittered)
     # Since momentum_lookback is ge=1, it must be forced to move inward (i.e. to 2 or more)
     assert dict_val["momentum_lookback"] >= 2
+
+
+def test_orchestrator_apply_jitter_exhaustion() -> None:
+    """Verifies that Orchestrator._apply_jitter writes a 'jitter_exhausted_proceeding' event on exhaustion."""
+    from pathlib import Path
+    from unittest import mock
+    from unittest.mock import MagicMock
+
+    from autobacktest.llm.base import AgentEdit
+    from autobacktest.orchestrator import _OptimizationState
+
+    # Create a mock orchestrator state
+    orchestrator = MagicMock(spec=_OptimizationState)
+    # Set the attributes used by _apply_jitter
+    orchestrator.strategies_dir = Path("dummy_strategies")
+    orchestrator.configs_dir = Path("dummy_configs")
+    orchestrator.last_importance = None
+
+    # Mock event log
+    mock_event_log = MagicMock()
+    orchestrator.event_log = mock_event_log
+
+    # Bind the actual method to the mock instance
+    orchestrator._apply_jitter = _OptimizationState._apply_jitter.__get__(orchestrator, _OptimizationState)
+
+    # Let's mock settings for diversity/jitter
+    with mock.patch("autobacktest.strategy.config_jitter.jitter_config") as mock_jitter:
+        mock_jitter.return_value = (None, {"final_similarity": 0.98, "jitter_applied": False, "attempts": 10})
+
+        ev = {
+            "config_yaml": BASE_YAML,
+            "edit": MagicMock(spec=AgentEdit),
+        }
+
+        orchestrator._apply_jitter(k=1, i=0, ev=ev, all_tried=[BASE_YAML])
+
+        # Verify event log call
+        mock_event_log.write.assert_called_once_with(
+            {
+                "event": "jitter_exhausted_proceeding",
+                "iteration": 1,
+                "candidate_idx": 0,
+                "similarity": 0.98,
+            }
+        )
+
+        # Verify ev was updated with correct status flags
+        assert ev["config_yaml"] == BASE_YAML
+        assert ev.get("jitter_applied") is False
+        assert ev.get("jitter_attempted") is True
