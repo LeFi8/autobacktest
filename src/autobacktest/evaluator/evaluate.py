@@ -215,6 +215,69 @@ def _generate_wf_weights(
     return wf_weights[~wf_weights.index.duplicated(keep="first")]
 
 
+def _in_sample_objective(
+    generate_signals_fn: Any,
+    flat_config: dict[str, Any],
+    prices: pd.DataFrame,
+) -> tuple[float, float, pd.Series]:
+    """Compute in-sample objective metrics for a given config.
+
+    Runs walk-forward windows on the in-sample period and returns the
+    pooled Sharpe ratio, annualized return, and net returns series.
+    This is the cheap primitive used by the pre-screen (Phase 3) and
+    Optuna parameter search (Phase 4).
+
+    Args:
+        generate_signals_fn: Strategy signal generation function.
+        flat_config: Flat strategy configuration dict.
+        prices: Full price DataFrame (in-sample + holdout).
+
+    Returns:
+        tuple: ``(sharpe, annualized_return, net_returns)`` where
+        ``net_returns`` is the walk-forward test-period net returns series.
+    """
+    tickers = flat_config.get("universe", [])
+    in_sample_idx, _ = partition_holdout_data(prices.index, holdout_years=settings.default_holdout_years)
+    wf_windows = generate_walk_forward_windows(in_sample_idx, train_years=5, test_years=1)
+    if not wf_windows:
+        return 0.0, 0.0, pd.Series(dtype=float)
+
+    wf_weights = _generate_wf_weights(prices, generate_signals_fn, flat_config, tickers, wf_windows)
+    _asset_returns = prices.pct_change().fillna(0.0)
+
+    wf_portfolio_returns, _wf_equity, wf_daily_weights = run_vectorized_backtest(
+        prices,
+        wf_weights,
+        asset_returns=_asset_returns,
+    )
+    wf_net_returns, _, _wf_turnover = calculate_turnover_and_costs(
+        wf_portfolio_returns,
+        wf_daily_weights,
+        prices,
+        asset_returns=_asset_returns,
+        borrow_cost_bps=flat_config.get("borrow_cost_bps", 100.0),
+        adaptive_slippage=flat_config.get("adaptive_slippage", False),
+        slippage_vol_window=flat_config.get("slippage_vol_window", 21),
+        slippage_vol_cap=flat_config.get("slippage_vol_cap", 3.0),
+        impact_coef=flat_config.get("impact_coef", 0.0),
+    )
+
+    wf_start = wf_windows[0][2]
+    wf_end = wf_windows[-1][3]
+    wf_net_returns = wf_net_returns.loc[wf_start:wf_end]
+
+    if wf_net_returns.empty:
+        return 0.0, 0.0, pd.Series(dtype=float)
+
+    wf_mean = wf_net_returns.mean()
+    wf_std = wf_net_returns.std(ddof=1) if len(wf_net_returns) >= 2 else 0.0
+    pooled_sharpe = float((wf_mean / wf_std * np.sqrt(252)) if wf_std > 0 else 0.0)
+    wf_total_growth = (1 + wf_net_returns).prod()
+    wf_ann_ret = float(wf_total_growth ** (252.0 / len(wf_net_returns)) - 1.0) if wf_total_growth > 0 else -1.0
+
+    return pooled_sharpe, wf_ann_ret, wf_net_returns
+
+
 def _apply_regime_haircut(
     haircut: float,
     in_sample_metrics: WindowReport,
@@ -400,6 +463,54 @@ def evaluate_strategy_detailed(
         information_ratio=pooled_ir,
     )
 
+    # --- Cheap in-sample pre-screen ---
+    if settings.enable_cheap_prescreen:
+        _sharpe_below = in_sample_metrics.sharpe_ratio < settings.prescreen_sharpe_floor
+        _return_below = in_sample_metrics.annualized_return < settings.prescreen_return_floor
+        if _sharpe_below or _return_below:
+            _zero_window = WindowReport(
+                start_date="",
+                end_date="",
+                annualized_return=0.0,
+                annualized_volatility=0.0,
+                sharpe_ratio=0.0,
+                sortino_ratio=0.0,
+                max_drawdown=0.0,
+                turnover=0.0,
+            )
+            report = EvaluationReport(
+                strategy_name=strategy_name,
+                dataset_hash=compute_dataset_hash(
+                    tickers,
+                    start_date=start_date,
+                    end_date=end_date,
+                    holdout_years=settings.default_holdout_years,
+                ),
+                gates_passed={},
+                is_accepted=False,
+                rejection_reason=(
+                    f"Pre-screen rejected: in-sample Sharpe {in_sample_metrics.sharpe_ratio:.4f} "
+                    f"< floor {settings.prescreen_sharpe_floor:.4f}"
+                    if _sharpe_below
+                    else f"Pre-screen rejected: in-sample return {in_sample_metrics.annualized_return:.4f} "
+                    f"< floor {settings.prescreen_return_floor:.4f}"
+                ),
+                holdout_metrics=_zero_window,
+                in_sample_metrics=in_sample_metrics,
+                walk_forward_metrics=[],
+                regime_drawdowns={},
+                regime_passed=False,
+                mc_sharpe_5th=0.0,
+                mc_sharpe_50th=0.0,
+                mc_sharpe_95th=0.0,
+                observed_sharpe=in_sample_metrics.sharpe_ratio,
+                effective_trials=1,
+                deflated_sharpe=0.0,
+                holdout_deflated_sharpe=0.0,
+                prescreen_rejected=True,
+            )
+            return report, pd.Series(dtype=float)
+
     wf_reports = _run_walk_forward_windows(
         prices,
         wf_weights,
@@ -537,7 +648,7 @@ def evaluate_strategy_detailed(
 
     gate_accept(report, baseline=None, config=flat_config)
 
-    if _eval_cache is not None and _strategy_code is not None:
+    if _eval_cache is not None and _strategy_code is not None and not report.prescreen_rejected:
         try:
             from autobacktest.strategy.normalization import normalize_python_code
 

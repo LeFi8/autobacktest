@@ -180,6 +180,11 @@ class Settings(BaseModel):
     diversity_hard_threshold: float = _env_float("AUTOBACKTEST_DIVERSITY_HARD_THRESHOLD", "0.999")
     diversity_returns_penalty: float = _env_float("AUTOBACKTEST_DIVERSITY_RETURNS_PENALTY", "0.0")
 
+    # --- CHEAP IN-SAMPLE PRE-SCREEN ---
+    enable_cheap_prescreen: bool = _env_bool("AUTOBACKTEST_ENABLE_CHEAP_PRESCREEN", "false")
+    prescreen_sharpe_floor: float = _env_float("AUTOBACKTEST_PRESCREEN_SHARPE_FLOOR", "0.0")
+    prescreen_return_floor: float = _env_float("AUTOBACKTEST_PRESCREEN_RETURN_FLOOR", "0.0")
+
     # --- VERBOSITY CONTROL ---
     quiet: bool = _env_bool("AUTOBACKTEST_QUIET", "false")
 
