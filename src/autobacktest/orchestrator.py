@@ -1842,6 +1842,23 @@ def _get_metric_value(report: EvaluationReport, metric: TargetMetric) -> float:
 
 
 def _populate_failure_details(failure: dict[str, Any], stage: str, ev: dict[str, Any]) -> None:
+    """Enrich a failure dict with stage-specific diagnostic information.
+
+    Extracts error codes, rejection reasons, and candidate metrics from the
+    event dict based on which pipeline stage produced the failure.  The
+    resulting keys are used by downstream feedback formatting to present
+    actionable information to the LLM.
+
+    Args:
+        failure: Partial failure dict (at minimum contains ``stage``).
+        stage: Pipeline stage that produced the failure — one of
+            ``"validation"``, ``"eval_error"``, ``"gate"``,
+            ``"diversity_returns"``, ``"diversity_config"``,
+            ``"holdout_peek_limit"``, or ``"identical_behavior"``.
+        ev: Event dict from the candidate evaluation containing raw
+            diagnostic fields (``error_code``, ``detail``, ``_failed_gate``,
+            ``_report``, etc.).
+    """
     if stage == "validation":
         failure["error_code"] = ev.get("error_code")
         failure["detail"] = ev.get("detail")

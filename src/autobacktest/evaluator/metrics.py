@@ -1,4 +1,16 @@
-"""Return metrics, Sharpe, Sortino, and Information ratio calculations."""
+"""Return metrics, Sharpe, Sortino, and Information ratio calculations.
+
+Provides the core metric computation used across the evaluation pipeline:
+- **Sharpe Ratio**: Annualised excess return per unit of volatility (benchmark).
+- **Sortino Ratio**: Annualised excess return per unit of downside deviation,
+  penalising only negative volatility.
+- **Information Ratio**: Annualised active return per unit of tracking error
+  relative to the benchmark.
+
+All calculations use a risk-free rate of 0.0 by default and assume daily
+data (252 trading days per year).  Empty or degenerate series return 0.0
+rather than raising.
+"""
 
 from __future__ import annotations
 

@@ -1,4 +1,14 @@
-"""Vectorized window execution, dataloading checks, and caching engine."""
+"""Vectorized window execution, dataloading checks, and caching engine.
+
+Orchestrates walk-forward evaluation by:
+1. Partitioning price data into train/test windows.
+2. Running vectorized backtests on each window in parallel.
+3. Computing per-window performance metrics (Sharpe, Sortino, IR, costs).
+4. Caching evaluated results keyed by dataset hash to avoid redundant work.
+
+The ``_CacheProtocol`` interface allows both plain dicts and the
+``_LRUCache`` (used in orchestrator) to serve as transparent caches.
+"""
 
 from __future__ import annotations
 

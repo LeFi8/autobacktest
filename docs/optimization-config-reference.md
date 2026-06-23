@@ -44,7 +44,7 @@ graph TB
 | `--strategy` / `-s` | `str` | _required_ | Strategy name (matches `strategies/<name>.py`) |
 | `--iterations` / `-i` | `int` | `5` | Number of optimization iterations |
 | `--provider` | `str` | `litellm` | LLM provider backend |
-| `--model` | `str` | `deepseek/deepseek-v4-pro` | LLM model name |
+| `--model` | `str` | `settings.llm_model` (env `openai/gpt-4o`) | LLM model name (falls back to env var) |
 | `--run-dir` | `str` | `runs` | Directory for run data (SQLite, events) |
 | `--target-metric` | `str` | `sharpe` | Optimization objective: `sharpe`, `sortino`, or `information_ratio` |
 | `--resume` | `str` | `None` | Run ID to resume (recovery path) |
