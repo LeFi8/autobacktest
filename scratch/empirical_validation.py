@@ -80,23 +80,29 @@ def run_validation():
         end_date="2020-01-01",
     )
 
-    # Manual Selection Sharpe calculation (2015-01-05 to 2016-12-30)
-    spy_sel = prices.loc["2015-01-05":"2016-12-30", "SPY"]
+    # Derive comparison dates from the report dynamically
+    engine_sel_start = report.in_sample_metrics.start_date
+    engine_sel_end = report.in_sample_metrics.end_date
+    engine_hold_start = report.holdout_metrics.start_date
+    engine_hold_end = report.holdout_metrics.end_date
+
+    # Manual Selection Sharpe calculation using derived dates
+    spy_sel = prices.loc[engine_sel_start:engine_sel_end, "SPY"]
     rets_sel = spy_sel.pct_change().dropna() * 0.3
     independent_sel_sharpe = float(rets_sel.mean() / rets_sel.std() * np.sqrt(252))
 
-    # Manual Holdout Sharpe calculation (2017-01-03 to 2019-12-31)
-    spy_hold = prices.loc["2017-01-03":"2019-12-31", "SPY"]
+    # Manual Holdout Sharpe calculation using derived dates
+    spy_hold = prices.loc[engine_hold_start:engine_hold_end, "SPY"]
     rets_hold = spy_hold.pct_change().dropna() * 0.3
     independent_hold_sharpe = float(rets_hold.mean() / rets_hold.std() * np.sqrt(252))
 
     engine_sel_sharpe = report.in_sample_metrics.sharpe_ratio
     engine_hold_sharpe = report.holdout_metrics.sharpe_ratio
 
-    print("Selection Window (2015-2016):")
+    print(f"Selection Window ({engine_sel_start} to {engine_sel_end}):")
     print(f"  Independent Sharpe: {independent_sel_sharpe:.4f}")
     print(f"  Engine Sharpe:      {engine_sel_sharpe:.4f}")
-    print("Holdout Window (2017-2019):")
+    print(f"Holdout Window ({engine_hold_start} to {engine_hold_end}):")
     print(f"  Independent Sharpe: {independent_hold_sharpe:.4f}")
     print(f"  Engine Sharpe:      {engine_hold_sharpe:.4f}")
 
@@ -152,20 +158,17 @@ def run_validation():
 
     # Verification 3: Overfitting Battery via CSCV PBO
     print("\n[Step 4] Validating CSCV PBO on over-tuned alternatives...")
-    # Generate 20 random walk daily returns to represent over-fitted strategy alternatives
+    # Generate 30 completely independent random walk strategies (no edge)
+    # plus 1 positive control with a true positive edge.
     np.random.seed(42)
     n_days = 500
     n_strategies = 30
 
-    # Base strategy has no edge
-    base_returns = np.random.normal(0.0, 0.01, n_days)
-
-    # Alternatives are pertubations of base returns with noise, representing parameterized search
-    alt_returns = []
-    for _ in range(n_strategies):
-        noise = np.random.normal(0.0, 0.005, n_days)
-        # Add slight bias to select candidates to simulate overfitting selection
-        alt_returns.append(base_returns + noise)
+    # 30 independent no-edge trials
+    alt_returns = [np.random.normal(0.0, 0.01, n_days) for _ in range(n_strategies)]
+    # Add one positive control with a true positive edge
+    positive_control = np.random.normal(0.001, 0.01, n_days)
+    alt_returns.append(positive_control)
 
     alt_df = pd.DataFrame(alt_returns).T
 

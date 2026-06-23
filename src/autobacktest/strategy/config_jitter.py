@@ -132,6 +132,8 @@ _EXCLUDE_JITTER_KEYS: frozenset[str] = frozenset(
         "max_drawdown_limit",
         "turnover_limit",
         "dsr_floor",
+        "dsr_non_degradation_epsilon",
+        "impact_coef",
     }
 )
 

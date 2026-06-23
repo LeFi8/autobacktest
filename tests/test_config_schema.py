@@ -146,3 +146,11 @@ def test_additional_schema_fields() -> None:
     # Validation: impact_coef must be >= 0.0
     with pytest.raises(ValidationError):
         StrategyConfig.model_validate({"universe": ["SPY"], "impact_coef": -0.1})
+
+    # Validation: dsr_non_degradation_epsilon must be >= 0.0
+    with pytest.raises(ValidationError):
+        StrategyConfig.model_validate({"universe": ["SPY"], "dsr_non_degradation_epsilon": -1e-7})
+
+    # Validation: holdout_min_improvement must be >= 0.0
+    with pytest.raises(ValidationError):
+        StrategyConfig.model_validate({"universe": ["SPY"], "holdout_min_improvement": -0.01})

@@ -95,12 +95,15 @@ def test_ledoit_wolf_warning_on_exception(caplog) -> None:
     """Verifies that an exception during Ledoit-Wolf shrinkage triggers a warning log."""
     import logging
 
-    # Pass a dataframe that will cause a TypeError or AttributeError inside standard numpy math
-    df_bad = pd.DataFrame({"A": ["not", "numeric", "strings"]})
+    # Pass a 2-column dataframe that will cause correlation to fail entirely
+    df_bad = pd.DataFrame({"A": ["not", "numeric"], "B": ["strings", "here"]})
     # Run the function under the warning log capture
     with caplog.at_level(logging.WARNING):
         corr = _ledoit_wolf_correlation(df_bad)
 
     assert any("Ledoit-Wolf shrinkage failed" in record.message for record in caplog.records)
-    # Ensure it still falls back to empirical or empty gracefully
+    # Ensure it falls back to identity matrix (since .corr() fails on strings)
     assert corr.loc["A", "A"] == 1.0
+    assert corr.loc["B", "B"] == 1.0
+    assert corr.loc["A", "B"] == 0.0
+    assert corr.loc["B", "A"] == 0.0
