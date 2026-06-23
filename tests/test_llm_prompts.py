@@ -1,6 +1,6 @@
 from autobacktest.evaluator.report import EvaluationReport, WindowReport
 from autobacktest.llm.base import AgentContext
-from autobacktest.llm.prompts import SYSTEM_PROMPT, build_messages
+from autobacktest.llm.prompts import SYSTEM_PROMPT, _diff_code, build_messages
 
 
 def test_system_prompt_contents() -> None:
@@ -65,6 +65,57 @@ def test_build_messages_cache_blocks_structure() -> None:
     assert "## Objective" not in messages[1]["content"]
 
 
+def test_build_messages_stable_block_identity_across_candidates() -> None:
+    """When cache_supported=True, the stable user block must be byte-identical
+    across candidates within the same iteration — only the dynamic tail changes.
+    """
+    ctx_a = AgentContext(
+        strategy_name="haa",
+        strategy_code="def generate_signals(): pass",
+        config_yaml="universe: [SPY]",
+        program_text="be aggressive",
+        evaluation_report=None,
+        iteration=1,
+        directive="add momentum filter",
+    )
+    ctx_b = AgentContext(
+        strategy_name="haa",
+        strategy_code="def generate_signals(): pass",
+        config_yaml="universe: [SPY]",
+        program_text="be aggressive",
+        evaluation_report=None,
+        iteration=1,
+        directive="add mean reversion",
+    )
+
+    msgs_a = build_messages(ctx_a, cache_supported=True)
+    msgs_b = build_messages(ctx_b, cache_supported=True)
+
+    user_a = msgs_a[1]["content"]
+    user_b = msgs_b[1]["content"]
+
+    assert isinstance(user_a, list)
+    assert isinstance(user_b, list)
+    assert len(user_a) == 2
+    assert len(user_b) == 2
+
+    stable_a = user_a[0]
+    stable_b = user_b[0]
+    assert stable_a["type"] == "text"
+    assert stable_b["type"] == "text"
+    assert stable_a["text"] == stable_b["text"], "Stable block must be byte-identical across candidates"
+    assert stable_a.get("cache_control") == {"type": "ephemeral"}
+    assert stable_b.get("cache_control") == {"type": "ephemeral"}
+
+    dynamic_a = user_a[1]
+    dynamic_b = user_b[1]
+    assert dynamic_a["type"] == "text"
+    assert dynamic_b["type"] == "text"
+    assert dynamic_a["text"] != dynamic_b["text"], "Dynamic tail must differ across candidates"
+    assert "cache_control" not in dynamic_a
+    assert "cache_control" not in dynamic_b
+
+
 def test_build_messages_no_cache_control_without_flag() -> None:
     context = AgentContext(
         strategy_name="haa",
@@ -79,6 +130,49 @@ def test_build_messages_no_cache_control_without_flag() -> None:
     # Non-Anthropic path: plain string, no block list, no cache_control keys
     assert isinstance(sys_content, str)
     assert "cache_control" not in str(sys_content)
+
+
+def test_diff_code_produces_unified_diff() -> None:
+    """_diff_code must produce a valid unified diff with ---/+++ markers
+    and must produce a diff shorter than full source for a single-line change
+    in a realistically-sized strategy (~30 lines)."""
+    old_code = """import pandas as pd
+from typing import Any
+
+def generate_signals(prices: pd.DataFrame, config: dict[str, Any]) -> pd.DataFrame:
+    lookback = config.get("lookback", 12)
+    top_n = config.get("top_n", 5)
+    monthly = prices.groupby([prices.index.year, prices.index.month]).tail(1)
+    idx = monthly.index
+    weights = pd.DataFrame(0.0, index=idx, columns=prices.columns)
+    for ticker in prices.columns:
+        rolling = prices[ticker].pct_change(lookback).reindex(idx, method="ffill")
+        weights.loc[idx, ticker] = rolling
+    top = weights.stack().groupby(level=0).nlargest(top_n).unstack(fill_value=0.0)
+    return top.div(top.sum(axis=1), axis=0).fillna(0.0)
+"""
+    new_code = old_code.replace('lookback = config.get("lookback", 12)', 'lookback = config.get("lookback", 6)')
+    diff = _diff_code(old_code, new_code)
+    assert "---" in diff
+    assert "+++" in diff
+    assert "incumbent" in diff
+    assert "candidate" in diff
+    assert "12" in diff or "6" in diff
+    assert len(diff) < len(new_code), "Diff should be shorter than full source for a single-line change"
+
+
+def test_diff_code_empty_input_returns_empty() -> None:
+    """_diff_code must return empty string when either input is empty."""
+    assert _diff_code("", "some code") == ""
+    assert _diff_code("some code", "") == ""
+    assert _diff_code("", "") == ""
+
+
+def test_diff_code_identical_code_returns_empty() -> None:
+    """_diff_code for identical code should return empty string (no changes)."""
+    code = "def f():\n    pass\n"
+    diff = _diff_code(code, code)
+    assert diff == ""
 
 
 def test_build_messages_with_report() -> None:

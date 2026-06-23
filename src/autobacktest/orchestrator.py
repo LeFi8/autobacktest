@@ -871,7 +871,13 @@ class _OptimizationState:
         Returns:
             List of candidate result dicts with validation metadata.
         """
-        n = getattr(settings, "n_candidates", 3)
+        if self.mode == "exploit":
+            effective_n = max(min(3, settings.n_candidates), settings.n_candidates // 2)
+        else:
+            effective_n = settings.n_candidates
+        if self.consecutive_no_accept >= settings.stuck_threshold // 2:
+            effective_n = min(effective_n, min(3, settings.n_candidates))
+        n = effective_n
         raw_edits = _generate_candidates(self.provider, ctx, n)
         n_gen = sum(1 for e in raw_edits if e is not None)
         progress.update(
