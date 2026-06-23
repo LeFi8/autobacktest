@@ -278,6 +278,23 @@ def _diff_code(old: str, new: str, context_lines: int = 3) -> str:
     return "".join(diff)
 
 
+def _diff_config(old_yaml: str, new_yaml: str) -> str:
+    """Produce a unified diff between two config YAML strings.
+
+    Returns empty string if either input is empty or if the configs are identical.
+
+    Args:
+        old_yaml: Baseline (incumbent) config YAML.
+        new_yaml: Candidate (failed) config YAML to compare.
+
+    Returns:
+        Unified diff string with ``---``/``+++`` markers, or empty string.
+    """
+    if not old_yaml or not new_yaml:
+        return ""
+    return _diff_code(old_yaml, new_yaml)
+
+
 def _format_previous_attempt_hint(error_code: str, detail: str) -> str:
     """Return a contextual remediation hint for a specific validation error.
 
@@ -514,7 +531,12 @@ def _format_attempt_history(context: AgentContext) -> str:
     return f"\n## Attempt History\n{table_str}{omit_note}\n"
 
 
-def _format_previous_validation(attempt: dict[str, Any], lines: list[str], incumbent_code: str = "") -> None:
+def _format_previous_validation(
+    attempt: dict[str, Any],
+    lines: list[str],
+    incumbent_code: str = "",
+    incumbent_config: str = "",
+) -> None:
     """Append validation failure details to the previous attempt section.
 
     Formats the error code, detail, and a diff of the failed code/config. For
@@ -525,6 +547,7 @@ def _format_previous_validation(attempt: dict[str, Any], lines: list[str], incum
         attempt: Attempt record dict with validation failure details.
         lines: Mutable list of markdown lines to append to.
         incumbent_code: The incumbent strategy code to diff against.
+        incumbent_config: The incumbent config YAML to diff against.
     """
     error_code = attempt.get("error_code", "")
     detail = attempt.get("detail", "")
@@ -550,30 +573,58 @@ def _format_previous_validation(attempt: dict[str, Any], lines: list[str], incum
         else:
             lines.append(f"\n**Failed strategy code:**\n```python\n{code}\n```")
     if config:
-        lines.append(f"\n**Failed config:**\n```yaml\n{config}\n```")
+        config_diff = _diff_config(incumbent_config, config)
+        if config_diff:
+            lines.append(f"\n**Failed config (diff vs incumbent):**\n```diff\n{config_diff}\n```")
+        else:
+            lines.append(f"\n**Failed config:**\n```yaml\n{config}\n```")
 
 
-def _format_previous_diversity_config(attempt: dict[str, Any], lines: list[str]) -> None:
+def _format_previous_diversity_config(
+    attempt: dict[str, Any],
+    lines: list[str],
+    incumbent_code: str = "",
+    incumbent_config: str = "",
+) -> None:
     """Append config diversity gate failure details to the previous attempt section.
 
     Args:
         attempt: Attempt record dict with config diversity rejection details.
         lines: Mutable list of markdown lines to append to.
+        incumbent_code: The incumbent strategy code to diff against.
+        incumbent_config: The incumbent config YAML to diff against.
     """
     detail = attempt.get("detail", "")
     lines.append(f"**Detail:** {detail}")
+    code = attempt.get("candidate_strategy_code", "")
+    if code:
+        code_diff = _diff_code(incumbent_code, code)
+        if code_diff:
+            lines.append(f"\n**Rejected strategy code (diff vs incumbent):**\n```diff\n{code_diff}\n```")
+        else:
+            lines.append(f"\n**Rejected strategy code:**\n```python\n{code}\n```")
     config = attempt.get("candidate_config_yaml", "")
     if config:
-        lines.append(f"\n**Rejected config:**\n```yaml\n{config}\n```")
+        config_diff = _diff_config(incumbent_config, config)
+        if config_diff:
+            lines.append(f"\n**Rejected config (diff vs incumbent):**\n```diff\n{config_diff}\n```")
+        else:
+            lines.append(f"\n**Rejected config:**\n```yaml\n{config}\n```")
 
 
-def _format_previous_eval_error(attempt: dict[str, Any], lines: list[str], incumbent_code: str = "") -> None:
+def _format_previous_eval_error(
+    attempt: dict[str, Any],
+    lines: list[str],
+    incumbent_code: str = "",
+    incumbent_config: str = "",
+) -> None:
     """Append evaluation error details to the previous attempt section.
 
     Args:
         attempt: Attempt record dict with evaluation error details.
         lines: Mutable list of markdown lines to append to.
         incumbent_code: The incumbent strategy code to diff against.
+        incumbent_config: The incumbent config YAML to diff against.
     """
     detail = attempt.get("detail", "")
     lines.append(f"**Error:** {detail}")
@@ -586,10 +637,19 @@ def _format_previous_eval_error(attempt: dict[str, Any], lines: list[str], incum
         else:
             lines.append(f"\n**Failed strategy code:**\n```python\n{code}\n```")
     if config:
-        lines.append(f"\n**Failed config:**\n```yaml\n{config}\n```")
+        config_diff = _diff_config(incumbent_config, config)
+        if config_diff:
+            lines.append(f"\n**Failed config (diff vs incumbent):**\n```diff\n{config_diff}\n```")
+        else:
+            lines.append(f"\n**Failed config:**\n```yaml\n{config}\n```")
 
 
-def _format_previous_diversity_returns(attempt: dict[str, Any], lines: list[str]) -> None:
+def _format_previous_diversity_returns(
+    attempt: dict[str, Any],
+    lines: list[str],
+    incumbent_code: str = "",
+    incumbent_config: str = "",
+) -> None:
     """Append returns correlation diversity failure details to the previous attempt section.
 
     Includes the detail message, observed metrics, and the rejected config YAML.
@@ -597,6 +657,8 @@ def _format_previous_diversity_returns(attempt: dict[str, Any], lines: list[str]
     Args:
         attempt: Attempt record dict with returns diversity rejection details.
         lines: Mutable list of markdown lines to append to.
+        incumbent_code: The incumbent strategy code to diff against.
+        incumbent_config: The incumbent config YAML to diff against.
     """
     detail = attempt.get("detail", "")
     lines.append(f"**Detail:** {detail}")
@@ -605,12 +667,28 @@ def _format_previous_diversity_returns(attempt: dict[str, Any], lines: list[str]
         lines.append("**Observed metrics:**")
         for k, v in metrics.items():
             lines.append(f"  - {k}: {v}")
+    code = attempt.get("candidate_strategy_code", "")
+    if code:
+        code_diff = _diff_code(incumbent_code, code)
+        if code_diff:
+            lines.append(f"\n**Rejected strategy code (diff vs incumbent):**\n```diff\n{code_diff}\n```")
+        else:
+            lines.append(f"\n**Rejected strategy code:**\n```python\n{code}\n```")
     config = attempt.get("candidate_config_yaml", "")
     if config:
-        lines.append(f"\n**Rejected config:**\n```yaml\n{config}\n```")
+        config_diff = _diff_config(incumbent_config, config)
+        if config_diff:
+            lines.append(f"\n**Rejected config (diff vs incumbent):**\n```diff\n{config_diff}\n```")
+        else:
+            lines.append(f"\n**Rejected config:**\n```yaml\n{config}\n```")
 
 
-def _format_previous_gate(attempt: dict[str, Any], lines: list[str], incumbent_code: str = "") -> None:
+def _format_previous_gate(
+    attempt: dict[str, Any],
+    lines: list[str],
+    incumbent_code: str = "",
+    incumbent_config: str = "",
+) -> None:
     """Append gate rejection details to the previous attempt section.
 
     Includes rejection reason, failed gate name, candidate metrics,
@@ -620,6 +698,7 @@ def _format_previous_gate(attempt: dict[str, Any], lines: list[str], incumbent_c
         attempt: Attempt record dict with gate rejection details.
         lines: Mutable list of markdown lines to append to.
         incumbent_code: The incumbent strategy code to diff against.
+        incumbent_config: The incumbent config YAML to diff against.
     """
     rejection_reason = attempt.get("rejection_reason", "")
     failed_gate = attempt.get("failed_gate", "")
@@ -639,7 +718,11 @@ def _format_previous_gate(attempt: dict[str, Any], lines: list[str], incumbent_c
         else:
             lines.append(f"\n**Failed strategy code:**\n```python\n{code}\n```")
     if config:
-        lines.append(f"\n**Failed config:**\n```yaml\n{config}\n```")
+        config_diff = _diff_config(incumbent_config, config)
+        if config_diff:
+            lines.append(f"\n**Failed config (diff vs incumbent):**\n```diff\n{config_diff}\n```")
+        else:
+            lines.append(f"\n**Failed config:**\n```yaml\n{config}\n```")
 
 
 def _format_previous_attempt(context: AgentContext) -> str:
@@ -665,15 +748,25 @@ def _format_previous_attempt(context: AgentContext) -> str:
     lines: list[str] = ["## Previous Attempt Result", f"**Stage:** {stage}"]
 
     if stage == "validation":
-        _format_previous_validation(attempt, lines, incumbent_code=context.strategy_code)
+        _format_previous_validation(
+            attempt, lines, incumbent_code=context.strategy_code, incumbent_config=context.config_yaml
+        )
     elif stage == "diversity_config":
-        _format_previous_diversity_config(attempt, lines)
+        _format_previous_diversity_config(
+            attempt, lines, incumbent_code=context.strategy_code, incumbent_config=context.config_yaml
+        )
     elif stage == "eval_error":
-        _format_previous_eval_error(attempt, lines, incumbent_code=context.strategy_code)
+        _format_previous_eval_error(
+            attempt, lines, incumbent_code=context.strategy_code, incumbent_config=context.config_yaml
+        )
     elif stage == "diversity_returns":
-        _format_previous_diversity_returns(attempt, lines)
+        _format_previous_diversity_returns(
+            attempt, lines, incumbent_code=context.strategy_code, incumbent_config=context.config_yaml
+        )
     elif stage == "gate":
-        _format_previous_gate(attempt, lines, incumbent_code=context.strategy_code)
+        _format_previous_gate(
+            attempt, lines, incumbent_code=context.strategy_code, incumbent_config=context.config_yaml
+        )
     else:
         detail = attempt.get("detail", attempt.get("rejection_reason", ""))
         if detail:

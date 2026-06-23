@@ -795,3 +795,115 @@ def test_build_messages_non_cache_without_dynamic_tail() -> None:
     user_msg = messages[1]["content"]
     assert isinstance(user_msg, str)
     assert user_msg.startswith("## Iteration")
+
+
+# ── Config diff tests ──────────────────────────────────────────────────────────
+
+
+def test_build_messages_validation_failure_shows_config_diff() -> None:
+    context = AgentContext(
+        strategy_name="haa",
+        strategy_code="def generate_signals(): pass",
+        config_yaml="universe: [SPY]\ntop_n: 5",
+        program_text="be aggressive",
+        evaluation_report=None,
+        iteration=2,
+        last_attempt={
+            "stage": "validation",
+            "error_code": "lookahead_detected",
+            "detail": "Shift with negative index found.",
+            "candidate_strategy_code": "def generate_signals(): pass",
+            "candidate_config_yaml": "universe: [SPY]\ntop_n: 10",
+        },
+    )
+    messages = build_messages(context)
+    user_msg = messages[1]["content"]
+    assert "config (diff vs incumbent)" in user_msg
+    assert "top_n" in user_msg
+    assert "universe: [SPY]" not in user_msg.split("config (diff vs incumbent)")[1].split("```")[0]
+
+
+def test_build_messages_diversity_config_shows_config_diff() -> None:
+    context = AgentContext(
+        strategy_name="haa",
+        strategy_code="def generate_signals(): pass",
+        config_yaml="universe: [SPY]\ntop_n: 5",
+        program_text="be aggressive",
+        evaluation_report=None,
+        iteration=4,
+        last_attempt={
+            "stage": "diversity_config",
+            "detail": "Config similarity 0.970 exceeded threshold.",
+            "candidate_strategy_code": "def generate_signals(): return weights",
+            "candidate_config_yaml": "universe: [SPY]\ntop_n: 10",
+        },
+    )
+    messages = build_messages(context)
+    user_msg = messages[1]["content"]
+    assert "config (diff vs incumbent)" in user_msg
+    assert "strategy code (diff vs incumbent)" in user_msg
+
+
+def test_build_messages_diversity_returns_shows_config_diff() -> None:
+    context = AgentContext(
+        strategy_name="haa",
+        strategy_code="def generate_signals(): pass",
+        config_yaml="universe: [SPY]\ntop_n: 5",
+        program_text="be aggressive",
+        evaluation_report=None,
+        iteration=4,
+        last_attempt={
+            "stage": "diversity_returns",
+            "detail": "Returns correlation 0.98 exceeded threshold.",
+            "candidate_strategy_code": "def generate_signals(): return weights",
+            "candidate_config_yaml": "universe: [SPY]\ntop_n: 10",
+            "candidate_metrics": {"sharpe": 1.2},
+        },
+    )
+    messages = build_messages(context)
+    user_msg = messages[1]["content"]
+    assert "config (diff vs incumbent)" in user_msg
+    assert "strategy code (diff vs incumbent)" in user_msg
+
+
+def test_build_messages_config_diff_falls_back_to_full_yaml_when_identical() -> None:
+    context = AgentContext(
+        strategy_name="haa",
+        strategy_code="def generate_signals(): pass",
+        config_yaml="universe: [SPY]",
+        program_text="be aggressive",
+        evaluation_report=None,
+        iteration=2,
+        last_attempt={
+            "stage": "validation",
+            "error_code": "smoke_test_failed",
+            "detail": "Exception raised",
+            "candidate_strategy_code": "def generate_signals(): raise ValueError()",
+            "candidate_config_yaml": "universe: [SPY]",
+        },
+    )
+    messages = build_messages(context)
+    user_msg = messages[1]["content"]
+    assert "**Failed config:**" in user_msg
+    assert "```yaml" in user_msg
+
+
+def test_build_messages_diversity_config_code_diff() -> None:
+    context = AgentContext(
+        strategy_name="haa",
+        strategy_code="def generate_signals(): pass",
+        config_yaml="universe: [SPY]",
+        program_text="be aggressive",
+        evaluation_report=None,
+        iteration=3,
+        last_attempt={
+            "stage": "diversity_config",
+            "detail": "Too similar",
+            "candidate_strategy_code": "def generate_signals(): return pd.DataFrame()",
+            "candidate_config_yaml": "universe: [SPY]",
+        },
+    )
+    messages = build_messages(context)
+    user_msg = messages[1]["content"]
+    assert "strategy code (diff vs incumbent)" in user_msg
+    assert "**Rejected config:**" in user_msg
