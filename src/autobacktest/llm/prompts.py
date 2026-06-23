@@ -822,7 +822,9 @@ def build_messages(
     Args:
         context: Immutable context defining the current optimization state.
         cache_supported: When True, emit Anthropic-style cache_control breakpoints
-            on the stable prefix so the provider caches SYSTEM_PROMPT + program_text.
+            on the stable prefix so the provider caches SYSTEM_PROMPT + program_text
+            and the user-message stable body (iteration context, strategy code, config,
+            evaluation, instructions).
 
     Returns:
         List containing the system message and user message dicts.
@@ -947,12 +949,11 @@ def build_messages(
     dynamic_tail = f"{repair_request_section}{directive_section}"
 
     if cache_supported:
-        user_content = [
-            _text_block(stable_body, cache=True),
-            _text_block(dynamic_tail),
-        ]
+        user_content = [_text_block(stable_body, cache=True)]
+        if dynamic_tail:
+            user_content.append(_text_block(dynamic_tail))
     else:
-        user_content = f"{dynamic_tail}{stable_body}"
+        user_content = f"{stable_body}{dynamic_tail}"
 
     if isinstance(user_content, str):
         user_content = user_content.strip()

@@ -711,3 +711,87 @@ def test_build_messages_explored_config_instructions() -> None:
     messages = build_messages(context)
     user_msg = messages[1]["content"]
     assert "pick numeric values ≥ ~25% away from every tried value" in user_msg
+
+
+# ── Cache correctness tests ─────────────────────────────────────────────────────
+
+
+def test_build_messages_no_empty_content_block_exploit_mode() -> None:
+    """When cache_supported=True and dynamic_tail is empty (no directive,
+    no repair), the user content must contain exactly one block — the
+    stable body — not a second empty text block that Anthropic rejects."""
+    context = AgentContext(
+        strategy_name="haa",
+        strategy_code="def generate_signals(): pass",
+        config_yaml="universe: [SPY]",
+        program_text="be aggressive",
+        evaluation_report=None,
+        iteration=1,
+        mode="exploit",
+        directive="",
+        repair_request=None,
+    )
+    messages = build_messages(context, cache_supported=True)
+    user_content = messages[1]["content"]
+    assert isinstance(user_content, list)
+    assert len(user_content) == 1
+    block = user_content[0]
+    assert block["type"] == "text"
+    assert len(block["text"]) > 0
+    assert block.get("cache_control") == {"type": "ephemeral"}
+
+
+def test_build_messages_dynamic_tail_appended_when_present() -> None:
+    """When cache_supported=True and a directive is set, user content
+    must have exactly two blocks: stable body + dynamic tail."""
+    context = AgentContext(
+        strategy_name="haa",
+        strategy_code="def generate_signals(): pass",
+        config_yaml="universe: [SPY]",
+        program_text="be aggressive",
+        evaluation_report=None,
+        iteration=1,
+        directive="add momentum filter",
+    )
+    messages = build_messages(context, cache_supported=True)
+    user_content = messages[1]["content"]
+    assert isinstance(user_content, list)
+    assert len(user_content) == 2
+    assert user_content[0]["text"].startswith("## Iteration")
+    assert "add momentum filter" in user_content[1]["text"]
+
+
+def test_build_messages_non_cache_starts_with_stable_body() -> None:
+    """When cache_supported=False, the user message string must start
+    with stable_body (## Iteration ...), not with the dynamic tail."""
+    context = AgentContext(
+        strategy_name="haa",
+        strategy_code="def generate_signals(): pass",
+        config_yaml="universe: [SPY]",
+        program_text="be aggressive",
+        evaluation_report=None,
+        iteration=1,
+        directive="add momentum filter",
+    )
+    messages = build_messages(context, cache_supported=False)
+    user_msg = messages[1]["content"]
+    assert isinstance(user_msg, str)
+    assert user_msg.startswith("## Iteration")
+    assert "add momentum filter" in user_msg
+
+
+def test_build_messages_non_cache_without_dynamic_tail() -> None:
+    """When cache_supported=False and dynamic_tail is empty, the user
+    message should still start with stable_body."""
+    context = AgentContext(
+        strategy_name="haa",
+        strategy_code="def generate_signals(): pass",
+        config_yaml="universe: [SPY]",
+        program_text="be aggressive",
+        evaluation_report=None,
+        iteration=1,
+    )
+    messages = build_messages(context, cache_supported=False)
+    user_msg = messages[1]["content"]
+    assert isinstance(user_msg, str)
+    assert user_msg.startswith("## Iteration")
