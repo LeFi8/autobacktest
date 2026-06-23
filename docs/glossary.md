@@ -56,7 +56,7 @@ Used in AutoBacktest via `autobacktest spa` command.
 ## Strategy Concepts
 
 ### Walk-Forward Analysis
-滚动窗口 evaluation where the strategy is trained on a fixed window and tested on the subsequent period. Prevents lookahead bias and measures out-of-sample performance.
+Rolling window evaluation where the strategy is trained on a fixed window and tested on the subsequent period. Prevents lookahead bias and measures out-of-sample performance.
 
 AutoBacktest default: 5-year train / 1-year test windows.
 
