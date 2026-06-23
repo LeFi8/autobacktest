@@ -1042,14 +1042,12 @@ def build_messages(
     dynamic_tail = f"{repair_request_section}{directive_section}"
 
     if cache_supported:
-        user_content = [_text_block(stable_body, cache=True)]
+        user_content: list[dict[str, Any]] = [_text_block(stable_body, cache=True)]
         if dynamic_tail:
             user_content.append(_text_block(dynamic_tail))
     else:
-        user_content = f"{stable_body}{dynamic_tail}"
-
-    if isinstance(user_content, str):
-        user_content = user_content.strip()
+        stripped = f"{stable_body}{dynamic_tail}".strip()
+        user_content = stripped  # type: ignore[assignment]
 
     user_message: dict[str, Any] = {
         "role": "user",
