@@ -20,6 +20,11 @@ Welcome to the AutoBacktest documentation. This hub provides a structured entry 
 
 ### API & Reference
 - **[API Reference](api-reference.md)** — Typed documentation of all public endpoints, dataclasses, and utility libraries
+- **[Glossary](glossary.md)** — Quantitative finance and AutoBacktest terminology
+
+### Developer Resources
+- **[Testing Guide](testing-guide.md)** — Test markers, fixtures, mock providers, and writing new tests
+- **[Troubleshooting](troubleshooting.md)** — Common issues, error messages, and debugging commands
 
 ### Quick Links
 - **[Root README](../README.md)** — Project overview, quickstart, and CLI reference
@@ -41,7 +46,10 @@ AutoBacktest
 │   ├── architecture.md                # System architecture & module design
 │   ├── developer-setup.md             # Setup, testing, and development workflow
 │   ├── api-reference.md               # Public API documentation
-│   └── optimization-config-reference.md  # Configuration parameter catalog
+│   ├── optimization-config-reference.md  # Configuration parameter catalog
+│   ├── troubleshooting.md             # Common issues & debugging
+│   ├── testing-guide.md               # Test suite guide
+│   └── glossary.md                    # Quantitative finance terminology
 ├── strategies/                        # Strategy subdirectories (<name>/strategy.py + config.yaml)
 ├── src/autobacktest/                  # Core engine source code
 └── tests/                             # Test suite

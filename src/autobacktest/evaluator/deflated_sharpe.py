@@ -14,11 +14,15 @@ The Ledoit-Wolf shrinkage estimator stabilises the correlation matrix
 when the number of trials approaches the number of observations.
 """
 
+import logging
+
 import numpy as np
 import pandas as pd
 from scipy.cluster.hierarchy import fcluster, linkage
 from scipy.spatial.distance import squareform
 from scipy.stats import norm
+
+logger = logging.getLogger(__name__)
 
 
 def _ledoit_wolf_correlation(returns_matrix: pd.DataFrame) -> pd.DataFrame:
@@ -30,15 +34,15 @@ def _ledoit_wolf_correlation(returns_matrix: pd.DataFrame) -> pd.DataFrame:
     if returns_matrix.empty:
         return pd.DataFrame()
 
-    t, p = returns_matrix.shape
-    # Fallback to empirical correlation if insufficient observations or features
-    if t <= 1 or p <= 1:
-        corr = returns_matrix.corr().fillna(0.0).clip(-1.0, 1.0)
-        vals = corr.to_numpy().copy()
-        np.fill_diagonal(vals, 1.0)
-        return pd.DataFrame(vals, index=corr.index, columns=corr.columns)
-
     try:
+        t, p = returns_matrix.shape
+        # Fallback to empirical correlation if insufficient observations or features
+        if t <= 1 or p <= 1:
+            corr = returns_matrix.corr().fillna(0.0).clip(-1.0, 1.0)
+            vals = corr.to_numpy().copy()
+            np.fill_diagonal(vals, 1.0)
+            return pd.DataFrame(vals, index=corr.index, columns=corr.columns)
+
         # Standardize returns matrix (fill NaNs and center)
         x = returns_matrix.fillna(0.0).values
         x_centered = x - np.mean(x, axis=0)
@@ -80,9 +84,14 @@ def _ledoit_wolf_correlation(returns_matrix: pd.DataFrame) -> pd.DataFrame:
 
         return pd.DataFrame(shrunk_corr, index=returns_matrix.columns, columns=returns_matrix.columns)
 
-    except Exception:
+    except Exception as e:
         # Graceful fallback on unexpected error
-        return returns_matrix.corr().fillna(0.0).clip(-1.0, 1.0)
+        logger.warning("Ledoit-Wolf shrinkage failed (%s); falling back to empirical correlation", e)
+        try:
+            return returns_matrix.corr().fillna(0.0).clip(-1.0, 1.0)
+        except Exception:
+            p = returns_matrix.shape[1]
+            return pd.DataFrame(np.eye(p), index=returns_matrix.columns, columns=returns_matrix.columns)
 
 
 def _silhouette_score_from_distance_matrix(dist_matrix: np.ndarray, labels: np.ndarray) -> float:

@@ -146,6 +146,10 @@ class Settings(BaseModel):
     importance_min_attempts: int = _env_int("AUTOBACKTEST_IMPORTANCE_MIN_ATTEMPTS", "6")
     importance_p_threshold: float = _env_float("AUTOBACKTEST_IMPORTANCE_P_THRESHOLD", "0.20")
     early_stop_patience: int = _env_int("AUTOBACKTEST_EARLY_STOP_PATIENCE", "10")
+    holdout_peek_limit: int = _env_int("AUTOBACKTEST_HOLDOUT_PEEK_LIMIT", "20")
+    stuck_threshold: int = _env_int("AUTOBACKTEST_STUCK_THRESHOLD", "5")
+    exploit_patience: int = _env_int("AUTOBACKTEST_EXPLOIT_PATIENCE", "3")
+    min_temp: float = _env_float("AUTOBACKTEST_MIN_TEMP", "0.1")
 
     # --- SAFETY GATES ---
     max_file_size_kb: int = _env_int("AUTOBACKTEST_MAX_FILE_SIZE_KB", "100")

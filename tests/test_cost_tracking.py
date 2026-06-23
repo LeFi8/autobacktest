@@ -284,3 +284,43 @@ def test_adaptive_slippage_calculation() -> None:
     mult = vol.div(vol_median.replace(0.0, np.nan)).clip(lower=1.0, upper=3.0).fillna(1.0)
     assert (mult <= 3.0).all().all()
     assert (mult >= 1.0).all().all()
+
+
+def test_impact_coef_cost_impact() -> None:
+    """Verifies that impact_coef > 0 reduces net returns and behaves as expected."""
+    import pandas as pd
+
+    from autobacktest.evaluator.costs import calculate_turnover_and_costs
+
+    dates = pd.date_range("2026-01-01", periods=10)
+    prices = pd.DataFrame(100.0, index=dates, columns=["AssetA"])
+    prices.iloc[5] = 110.0
+    prices.iloc[6] = 105.0
+
+    daily_returns = pd.Series([0.0] * 10, index=dates)
+    daily_weights = pd.DataFrame({"AssetA": [0.5] * 10}, index=dates)
+    daily_weights.iloc[5] = 0.8
+    daily_weights.iloc[6] = 0.2
+
+    net_ret_0, _, _ = calculate_turnover_and_costs(
+        daily_returns,
+        daily_weights,
+        prices,
+        commission_bps=0.0,
+        spread_bps=0.0,
+        impact_coef=0.0,
+        borrow_cost_bps=0.0,
+    )
+
+    net_ret_pos, _, _ = calculate_turnover_and_costs(
+        daily_returns,
+        daily_weights,
+        prices,
+        commission_bps=0.0,
+        spread_bps=0.0,
+        impact_coef=10.0,
+        borrow_cost_bps=0.0,
+    )
+
+    assert (net_ret_pos <= net_ret_0).all()
+    assert (net_ret_pos < net_ret_0).any()

@@ -1,4 +1,14 @@
-"""Vectorized window execution, dataloading checks, and caching engine."""
+"""Vectorized window execution, dataloading checks, and caching engine.
+
+Orchestrates walk-forward evaluation by:
+1. Partitioning price data into train/test windows.
+2. Running vectorized backtests on each window in parallel.
+3. Computing per-window performance metrics (Sharpe, Sortino, IR, costs).
+4. Caching evaluated results keyed by dataset hash to avoid redundant work.
+
+The ``_CacheProtocol`` interface allows both plain dicts and the
+``_LRUCache`` (used in orchestrator) to serve as transparent caches.
+"""
 
 from __future__ import annotations
 
@@ -73,6 +83,7 @@ def generate_window_report(
     adaptive_slippage: bool = False,
     slippage_vol_window: int = 21,
     slippage_vol_cap: float = 3.0,
+    impact_coef: float = 0.0,
 ) -> WindowReport:
     """Run backtest and cost assessment for a specific date window.
 
@@ -91,6 +102,7 @@ def generate_window_report(
         adaptive_slippage: Use volatility-adaptive slippage.
         slippage_vol_window: Volatility estimation window.
         slippage_vol_cap: Volatility cap multiplier.
+        impact_coef: Market impact parameter (quadratic/linear cost).
 
     Returns:
         WindowReport: All performance metrics for this window.
@@ -113,6 +125,7 @@ def generate_window_report(
         adaptive_slippage=adaptive_slippage,
         slippage_vol_window=slippage_vol_window,
         slippage_vol_cap=slippage_vol_cap,
+        impact_coef=impact_coef,
     )
 
     mean_ret = net_returns.mean() if not net_returns.empty else 0.0
@@ -160,6 +173,7 @@ def _run_walk_forward_windows(
     adaptive_slippage: bool = False,
     slippage_vol_window: int = 21,
     slippage_vol_cap: float = 3.0,
+    impact_coef: float = 0.0,
 ) -> list[WindowReport]:
     """Run walk-forward window evaluations in parallel via thread pool.
 
@@ -176,6 +190,7 @@ def _run_walk_forward_windows(
         adaptive_slippage: Use volatility-adaptive slippage model.
         slippage_vol_window: Rolling window for volatility estimation.
         slippage_vol_cap: Cap multiplier for volatility-adaptive slippage.
+        impact_coef: Market impact parameter (quadratic/linear cost).
 
     Returns:
         list[WindowReport]: One report per walk-forward window.
@@ -202,6 +217,7 @@ def _run_walk_forward_windows(
                 adaptive_slippage=adaptive_slippage,
                 slippage_vol_window=slippage_vol_window,
                 slippage_vol_cap=slippage_vol_cap,
+                impact_coef=impact_coef,
             )
             future_map[future] = i
 

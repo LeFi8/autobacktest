@@ -165,6 +165,7 @@ def select(
     require_dsr_non_degradation: bool | None = None,
     min_return_ratio: float | None = None,
     pbo_limit: float | None = None,
+    dsr_non_degradation_epsilon: float | None = None,
     config: Any = None,
 ) -> GateResult:
     """In-sample selection gate — evaluated on every candidate.
@@ -220,6 +221,7 @@ def select(
         floor,
         compare_metric,
         improvement_tol,
+        dsr_non_degradation_epsilon,
     ) = _resolve_select_config(
         config,
         dd_limit,
@@ -228,6 +230,7 @@ def select(
         min_improvement,
         min_return_ratio,
         require_dsr_non_degradation,
+        dsr_non_degradation_epsilon,
     )
 
     result = _check_hard_gates(report, dd_limit, turnover_limit, pbo_limit)
@@ -245,6 +248,7 @@ def select(
         floor,
         compare_metric,
         improvement_tol,
+        dsr_non_degradation_epsilon,
     )
     if not result.accepted:
         return result
@@ -260,7 +264,8 @@ def _resolve_select_config(
     min_improvement: float | None,
     min_return_ratio: float | None,
     require_dsr_non_degradation: bool | None,
-) -> tuple[float, float, float | None, float, float, bool, float, float | None, str, float]:
+    dsr_non_degradation_epsilon: float | None = None,
+) -> tuple[float, float, float | None, float, float, bool, float, float | None, str, float, float]:
     """Resolve select gate parameters from explicit args or config object.
 
     Resolution priority: explicit argument > config object attribute/key > schema default.
@@ -273,11 +278,12 @@ def _resolve_select_config(
         min_improvement: Explicit min improvement override, or ``None`` for config default.
         min_return_ratio: Explicit min return ratio override, or ``None`` for config default.
         require_dsr_non_degradation: Explicit DSR requirement override, or ``None`` for config default.
+        dsr_non_degradation_epsilon: Explicit DSR non-degradation epsilon override, or ``None``.
 
     Returns:
-        10-tuple of resolved values: (dd_limit, turnover_limit, pbo_limit,
+        11-tuple of resolved values: (dd_limit, turnover_limit, pbo_limit,
         min_improvement, min_return_ratio, require_dsr, tradeoff, floor,
-        compare_metric, improvement_tol).
+        compare_metric, improvement_tol, dsr_non_degradation_epsilon).
     """
     dd_limit = dd_limit if dd_limit is not None else _get_config_val(config, "max_drawdown_limit", 0.20)
     turnover_limit = turnover_limit if turnover_limit is not None else _get_config_val(config, "turnover_limit", 2.0)
@@ -296,6 +302,11 @@ def _resolve_select_config(
     floor = _get_config_val(config, "metric_floor", None)
     compare_metric = _get_config_val(config, "select_compare_metric", "deflated")
     improvement_tol = _get_config_val(config, "select_improvement_tol", 0.02)
+    dsr_non_degradation_epsilon = (
+        dsr_non_degradation_epsilon
+        if dsr_non_degradation_epsilon is not None
+        else _get_config_val(config, "dsr_non_degradation_epsilon", 1e-6)
+    )
     return (
         dd_limit,
         turnover_limit,
@@ -307,6 +318,7 @@ def _resolve_select_config(
         floor,
         compare_metric,
         improvement_tol,
+        dsr_non_degradation_epsilon,
     )
 
 
@@ -410,6 +422,7 @@ def _check_soft_gates(
     metric_floor: float | None = None,
     compare_metric: str = "deflated",
     improvement_tol: float = 0.0,
+    dsr_non_degradation_epsilon: float = 1e-6,
 ) -> GateResult:
     """Check soft constraints: metric improvement, return floor, DSR non-degradation.
 
@@ -461,7 +474,7 @@ def _check_soft_gates(
             return result
 
     if require_dsr and baseline is not None:
-        result = _check_dsr_non_degradation(report, baseline)
+        result = _check_dsr_non_degradation(report, baseline, dsr_non_degradation_epsilon)
         if not result.accepted:
             return result
 
@@ -587,20 +600,21 @@ def _check_return_floor(
 def _check_dsr_non_degradation(
     report: EvaluationReport,
     baseline: EvaluationReport,
+    eps: float = 1e-6,
 ) -> GateResult:
     """Check candidate DSR does not degrade below baseline DSR.
 
-    Uses an epsilon of 1e-6 for floating-point comparison. If the baseline DSR
+    Uses an epsilon for floating-point comparison. If the baseline DSR
     is NaN, the check is automatically passed (no valid baseline to compare against).
 
     Args:
         report: Candidate evaluation report.
         baseline: Incumbent evaluation report.
+        eps: Epsilon tolerance for comparison.
 
     Returns:
         GateResult: Decision outcome. On failure, ``failed_gate`` is ``"dsr_non_degradation"``.
     """
-    eps = 1e-6
     cand_dsr = report.deflated_sharpe
     base_dsr = baseline.deflated_sharpe
     if math.isnan(cand_dsr):
@@ -632,6 +646,7 @@ def confirm(
     dd_limit: float | None = None,
     turnover_limit: float | None = None,
     holdout_min_improvement: float | None = None,
+    dsr_non_degradation_epsilon: float | None = None,
     config: Any = None,
 ) -> GateResult:
     """Holdout confirmation gate — reached only when ``select`` passes.
@@ -651,6 +666,7 @@ def confirm(
         dd_limit: Max holdout drawdown threshold. Resolved from config if ``None``.
         turnover_limit: Max holdout turnover threshold. Resolved from config if ``None``.
         holdout_min_improvement: Tolerance for holdout DSR comparison. Resolved from config if ``None``.
+        dsr_non_degradation_epsilon: Epsilon tolerance for DSR non-degradation check.
         config: StrategyConfig or dict providing fallback values for unresolved parameters.
 
     Returns:
@@ -662,6 +678,11 @@ def confirm(
         holdout_min_improvement
         if holdout_min_improvement is not None
         else _get_config_val(config, "holdout_min_improvement", 0.0)
+    )
+    eps = (
+        dsr_non_degradation_epsilon
+        if dsr_non_degradation_epsilon is not None
+        else _get_config_val(config, "dsr_non_degradation_epsilon", 1e-6)
     )
 
     # --- Hard constraints on holdout_metrics ---
@@ -700,7 +721,6 @@ def confirm(
         return GateResult(accepted=False, reason=msg, failed_gate="holdout_dsr_non_degradation")
 
     if baseline is not None:
-        eps = 1e-6
         hd_baseline = baseline.holdout_deflated_sharpe
 
         if not math.isnan(hd_baseline) and hd_candidate < hd_baseline - eps - holdout_min_improvement:
@@ -733,6 +753,8 @@ def accept(
     require_dsr_non_degradation: bool | None = None,
     min_return_ratio: float | None = None,
     pbo_limit: float | None = None,
+    holdout_min_improvement: float | None = None,
+    dsr_non_degradation_epsilon: float | None = None,
     config: Any = None,
 ) -> GateResult:
     """Backward-compatible wrapper: composes ``select`` + ``confirm``.
@@ -751,6 +773,8 @@ def accept(
         require_dsr_non_degradation: Enforce DSR non-degradation. Resolved from config if ``None``.
         min_return_ratio: Minimum fraction of baseline return. Resolved from config if ``None``.
         pbo_limit: Maximum PBO threshold. Resolved from config if ``None``.
+        holdout_min_improvement: Tolerance for holdout DSR comparison.
+        dsr_non_degradation_epsilon: Epsilon tolerance for DSR non-degradation check.
         config: StrategyConfig or dict providing fallback values.
 
     Returns:
@@ -766,6 +790,7 @@ def accept(
         require_dsr_non_degradation=require_dsr_non_degradation,
         min_return_ratio=min_return_ratio,
         pbo_limit=pbo_limit,
+        dsr_non_degradation_epsilon=dsr_non_degradation_epsilon,
         config=config,
     )
     if not sel.accepted:
@@ -776,6 +801,8 @@ def accept(
         baseline=baseline,
         dd_limit=dd_limit,
         turnover_limit=turnover_limit,
+        holdout_min_improvement=holdout_min_improvement,
+        dsr_non_degradation_epsilon=dsr_non_degradation_epsilon,
         config=config,
     )
     return cnf

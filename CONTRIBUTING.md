@@ -71,8 +71,7 @@ uv run ruff check . && uv run ruff format . && uv run mypy src/ && uv run pytest
 
 ```
 autobacktest/
-├── strategies/         # Signal code (<name>.py + <name>.yaml)
-├── configs/            # Parameters per strategy
+├── strategies/         # Strategy subdirectories (<name>/strategy.py + config.yaml)
 ├── src/autobacktest/   # Core engine
 │   ├── cli.py          # Typer entrypoint
 │   ├── commands/       # Subcommand implementations
@@ -84,5 +83,5 @@ autobacktest/
 │   ├── ledger/         # SQLite ledger + git operations
 │   └── lessons/        # SQLite-backed lesson store
 ├── docs/               # Architecture, API reference, setup guides
-└── tests/              # Test suite (395+ tests)
+└── tests/              # Test suite (447 tests)
 ```

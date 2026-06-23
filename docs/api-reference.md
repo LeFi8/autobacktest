@@ -4,6 +4,43 @@ This document provides a comprehensive overview of the public interfaces and cor
 
 ---
 
+## Table of Contents
+
+| Section | Module | Description |
+|---------|--------|-------------|
+| [1](#1-data-provider-module-autobacktestdata) | `autobacktest.data` | Data providers, caching, Yahoo Finance |
+| [2](#2-evaluation-engine-autobacktestevaluator) | `autobacktest.evaluator` | Backtest execution, window reports |
+| [3](#3-strategy-registry--pre-flight-validation-autobackteststrategy) | `autobacktest.strategy` | Validation, AST linting, sandbox |
+| [4](#4-gating-check--metric-optimization-autobacktestgate) | `autobacktest.gate` | Two-phase gate system |
+| [5](#5-storage-store--history-ledger-autobacktestledger) | `autobacktest.ledger` | SQLite ledger, git ops |
+| [6](#6-llm-provider-layer-autobacktestllm) | `autobacktest.llm` | LLM abstraction, prompts |
+| [7](#7-optimization-orchestrator-autobacktestorchestrator) | `autobacktest.orchestrator` | Optimization loop |
+| [8](#8-centralized-configuration-module-autobacktestconfig) | `autobacktest.config` | Settings singleton |
+| [9](#9-program-parser-module-autobacktestprogram) | `autobacktest.program` | program.md parser |
+| [10](#10-strategy-codemod-repair-autobackteststrategycodemod) | `autobacktest.strategy.codemod` | Pandas deprecation repair |
+| [11](#11-strategy-normalization-autobackteststrategynormalization) | `autobacktest.strategy.normalization` | Weight renormalization |
+| [12](#12-parameter-importance-tracking-autobackteststrategyparameter_importance) | `autobacktest.strategy.parameter_importance` | Parameter importance |
+| [13](#13-lessons-memory-store-autobacktestlessons) | `autobacktest.lessons` | LLM lesson persistence |
+| [14](#14-reporting-module-autobacktestreports) | `autobacktest.reports` | Report generation |
+| [15](#15-combinatorially-symmetric-cross-validation-autobacktestevaluatorcscv) | `autobacktest.evaluator.cscv` | PBO via CSCV |
+| [16](#16-spa-test-autobacktestevaluatorspa) | `autobacktest.evaluator.spa` | Hansen's SPA test |
+| [17](#17-launch-regime-timing-haircut-autobacktestevaluatorregime) | `autobacktest.evaluator.regime` | Regime stress tests |
+| [18](#18-identical-behavior-guard-autobackteststrategyvalidator) | `autobacktest.strategy.validator` | Identical-behavior guard |
+| [19](#19-explored-space-summary-autobackteststrategydiversity) | `autobacktest.strategy.diversity` | Config/returns diversity |
+| [20](#20-security-constants-autobackteststrategyconstants) | `autobacktest.strategy.constants` | Forbidden names |
+| [21](#21-config-jitter-system-autobackteststrategyconfig_jitter) | `autobacktest.strategy.config_jitter` | Config jitter salvage |
+| [22](#22-calculated-effective-trials-autobacktestevaluatordeflated_sharpe) | `autobacktest.evaluator.deflated_sharpe` | Deflated Sharpe Ratio |
+| [23](#23-validation-error-types--sandbox) | `autobacktest.strategy.validator` / `sandbox_runner` | Error types, sandbox |
+| [24](#24-optimization-candidate-module-autobacktestoptimizationcandidate) | `autobacktest.optimization.candidate` | Candidate generation |
+| [25](#25-optimization-eval-manager-autobacktestoptimizationeval_manager) | `autobacktest.optimization.eval_manager` | Eval management |
+| [26](#26-optimization-persistence-autobacktestoptimizationpersistence) | `autobacktest.optimization.persistence` | Ledger persistence |
+| [27](#27-evaluator-engine-autobacktestevaluatorengine) | `autobacktest.evaluator.engine` | Window execution, caching |
+| [28](#28-evaluator-metrics-autobacktestevaluatormetrics) | `autobacktest.evaluator.metrics` | Sharpe, Sortino, IR |
+| [29](#29-evaluator-stress-testing-autobacktestevaluatorstress_testing) | `autobacktest.evaluator.stress_testing` | Regime + Monte Carlo |
+| [30](#30-llm-prompt-construction-autobacktestllmprompts) | `autobacktest.llm.prompts` | Prompt assembly, lessons, caching |
+
+---
+
 ## 1. Data Provider Module (`autobacktest.data`)
 
 The data layer is defined across three files: `base.py` (abstract contract), `cache.py` (caching decorator), and `yfinance_provider.py` (concrete Yahoo Finance implementation).
@@ -1430,4 +1467,72 @@ Convenience wrapper around ``calculate_regime_haircut``.
 ```python
 def get_regime_haircut(benchmark_prices: pd.Series, holdout_start: pd.Timestamp) -> float:
     """Calculate the launch regime haircut based on benchmark prices."""
+```
+
+---
+
+## 30. LLM Prompt Construction (`autobacktest.llm.prompts`)
+
+Assembles the system and user message payloads sent to the LLM. Handles lesson filtering, attempt history formatting, mode-aware instructions, and Anthropic-style prompt caching.
+
+### `SYSTEM_PROMPT`
+Module-level constant containing the full system prompt (16 rules). Covers:
+- Allowed imports whitelist, weight non-negativity constraints
+- Deprecated pandas API bans with version-specific frequency aliases
+- Config schema enforcement, lookahead prevention, complexity limits
+- Diversity rules, JSON formatting, attempt history consultation
+
+### `build_messages`
+Primary entry point. Assembles the complete message payload for the LLM.
+```python
+def build_messages(
+    context: AgentContext,
+    cache_supported: bool = False,
+) -> list[dict[str, Any]]:
+    """Build the system and user message payload for the LLM completion API.
+
+    Args:
+        context: Immutable context defining the current optimization state.
+        cache_supported: When True, emit Anthropic-style cache_control breakpoints
+            on the stable prefix so the provider caches SYSTEM_PROMPT + program_text.
+
+    Returns:
+        List containing the system message and user message dicts.
+    """
+```
+
+**Message assembly strategy:**
+1. **System message**: `SYSTEM_PROMPT` + `program_text` (stable prefix, cacheable)
+2. **User message**: Assembled sections in order:
+   - Current strategy code + config YAML
+   - Filtered lessons (prioritized by failure stage)
+   - Evaluation report (if available)
+   - Attempt history (explored configs + outcomes)
+   - Previous attempt feedback (stage-specific)
+   - Performance target (metric to optimize)
+   - Mode instruction (`EXPLORE` vs `EXPLOIT`)
+   - Repair request (if in repair mode)
+   - Diversity warning (if historical configs exist)
+
+### `parse_lessons`
+Parses lessons markdown into structured dicts.
+```python
+def parse_lessons(lessons_text: str) -> list[dict[str, str]]:
+    """Parse lessons markdown content into a list of lesson dictionaries.
+
+    Returns:
+        List of dicts with keys 'title', 'type' (BUG, DIVERSITY,
+        GATE_REJECTION, PERFORMANCE_INSIGHT, or STRUCTURAL), and 'body'.
+    """
+```
+
+### `filter_lessons`
+Filters lessons by relevance to the current failure stage.
+```python
+def filter_lessons(lessons_text: str, context_stage: str | None) -> str:
+    """Filter and reconstruct lessons based on the active optimization stage.
+
+    Prioritizes lessons whose type matches the current failure stage.
+    STRUCTURAL lessons are always included as general guidance.
+    """
 ```

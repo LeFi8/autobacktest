@@ -1,4 +1,15 @@
-"""Regime stress testing and Monte Carlo block bootstrap analysis wrappers."""
+"""Regime stress testing and Monte Carlo block bootstrap analysis wrappers.
+
+Combines two complementary robustness checks:
+1. **Regime stress tests** — measure strategy drawdowns during historical
+   crash periods (2008 GFC, 2020 COVID, 2022 bear market) to assess
+   tail-risk resilience.
+2. **Monte Carlo block bootstrap** — resample daily returns via stationary
+   or circular block bootstrap to estimate the distribution of Sharpe
+   ratios under resampling, providing confidence intervals and p-values.
+
+Both methods use seed=42 for reproducibility.
+"""
 
 from __future__ import annotations
 

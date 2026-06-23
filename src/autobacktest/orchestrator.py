@@ -72,10 +72,8 @@ from autobacktest.strategy.validator import preflight
 
 logger = logging.getLogger(__name__)
 
-STUCK_THRESHOLD = 5
 STUCK_ESCALATION_FACTOR = 0.8
 MAX_DIVERSITY_RETRIES = 2
-EXPLOIT_PATIENCE = 3  # consecutive non-improvements in EXPLOIT before returning to EXPLORE
 
 CANDIDATE_DIRECTIVES = [
     "structurally change the signal-generation logic",
@@ -188,7 +186,7 @@ class _OptimizationState:
         repo_path: Path = Path(),
         start_date: str = settings.default_start_date,
         end_date: str = settings.default_end_date,
-        holdout_peek_limit: int = 20,
+        holdout_peek_limit: int = settings.holdout_peek_limit,
         early_stop_patience: int = settings.early_stop_patience,
         quiet: bool = False,
     ):
@@ -231,7 +229,7 @@ class _OptimizationState:
         self.incumbent: EvaluationReport | None = None
         self.baseline_at_start: EvaluationReport | None = None
         self.start_temp = getattr(provider, "temperature", None)
-        self.min_temp = 0.1
+        self.min_temp = settings.min_temp
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
         self.total_cost = 0.0
@@ -538,7 +536,7 @@ class _OptimizationState:
         and rolling failure rate: exploit mode uses minimum temperature,
         explore mode scales temperature by recent failure rate.
         """
-        if self.consecutive_no_accept >= STUCK_THRESHOLD:
+        if self.consecutive_no_accept >= settings.stuck_threshold:
             if self.mode != "explore":
                 logger.info("Stuck threshold reached, forcing EXPLORE mode.")
             self.mode = "explore"
@@ -651,6 +649,21 @@ class _OptimizationState:
             # Jitter couldn't find a diverse config — keep original candidate, just log attempt
             ev["jitter_applied"] = False
             ev["jitter_attempted"] = True
+            logger.info(
+                "Jitter failed to find diverse config for cand %d, iter %d; similarity %f",
+                i,
+                k,
+                jitter_meta["final_similarity"],
+            )
+            if self.event_log is not None:
+                self.event_log.write(
+                    {
+                        "event": "jitter_exhausted_proceeding",
+                        "iteration": k,
+                        "candidate_idx": i,
+                        "similarity": jitter_meta["final_similarity"],
+                    }
+                )
 
     def _process_raw_edit(self, k: int, edit: AgentEdit, directive: str, ctx: AgentContext) -> dict[str, Any]:
         """Process a raw LLM edit through repair, validation, and preflight.
@@ -1431,8 +1444,8 @@ class _OptimizationState:
         self.consecutive_no_accept += 1
         if self.mode == "exploit":
             self.exploit_stall += 1
-            if self.exploit_stall >= EXPLOIT_PATIENCE:
-                logger.info(f"Exploit stall reached ({EXPLOIT_PATIENCE}), switching to EXPLORE mode.")
+            if self.exploit_stall >= settings.exploit_patience:
+                logger.info(f"Exploit stall reached ({settings.exploit_patience}), switching to EXPLORE mode.")
                 self.mode = "explore"
                 self.exploit_stall = 0
         self.last_attempt = _extract_best_failure(candidate_results)
@@ -1661,7 +1674,7 @@ def run_optimization(
     repo_path: Path = Path(),
     start_date: str = settings.default_start_date,
     end_date: str = settings.default_end_date,
-    holdout_peek_limit: int = 20,
+    holdout_peek_limit: int = settings.holdout_peek_limit,
     early_stop_patience: int = settings.early_stop_patience,
     resume: str | None = None,
     quiet: bool = False,
@@ -1829,6 +1842,23 @@ def _get_metric_value(report: EvaluationReport, metric: TargetMetric) -> float:
 
 
 def _populate_failure_details(failure: dict[str, Any], stage: str, ev: dict[str, Any]) -> None:
+    """Enrich a failure dict with stage-specific diagnostic information.
+
+    Extracts error codes, rejection reasons, and candidate metrics from the
+    event dict based on which pipeline stage produced the failure.  The
+    resulting keys are used by downstream feedback formatting to present
+    actionable information to the LLM.
+
+    Args:
+        failure: Partial failure dict (at minimum contains ``stage``).
+        stage: Pipeline stage that produced the failure — one of
+            ``"validation"``, ``"eval_error"``, ``"gate"``,
+            ``"diversity_returns"``, ``"diversity_config"``,
+            ``"holdout_peek_limit"``, or ``"identical_behavior"``.
+        ev: Event dict from the candidate evaluation containing raw
+            diagnostic fields (``error_code``, ``detail``, ``_failed_gate``,
+            ``_report``, etc.).
+    """
     if stage == "validation":
         failure["error_code"] = ev.get("error_code")
         failure["detail"] = ev.get("detail")

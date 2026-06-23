@@ -138,3 +138,69 @@ def test_wf_selection_returns_no_holdout_leakage() -> None:
         f"first selection date = {selection_returns.index.min()}, "
         f"first WF window start = {wf_start}"
     )
+
+
+def test_impact_coef_wiring_in_evaluate() -> None:
+    """Verifies that impact_coef is wired correctly in evaluate_strategy_detailed and reduces returns."""
+    dates = pd.date_range("2008-01-01", "2025-06-01", freq="D")
+    n = len(dates)
+    rng = np.random.default_rng(42)
+    fake_prices = pd.DataFrame(
+        {"SPY": 100.0 * np.exp(np.cumsum(rng.normal(0.0005, 0.01, n)))},
+        index=dates,
+    )
+
+    # Alternate weights (1.0 vs 0.0) -> high turnover/trades to trigger impact cost
+    def _alternating_strat(prices: pd.DataFrame, _config: dict) -> pd.DataFrame:
+        idx = prices.index
+        w = pd.DataFrame(0.0, index=idx, columns=prices.columns)
+        # Alternate daily
+        w["SPY"] = [1.0 if i % 2 == 0 else 0.0 for i in range(len(idx))]
+        return w
+
+    bench_returns = fake_prices["SPY"].pct_change().fillna(0.0)
+
+    # 1. No impact cost
+    config_0 = {
+        "universe": ["SPY"],
+        "benchmark": "SPY",
+        "impact_coef": 0.0,
+        "commission_bps": 0.0,
+        "spread_bps": 0.0,
+        "borrow_cost_bps": 0.0,
+    }
+    report_0, selection_returns_0 = evaluate_strategy_detailed(
+        "test_impact_0",
+        _alternating_strat,
+        config_0,
+        start_date="2008-01-01",
+        end_date="2025-06-01",
+        _prices=fake_prices,
+        _bench_returns=bench_returns,
+    )
+
+    # 2. Large impact cost
+    config_large = {
+        "universe": ["SPY"],
+        "benchmark": "SPY",
+        "impact_coef": 100.0,
+        "commission_bps": 0.0,
+        "spread_bps": 0.0,
+        "borrow_cost_bps": 0.0,
+    }
+    report_large, selection_returns_large = evaluate_strategy_detailed(
+        "test_impact_large",
+        _alternating_strat,
+        config_large,
+        start_date="2008-01-01",
+        end_date="2025-06-01",
+        _prices=fake_prices,
+        _bench_returns=bench_returns,
+    )
+
+    # The returns with large impact_coef must be strictly lower than without impact cost
+    assert (selection_returns_large <= selection_returns_0).all()
+    assert (selection_returns_large < selection_returns_0).any()
+
+    # Also verify that the overall performance report metrics are lower
+    assert report_large.in_sample_metrics.annualized_return < report_0.in_sample_metrics.annualized_return

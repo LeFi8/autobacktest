@@ -121,3 +121,36 @@ def test_from_yaml_file_not_found() -> None:
     """Verifies that loading a non-existent file raises FileNotFoundError."""
     with pytest.raises(FileNotFoundError):
         StrategyConfig.from_yaml(Path("non_existent_file.yaml"))
+
+
+def test_additional_schema_fields() -> None:
+    """Verifies that new fields are parsed correctly with defaults and validation constraints."""
+    # Minimal config checks defaults
+    cfg = StrategyConfig.model_validate({"universe": ["SPY"]})
+    assert cfg.impact_coef == 0.0
+    assert cfg.dsr_non_degradation_epsilon == 1e-6
+    assert cfg.holdout_min_improvement == 0.0
+
+    # Custom valid values
+    data = {
+        "universe": ["SPY"],
+        "impact_coef": 0.5,
+        "dsr_non_degradation_epsilon": 0.01,
+        "holdout_min_improvement": 0.02,
+    }
+    cfg2 = StrategyConfig.model_validate(data)
+    assert cfg2.impact_coef == 0.5
+    assert cfg2.dsr_non_degradation_epsilon == 0.01
+    assert cfg2.holdout_min_improvement == 0.02
+
+    # Validation: impact_coef must be >= 0.0
+    with pytest.raises(ValidationError):
+        StrategyConfig.model_validate({"universe": ["SPY"], "impact_coef": -0.1})
+
+    # Validation: dsr_non_degradation_epsilon must be >= 0.0
+    with pytest.raises(ValidationError):
+        StrategyConfig.model_validate({"universe": ["SPY"], "dsr_non_degradation_epsilon": -1e-7})
+
+    # Validation: holdout_min_improvement must be >= 0.0
+    with pytest.raises(ValidationError):
+        StrategyConfig.model_validate({"universe": ["SPY"], "holdout_min_improvement": -0.01})

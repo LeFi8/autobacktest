@@ -42,6 +42,10 @@ class StrategyConfig(BaseModel):
     adaptive_slippage: bool = Field(False, description="Use volatility-adaptive slippage")
     slippage_vol_window: int = Field(21, ge=1, description="Volatility window for adaptive slippage")
     slippage_vol_cap: float = Field(3.0, ge=1.0, description="Volatility cap multiplier for adaptive slippage")
+    impact_coef: float = Field(0.0, ge=0.0, description="Market impact parameter (quadratic/linear cost)")
+    dsr_non_degradation_epsilon: float = Field(
+        1e-6, ge=0.0, description="Epsilon for DSR non-degradation check in gates"
+    )
     mc_bootstrap_method: str = Field("stationary", description="Bootstrap method: circular or stationary")
     regime_benchmark: str | None = Field(
         None, description="Alternative benchmark index for launch-regime timing haircut"
@@ -54,7 +58,9 @@ class StrategyConfig(BaseModel):
     require_dsr_non_degradation: bool = Field(
         True, description="If True (default), selection gate enforces DSR non-degradation"
     )
-    holdout_min_improvement: float = Field(0.0, description="Tolerance for holdout DSR non-degradation in confirm gate")
+    holdout_min_improvement: float = Field(
+        0.0, ge=0.0, description="Tolerance for holdout DSR non-degradation in confirm gate"
+    )
     enable_holdout_confirmation: bool = Field(
         True,
         description="If True, select-passing candidates are confirmed on holdout before commit",

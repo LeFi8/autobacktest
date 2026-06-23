@@ -33,7 +33,7 @@ def calculate_turnover_and_costs(
         prices: Daily asset prices DataFrame.
         commission_bps: Commission fee in basis points (1 bp = 0.0001).
         spread_bps: Bid-ask spread in basis points.
-        impact_coef: Market impact parameter (quadratic/linear cost).
+        impact_coef: Market impact parameter (quadratic/linear cost, default 0.0 is disabled).
         asset_returns: Pre-computed daily asset returns (skips pct_change()).
         borrow_cost_bps: Short borrowing cost in basis points annualized.
         adaptive_slippage: Use volatility-adaptive slippage model (default: False).

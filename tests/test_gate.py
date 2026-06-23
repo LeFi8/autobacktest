@@ -765,3 +765,54 @@ def test_gate_hybrid_tradeoff_deflated_mode() -> None:
     cand_pass = _create_mock_report(sharpe=1.8, deflated_sharpe=0.30, annualized_return=0.12)
     res_pass = select(cand_pass, baseline=base, config=config_tradeoff)
     assert res_pass.accepted
+
+
+def test_accept_forwards_parameters_and_resolves_epsilon() -> None:
+    """Verifies that accept() correctly forwards holdout_min_improvement and dsr_non_degradation_epsilon."""
+    base = _create_mock_report()
+    base.holdout_deflated_sharpe = 0.85
+    base.deflated_sharpe = 0.85
+
+    cand = _create_mock_report()
+    cand.holdout_deflated_sharpe = 0.80
+    cand.deflated_sharpe = 0.80
+
+    # 1. Default accept (fails due to degradation: cand DSR 0.80 < base DSR 0.85)
+    # We pass select_improvement_tol=0.10 to allow target_metric_improvement to pass.
+    res_fail = accept(cand, baseline=base, config={"select_improvement_tol": 0.10})
+    assert not res_fail.accepted
+    assert res_fail.failed_gate in ("dsr_non_degradation", "holdout_dsr_non_degradation")
+
+    # 2. Set holdout_min_improvement=0.06 and select_improvement_tol=0.06 via config,
+    # and disable in-sample degradation to test holdout
+    config = {
+        "select_improvement_tol": 0.06,
+        "require_dsr_non_degradation": False,
+    }
+    # With holdout_min_improvement=0.06:
+    # cand holdout DSR 0.80 >= base holdout DSR 0.85 - 1e-6 - 0.06 = 0.789999 -> should pass
+    res_pass = accept(
+        cand,
+        baseline=base,
+        holdout_min_improvement=0.06,
+        config=config,
+    )
+    assert res_pass.accepted
+
+    # 3. Test dsr_non_degradation_epsilon resolution
+    # cand in-sample DSR 0.80, base in-sample DSR 0.85. Degradation is 0.05.
+    # If we set dsr_non_degradation_epsilon=0.06 and select_improvement_tol=0.06, in-sample DSR passes.
+    # Holdout: cand holdout DSR 0.80, base holdout DSR 0.85. With epsilon=0.06 and holdout_min_improvement=0.0,
+    # cand holdout DSR 0.80 >= base holdout DSR 0.85 - 0.06 = 0.79 -> passes.
+    config_eps = {
+        "select_improvement_tol": 0.06,
+        "require_dsr_non_degradation": True,
+    }
+    res_eps = accept(
+        cand,
+        baseline=base,
+        dsr_non_degradation_epsilon=0.06,
+        holdout_min_improvement=0.0,
+        config=config_eps,
+    )
+    assert res_eps.accepted
