@@ -154,6 +154,25 @@ def optimize_numeric_params(
     return optimized_config, best_sharpe, improved
 
 
+def build_optimized_yaml(optimized_config: dict[str, Any]) -> str:
+    """Render an optimized flat config dict back to YAML.
+
+    Top-level scalar keys are emitted directly; a non-empty ``params`` sub-dict
+    is preserved as a nested block. Shared by :func:`_apply_optimized_config`
+    and the orchestrator's re-evaluation so the evaluated YAML and the committed
+    YAML are byte-identical.
+    """
+    yaml_dict: dict[str, Any] = {}
+    for k, v in optimized_config.items():
+        if k == "params":
+            continue
+        yaml_dict[k] = v
+    params = optimized_config.get("params", {})
+    if isinstance(params, dict) and params:
+        yaml_dict["params"] = params
+    return yaml.dump(yaml_dict, default_flow_style=False, sort_keys=False)
+
+
 def _apply_optimized_config(
     winner: dict[str, Any],
     optimized_config: dict[str, Any],
@@ -178,15 +197,7 @@ def _apply_optimized_config(
         winner["optimization_gain"] = 0.0
         return
 
-    yaml_dict: dict[str, Any] = {}
-    for k, v in optimized_config.items():
-        if k == "params":
-            continue
-        yaml_dict[k] = v
-    params = optimized_config.get("params", {})
-    if isinstance(params, dict) and params:
-        yaml_dict["params"] = params
-    new_yaml = yaml.dump(yaml_dict, default_flow_style=False, sort_keys=False)
+    new_yaml = build_optimized_yaml(optimized_config)
 
     new_edit = dataclasses.replace(winner["edit"], config_yaml=new_yaml)
     winner["edit"] = new_edit

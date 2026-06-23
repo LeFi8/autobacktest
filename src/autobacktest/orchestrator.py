@@ -57,7 +57,11 @@ from autobacktest.optimization.candidate import (
 from autobacktest.optimization.eval_manager import (
     load_signals,
 )
-from autobacktest.optimization.param_search import _apply_optimized_config, optimize_numeric_params
+from autobacktest.optimization.param_search import (
+    _apply_optimized_config,
+    build_optimized_yaml,
+    optimize_numeric_params,
+)
 from autobacktest.optimization.persistence import (
     deflate_holdout,
     deflate_selection,
@@ -1133,11 +1137,17 @@ class _OptimizationState:
         return None, peeks_this_iteration
 
     def _optimize_winner_params(self, k: int, winner: dict[str, Any]) -> None:
-        """Run Optuna numeric parameter optimization on the winner's config.
+        """Tune the winner's numeric params in-sample, then re-validate OOS.
 
-        Creates temp files from the winner's code/config, loads signals, runs
-        :func:`optimize_numeric_params` in-sample, and updates the winner dict
-        in-place when improved.  Failures are logged and silently skipped.
+        Optuna optimizes the numeric config on the *in-sample* window only. A
+        tuned config is never trusted on its in-sample gain alone: it is
+        re-evaluated end-to-end (full statistical battery + holdout) and pushed
+        back through the ``select`` + ``confirm`` gates. The winner adopts the
+        tuned config only when both gates pass *and* the re-evaluated target
+        metric beats the original winner's — otherwise the original winner is
+        kept untouched. This keeps overfit, never-OOS-validated parameters out
+        of commits and keeps the recorded metrics consistent with the committed
+        config. Any failure is logged and the original winner is preserved.
         """
         strategy_code = winner["edit"].strategy_code
         config_yaml = winner["edit"].config_yaml
@@ -1150,45 +1160,92 @@ class _OptimizationState:
             temp_yaml.write_text(config_yaml, encoding="utf-8")
 
             candidate_fn = load_signals(temp_py)
-            new_config_obj = StrategyConfig.from_yaml(temp_yaml)
-            new_config = new_config_obj.model_dump()
-
+            new_config = StrategyConfig.from_yaml(temp_yaml).model_dump()
             prices, _ = _load_evaluation_data(
                 new_config, self.start_date, self.end_date, _prices=None, _bench_returns=None
             )
 
             exclude_raw = settings.numeric_opt_exclude.strip()
             exclude_set = {x.strip() for x in exclude_raw.split(",") if x.strip()} if exclude_raw else None
-            n_trials = settings.numeric_opt_trials
-            seed = settings.numeric_opt_seed + k
 
-            opt_config, best_sharpe, improved = optimize_numeric_params(
+            opt_config, _best_sharpe, improved = optimize_numeric_params(
                 candidate_fn,
                 new_config,
                 prices,
-                n_trials=n_trials,
-                seed=seed,
+                n_trials=settings.numeric_opt_trials,
+                seed=settings.numeric_opt_seed + k,
                 exclude=exclude_set,
             )
-
-            orig_sharpe = winner["_report"].observed_sharpe or 0.0
-            gain = best_sharpe - orig_sharpe
-            _apply_optimized_config(winner, opt_config, improved, gain)
-
-            if improved:
-                logger.info(
-                    "Iter %d: Optuna improved in-sample Sharpe from %.4f to %.4f (gain=%.4f)",
-                    k,
-                    orig_sharpe,
-                    best_sharpe,
-                    gain,
-                )
         except Exception:
-            logger.exception("Iter %d: Optuna optimization failed, skipping", k)
+            logger.exception("Iter %d: Optuna optimization failed, keeping original winner", k)
+            winner["optimization_applied"] = False
+            winner["optimization_gain"] = 0.0
+            return
         finally:
             for p in [temp_py, temp_yaml]:
                 if p.exists():
                     p.unlink()
+
+        if not improved:
+            winner["optimization_applied"] = False
+            winner["optimization_gain"] = 0.0
+            return
+
+        # The tuned config must earn its place: re-evaluate it end-to-end
+        # (battery + holdout) and re-run the gates before it can replace the winner.
+        opt_yaml = build_optimized_yaml(opt_config)
+        opt_report, opt_returns, opt_flat, err = _eval_single_candidate(
+            self.strategy_name,
+            strategy_code,
+            opt_yaml,
+            self.strategies_dir,
+            self.configs_dir,
+            self.start_date,
+            self.end_date,
+            self._eval_cache,
+        )
+        if err or opt_report is None or opt_returns is None or opt_flat is None:
+            logger.warning("Iter %d: tuned-config re-evaluation failed (%s); keeping original winner", k, err)
+            winner["optimization_applied"] = False
+            winner["optimization_gain"] = 0.0
+            return
+
+        # Re-gate exactly like a candidate: in-sample DSR + select, then holdout DSR + confirm.
+        _deflate(
+            opt_report,
+            opt_returns,
+            self.ledger,
+            cscv_blocks=opt_flat.get("cscv_blocks", 10),
+            embargo_days=opt_flat.get("cscv_embargo_days", 5),
+        )
+        sel = select(opt_report, baseline=self.incumbent, target_metric=self.target_metric, config=opt_flat)
+        _deflate_holdout(opt_report, self.ledger)
+        cnf = confirm(opt_report, baseline=self.incumbent, config=opt_flat)
+
+        orig_metric = _get_metric_value(winner["_report"], self.target_metric)
+        opt_metric = _get_metric_value(opt_report, self.target_metric)
+
+        if sel.accepted and cnf.accepted and opt_metric >= orig_metric:
+            winner["_report"] = opt_report
+            winner["_returns"] = opt_returns
+            winner["_new_config"] = opt_flat
+            gain = opt_metric - orig_metric
+            _apply_optimized_config(winner, opt_config, improved=True, gain=gain)
+            logger.info(
+                "Iter %d: Optuna-tuned config adopted (%s %.4f -> %.4f, gain=%.4f)",
+                k,
+                self.target_metric.value,
+                orig_metric,
+                opt_metric,
+                gain,
+            )
+        else:
+            reason = "select" if not sel.accepted else ("confirm" if not cnf.accepted else "no metric gain")
+            logger.info(
+                "Iter %d: Optuna-tuned config rejected at re-validation (%s); keeping original winner", k, reason
+            )
+            winner["optimization_applied"] = False
+            winner["optimization_gain"] = 0.0
 
     def commit_winner(self, k: int, winner: dict[str, Any]) -> str | None:
         """Commit the winning strategy to git and update the incumbent state.
