@@ -185,6 +185,12 @@ class Settings(BaseModel):
     prescreen_sharpe_floor: float = _env_float("AUTOBACKTEST_PRESCREEN_SHARPE_FLOOR", "0.0")
     prescreen_return_floor: float = _env_float("AUTOBACKTEST_PRESCREEN_RETURN_FLOOR", "0.0")
 
+    # --- NUMERIC OPTIMIZATION (OPTUNA) ---
+    enable_numeric_optimization: bool = _env_bool("AUTOBACKTEST_ENABLE_NUMERIC_OPTIMIZATION", "false")
+    numeric_opt_trials: int = _env_int("AUTOBACKTEST_NUMERIC_OPT_TRIALS", "20")
+    numeric_opt_seed: int = _env_int("AUTOBACKTEST_NUMERIC_OPT_SEED", "42")
+    numeric_opt_exclude: str = _env_str("AUTOBACKTEST_NUMERIC_OPT_EXCLUDE", "")
+
     # --- VERBOSITY CONTROL ---
     quiet: bool = _env_bool("AUTOBACKTEST_QUIET", "false")
 

@@ -37,7 +37,12 @@ from autobacktest.evaluator.deflated_sharpe import (
     calculate_effective_trials,
     calculate_psr_dsr,
 )
-from autobacktest.evaluator.evaluate import _CacheProtocol, compute_dataset_hash, evaluate_strategy_detailed
+from autobacktest.evaluator.evaluate import (
+    _CacheProtocol,
+    _load_evaluation_data,
+    compute_dataset_hash,
+    evaluate_strategy_detailed,
+)
 from autobacktest.evaluator.report import EvaluationReport
 from autobacktest.gate import TargetMetric, _get_compare_metric_val, confirm, select
 from autobacktest.ledger.event_log import EventLog
@@ -52,6 +57,7 @@ from autobacktest.optimization.candidate import (
 from autobacktest.optimization.eval_manager import (
     load_signals,
 )
+from autobacktest.optimization.param_search import _apply_optimized_config, optimize_numeric_params
 from autobacktest.optimization.persistence import (
     deflate_holdout,
     deflate_selection,
@@ -398,6 +404,8 @@ class _OptimizationState:
             holdout_evaluated=True,
             holdout_observed_sharpe=baseline_report.holdout_metrics.sharpe_ratio,
             holdout_returns=baseline_report.holdout_net_returns,
+            optimization_applied=False,
+            optimization_gain=0.0,
         )
 
         baseline_warnings = _audit_baseline(self.incumbent, self.config_obj)
@@ -1124,6 +1132,64 @@ class _OptimizationState:
             return top_ev, peeks_this_iteration
         return None, peeks_this_iteration
 
+    def _optimize_winner_params(self, k: int, winner: dict[str, Any]) -> None:
+        """Run Optuna numeric parameter optimization on the winner's config.
+
+        Creates temp files from the winner's code/config, loads signals, runs
+        :func:`optimize_numeric_params` in-sample, and updates the winner dict
+        in-place when improved.  Failures are logged and silently skipped.
+        """
+        strategy_code = winner["edit"].strategy_code
+        config_yaml = winner["edit"].config_yaml
+
+        temp_name = f"opt_{uuid.uuid4().hex}"
+        temp_py = self.strategies_dir / f"{temp_name}.py"
+        temp_yaml = self.configs_dir / f"{temp_name}.yaml"
+        try:
+            temp_py.write_text(strategy_code, encoding="utf-8")
+            temp_yaml.write_text(config_yaml, encoding="utf-8")
+
+            candidate_fn = load_signals(temp_py)
+            new_config_obj = StrategyConfig.from_yaml(temp_yaml)
+            new_config = new_config_obj.model_dump()
+
+            prices, _ = _load_evaluation_data(
+                new_config, self.start_date, self.end_date, _prices=None, _bench_returns=None
+            )
+
+            exclude_raw = settings.numeric_opt_exclude.strip()
+            exclude_set = {x.strip() for x in exclude_raw.split(",") if x.strip()} if exclude_raw else None
+            n_trials = settings.numeric_opt_trials
+            seed = settings.numeric_opt_seed + k
+
+            opt_config, best_sharpe, improved = optimize_numeric_params(
+                candidate_fn,
+                new_config,
+                prices,
+                n_trials=n_trials,
+                seed=seed,
+                exclude=exclude_set,
+            )
+
+            orig_sharpe = winner["_report"].observed_sharpe or 0.0
+            gain = best_sharpe - orig_sharpe
+            _apply_optimized_config(winner, opt_config, improved, gain)
+
+            if improved:
+                logger.info(
+                    "Iter %d: Optuna improved in-sample Sharpe from %.4f to %.4f (gain=%.4f)",
+                    k,
+                    orig_sharpe,
+                    best_sharpe,
+                    gain,
+                )
+        except Exception:
+            logger.exception("Iter %d: Optuna optimization failed, skipping", k)
+        finally:
+            for p in [temp_py, temp_yaml]:
+                if p.exists():
+                    p.unlink()
+
     def commit_winner(self, k: int, winner: dict[str, Any]) -> str | None:
         """Commit the winning strategy to git and update the incumbent state.
 
@@ -1177,6 +1243,8 @@ class _OptimizationState:
                 holdout_evaluated=True,
                 holdout_observed_sharpe=w_report.holdout_metrics.sharpe_ratio,
                 holdout_returns=w_report.holdout_net_returns,
+                optimization_applied=winner.get("optimization_applied", False),
+                optimization_gain=winner.get("optimization_gain", 0.0),
             )
 
             sha = self.git_ledger.commit_strategy(
@@ -1274,6 +1342,8 @@ class _OptimizationState:
                 holdout_evaluated=ho_evaluated,
                 holdout_observed_sharpe=rp.holdout_metrics.sharpe_ratio if ho_evaluated else None,
                 holdout_returns=rp.holdout_net_returns if ho_evaluated else None,
+                optimization_applied=False,
+                optimization_gain=0.0,
             )
 
         for ev in candidate_results:
@@ -1588,6 +1658,8 @@ class _OptimizationState:
 
         sha: str | None = None
         if winner is not None:
+            if settings.enable_numeric_optimization:
+                self._optimize_winner_params(k, winner)
             sha = self.commit_winner(k, winner)
 
         self.record_candidates(k, candidate_results, winner, sha)
