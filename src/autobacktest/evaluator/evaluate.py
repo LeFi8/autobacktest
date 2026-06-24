@@ -219,6 +219,8 @@ def _in_sample_objective(
     generate_signals_fn: Any,
     flat_config: dict[str, Any],
     prices: pd.DataFrame,
+    _wf_windows: list[Any] | None = None,
+    _asset_returns: pd.DataFrame | None = None,
 ) -> tuple[float, float, pd.Series]:
     """Compute in-sample objective metrics for a given config.
 
@@ -227,23 +229,34 @@ def _in_sample_objective(
     This is the cheap primitive used by the pre-screen (Phase 3) and
     Optuna parameter search (Phase 4).
 
+    When ``_wf_windows`` and/or ``_asset_returns`` are provided, the
+    expensive computation of walk-forward windows and asset returns
+    is skipped — useful when calling this function repeatedly during
+    Optuna parameter optimization.
+
     Args:
         generate_signals_fn: Strategy signal generation function.
         flat_config: Flat strategy configuration dict.
         prices: Full price DataFrame (in-sample + holdout).
+        _wf_windows: Pre-computed walk-forward windows for the in-sample
+            period.  When ``None`` (default), computed from *prices*.
+        _asset_returns: Pre-computed asset returns (``pct_change().fillna(0)``).
+            When ``None`` (default), computed from *prices*.
 
     Returns:
         tuple: ``(sharpe, annualized_return, net_returns)`` where
         ``net_returns`` is the walk-forward test-period net returns series.
     """
     tickers = flat_config.get("universe", [])
-    in_sample_idx, _ = partition_holdout_data(prices.index, holdout_years=settings.default_holdout_years)
-    wf_windows = generate_walk_forward_windows(in_sample_idx, train_years=5, test_years=1)
-    if not wf_windows:
+    if _wf_windows is None:
+        in_sample_idx, _ = partition_holdout_data(prices.index, holdout_years=settings.default_holdout_years)
+        _wf_windows = generate_walk_forward_windows(in_sample_idx, train_years=5, test_years=1)
+    if not _wf_windows:
         return 0.0, 0.0, pd.Series(dtype=float)
 
-    wf_weights = _generate_wf_weights(prices, generate_signals_fn, flat_config, tickers, wf_windows)
-    _asset_returns = prices.pct_change().fillna(0.0)
+    wf_weights = _generate_wf_weights(prices, generate_signals_fn, flat_config, tickers, _wf_windows)
+    if _asset_returns is None:
+        _asset_returns = prices.pct_change().fillna(0.0)
 
     wf_portfolio_returns, _wf_equity, wf_daily_weights = run_vectorized_backtest(
         prices,
@@ -262,8 +275,8 @@ def _in_sample_objective(
         impact_coef=flat_config.get("impact_coef", 0.0),
     )
 
-    wf_start = wf_windows[0][2]
-    wf_end = wf_windows[-1][3]
+    wf_start = _wf_windows[0][2]
+    wf_end = _wf_windows[-1][3]
     wf_net_returns = wf_net_returns.loc[wf_start:wf_end]
 
     if wf_net_returns.empty:

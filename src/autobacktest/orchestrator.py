@@ -1183,8 +1183,7 @@ class _OptimizationState:
             return
         finally:
             for p in [temp_py, temp_yaml]:
-                if p.exists():
-                    p.unlink()
+                p.unlink(missing_ok=True)
 
         if not improved:
             winner["optimization_applied"] = False
@@ -1225,7 +1224,10 @@ class _OptimizationState:
         orig_metric = _get_metric_value(winner["_report"], self.target_metric)
         opt_metric = _get_metric_value(opt_report, self.target_metric)
 
-        if sel.accepted and cnf.accepted and opt_metric >= orig_metric:
+        orig_val = orig_metric if not pd.isna(orig_metric) else -float("inf")
+        opt_val = opt_metric if not pd.isna(opt_metric) else -float("inf")
+
+        if sel.accepted and cnf.accepted and opt_val >= orig_val:
             winner["_report"] = opt_report
             winner["_returns"] = opt_returns
             winner["_new_config"] = opt_flat
@@ -2165,10 +2167,8 @@ def _validate_candidate(
             str(result.detail) if result.detail else None,
         )
     finally:
-        if temp_py.exists():
-            temp_py.unlink()
-        if temp_yaml.exists():
-            temp_yaml.unlink()
+        temp_py.unlink(missing_ok=True)
+        temp_yaml.unlink(missing_ok=True)
 
 
 def _generate_candidates(
@@ -2243,8 +2243,7 @@ def _eval_single_candidate(
         return None, None, None, str(e)
     finally:
         for p in [temp_py, temp_yaml]:
-            if p.exists():
-                p.unlink()
+            p.unlink(missing_ok=True)
 
 
 def _deflate(

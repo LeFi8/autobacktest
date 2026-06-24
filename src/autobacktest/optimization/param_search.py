@@ -102,13 +102,26 @@ def optimize_numeric_params(
     """
     import optuna.samplers
 
+    from autobacktest.config import settings
     from autobacktest.evaluator.evaluate import _in_sample_objective
+    from autobacktest.evaluator.holdout import (
+        partition_holdout_data as _partition_holdout_data,
+    )
+    from autobacktest.evaluator.walk_forward import (
+        generate_walk_forward_windows as _generate_walk_forward_windows,
+    )
 
     search_space = _build_optuna_space(flat_config, exclude=exclude)
     if not search_space:
         return flat_config, 0.0, False
 
-    original_sharpe, _, _ = _in_sample_objective(generate_signals_fn, flat_config, prices)
+    in_sample_idx, _ = _partition_holdout_data(prices.index, holdout_years=settings.default_holdout_years)
+    wf_windows = _generate_walk_forward_windows(in_sample_idx, train_years=5, test_years=1)
+    asset_returns = prices.pct_change().fillna(0.0)
+
+    original_sharpe, _, _ = _in_sample_objective(
+        generate_signals_fn, flat_config, prices, _wf_windows=wf_windows, _asset_returns=asset_returns
+    )
     if pd.isna(original_sharpe):
         original_sharpe = 0.0
 
@@ -132,7 +145,9 @@ def optimize_numeric_params(
             ):
                 trial_config["params"][name] = val
         try:
-            sh, _, _ = _in_sample_objective(generate_signals_fn, trial_config, prices)
+            sh, _, _ = _in_sample_objective(
+                generate_signals_fn, trial_config, prices, _wf_windows=wf_windows, _asset_returns=asset_returns
+            )
             if pd.isna(sh):
                 return -float("inf")
             return float(sh)
@@ -170,7 +185,7 @@ def build_optimized_yaml(optimized_config: dict[str, Any]) -> str:
     params = optimized_config.get("params", {})
     if isinstance(params, dict) and params:
         yaml_dict["params"] = params
-    return yaml.dump(yaml_dict, default_flow_style=False, sort_keys=False)
+    return yaml.safe_dump(yaml_dict, default_flow_style=False, sort_keys=False)
 
 
 def _apply_optimized_config(
