@@ -127,6 +127,7 @@ class Settings(BaseModel):
     litellm_debug: bool = _env_bool("AUTOBACKTEST_LITELLM_DEBUG", "False")
     llm_request_timeout: float = _env_float("AUTOBACKTEST_LLM_REQUEST_TIMEOUT", "600.0")
     llm_prompt_cache: bool = _env_bool("AUTOBACKTEST_LLM_PROMPT_CACHE", "true")
+    llm_num_retries: int = _env_int("AUTOBACKTEST_LLM_NUM_RETRIES", "2")
 
     # --- BACKTEST WINDOWS ---
     default_start_date: str = _env_str("AUTOBACKTEST_DEFAULT_START_DATE", "2015-01-01")

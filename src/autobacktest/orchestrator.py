@@ -891,7 +891,7 @@ class _OptimizationState:
             effective_n = min(effective_n, min(3, settings.n_candidates))
         n = effective_n
         raw_edits = _generate_candidates(self.provider, ctx, n)
-        n_gen = sum(1 for e in raw_edits if e is not None)
+        n_gen = sum(1 for edit, _err in raw_edits if edit is not None)
         progress.update(
             progress_task,
             description=(
@@ -900,14 +900,21 @@ class _OptimizationState:
         )
 
         candidate_results: list[dict[str, Any]] = []
-        for i, edit in enumerate(raw_edits):
+        for i, (edit, error_detail) in enumerate(raw_edits):
             directive = (
                 CANDIDATE_DIRECTIVES[i % len(CANDIDATE_DIRECTIVES)]
                 if settings.enable_candidate_directives and ctx.mode == "explore"
                 else ""
             )
             if edit is None:
-                candidate_results.append({"edit": None, "directive": directive, "llm_error": True})
+                candidate_results.append(
+                    {
+                        "edit": None,
+                        "directive": directive,
+                        "llm_error": True,
+                        "detail": error_detail or "LLM failed to return a valid candidate.",
+                    }
+                )
             else:
                 ev = self._process_raw_edit(k, edit, directive, ctx)
                 candidate_results.append(ev)
@@ -1907,7 +1914,14 @@ def run_optimization(
                     break
 
         if state.n_llm_ok == 0:
-            raise RuntimeError("Zero successful LLM calls during optimization run. All iterations failed.")
+            error_detail = ""
+            if state.last_attempt:
+                detail = state.last_attempt.get("detail", "")
+                stage = state.last_attempt.get("stage", "unknown")
+                error_detail = f" Last failure stage={stage}: {detail[:200]}" if detail else ""
+            raise RuntimeError(
+                f"Zero successful LLM calls during optimization run. All iterations failed.{error_detail}"
+            )
     except KeyboardInterrupt:
         if state.incumbent is None:
             raise
@@ -2175,7 +2189,7 @@ def _generate_candidates(
     provider: LLMProvider,
     ctx: AgentContext,
     n: int,
-) -> list[AgentEdit | None]:
+) -> list[tuple[AgentEdit | None, str | None]]:
     """Generate N candidate edits in parallel.
 
     Delegates to ``optimization.candidate.generate_candidates``.
@@ -2186,7 +2200,7 @@ def _generate_candidates(
         n: Number of parallel candidates.
 
     Returns:
-        list[AgentEdit | None]: One entry per slot.
+        list[tuple[AgentEdit | None, str | None]]: One entry per slot.
     """
     return generate_candidates(provider, ctx, n)
 

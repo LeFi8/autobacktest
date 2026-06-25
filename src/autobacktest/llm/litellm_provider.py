@@ -129,6 +129,10 @@ def _extract_usage_stats(
 def _classify_llm_error(e: Exception) -> tuple[str | None, bool]:
     """Return ``(finish_reason, retryable)`` for an exception caught during generation.
 
+    Handles both native litellm exceptions and generic ``Exception`` wrappers
+    that may occur when optional dependencies (e.g. ``tenacity``) are missing
+    and litellm wraps the original error.
+
     Args:
         e: The exception to classify.
 
@@ -144,6 +148,7 @@ def _classify_llm_error(e: Exception) -> tuple[str | None, bool]:
     elif "length" in str(e).lower() or getattr(e, "finish_reason", None) == "length":
         finish_reason = "length"
 
+    # Native litellm exception types.
     if isinstance(
         e,
         (
@@ -153,6 +158,20 @@ def _classify_llm_error(e: Exception) -> tuple[str | None, bool]:
         ),
     ) or getattr(e, "status_code", None) in (400, 401, 403, 404):
         retryable = False
+        return finish_reason, retryable
+
+    # Fallback: string-based detection for wrapped/generic exceptions.
+    # When tenacity is missing or litellm wraps errors in a generic Exception,
+    # the original type information is lost.  Inspect the string representation.
+    detail = str(e).lower()
+    if retryable:
+        non_retryable_patterns = ("badrequesterror", "invalid_request_error", "authenticationerror", "notfounderror")
+        has_status_code = any(
+            f"status_code: {code}" in detail or f"status code: {code}" in detail
+            for code in ("400", "401", "403", "404")
+        )
+        if any(p in detail for p in non_retryable_patterns) or has_status_code:
+            retryable = False
 
     return finish_reason, retryable
 
@@ -197,6 +216,11 @@ class LiteLLMProvider(LLMProvider):
     def generate_edit(self, context: AgentContext) -> AgentEdit:
         """Call LiteLLM API to generate a structured strategy modification.
 
+        Tries response_format in descending order of structure:
+        1. Pydantic model (AgentEditResponse) when the model claims schema support.
+        2. ``{"type": "json_object"}`` as a lightweight fallback.
+        3. No response_format (raw prompt) as a last resort.
+
         Args:
             context: Immutable optimization loop context.
 
@@ -213,63 +237,95 @@ class LiteLLMProvider(LLMProvider):
         instance_override = self.max_tokens if self.max_tokens != env_limit else None
         run_max_tokens = _compute_run_max_tokens(self.model, messages, env_limit, instance_override)
 
-        try:
-            resp_format = AgentEditResponse if self.supports_schema else {"type": "json_object"}
-            response = litellm.completion(
-                model=self.model,
-                messages=messages,
-                response_format=resp_format,
-                temperature=self.temperature,
-                max_tokens=run_max_tokens,
-                request_timeout=settings.llm_request_timeout,
-                num_retries=2,
-            )
+        # Build ordered list of response_format candidates to try.
+        resp_format_candidates: list[object | None] = []
+        if self.supports_schema:
+            resp_format_candidates.append(AgentEditResponse)
+        resp_format_candidates.append({"type": "json_object"})
+        resp_format_candidates.append(None)
 
-            if not response.choices:
-                raise ValueError("LLM returned no choices.")
-
-            choice = response.choices[0]
-            content = choice.message.content
-            finish_reason = getattr(choice, "finish_reason", None)
-
-            if finish_reason == "length" or not content:
-                length_or_zero = len(content) if content else 0
-                raise ValueError(
-                    f"LLM generation stopped prematurely. "
-                    f"finish_reason: {finish_reason}. "
-                    f"content_length: {length_or_zero}"
+        last_exception: Exception | None = None
+        for resp_format in resp_format_candidates:
+            try:
+                response = litellm.completion(
+                    model=self.model,
+                    messages=messages,
+                    response_format=resp_format,
+                    temperature=self.temperature,
+                    max_tokens=run_max_tokens,
+                    request_timeout=settings.llm_request_timeout,
+                    num_retries=settings.llm_num_retries,
                 )
 
-            parsed_response = AgentEditResponse.model_validate_json(_extract_clean_json(content))
-            prompt_tokens, completion_tokens, total_tokens, cached_tokens, cost = _extract_usage_stats(response)
+                if not response.choices:
+                    raise ValueError("LLM returned no choices.")
 
-            logger.debug(
-                "LLM call complete: prompt=%d completion=%d cached=%d cost=$%.4f",
-                prompt_tokens,
-                completion_tokens,
-                cached_tokens,
-                cost,
-            )
+                choice = response.choices[0]
+                content = choice.message.content
+                finish_reason = getattr(choice, "finish_reason", None)
 
-            return AgentEdit(
-                strategy_code=parsed_response.strategy_code,
-                config_yaml=parsed_response.config_yaml,
-                reasoning=parsed_response.reasoning,
-                raw_response=content,
-                lessons_text=parsed_response.lessons_text,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                total_tokens=total_tokens,
-                cost=cost,
-                cached_tokens=cached_tokens,
-            )
+                if finish_reason == "length" or not content:
+                    length_or_zero = len(content) if content else 0
+                    raise ValueError(
+                        f"LLM generation stopped prematurely. "
+                        f"finish_reason: {finish_reason}. "
+                        f"content_length: {length_or_zero}"
+                    )
 
-        except Exception as e:
-            finish_reason, retryable = _classify_llm_error(e)
+                parsed_response = AgentEditResponse.model_validate_json(_extract_clean_json(content))
+                prompt_tokens, completion_tokens, total_tokens, cached_tokens, cost = _extract_usage_stats(response)
+
+                logger.debug(
+                    "LLM call complete: prompt=%d completion=%d cached=%d cost=$%.4f",
+                    prompt_tokens,
+                    completion_tokens,
+                    cached_tokens,
+                    cost,
+                )
+
+                return AgentEdit(
+                    strategy_code=parsed_response.strategy_code,
+                    config_yaml=parsed_response.config_yaml,
+                    reasoning=parsed_response.reasoning,
+                    raw_response=content,
+                    lessons_text=parsed_response.lessons_text,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                    cost=cost,
+                    cached_tokens=cached_tokens,
+                )
+
+            except Exception as e:
+                last_exception = e
+                # Only fall back on response_format-related 400 errors.
+                is_response_format_error = (
+                    getattr(e, "status_code", None) == 400 and "response_format" in str(e).lower()
+                )
+                if is_response_format_error:
+                    logger.warning(
+                        "response_format %s rejected by provider (%s), falling back",
+                        resp_format,
+                        str(e)[:120],
+                    )
+                    continue
+                # Non-response-format errors should not trigger fallback.
+                break
+
+        # All fallbacks exhausted or a non-fallback error occurred.
+        if last_exception is not None:
+            finish_reason, retryable = _classify_llm_error(last_exception)
             raise LLMError(
                 provider="litellm",
                 model=self.model,
-                detail=str(e),
+                detail=str(last_exception),
                 retryable=retryable,
                 finish_reason=finish_reason,
-            ) from e
+            ) from last_exception
+
+        raise LLMError(
+            provider="litellm",
+            model=self.model,
+            detail="All response_format fallbacks exhausted without a valid response.",
+            retryable=False,
+        )
