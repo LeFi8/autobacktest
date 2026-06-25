@@ -84,6 +84,10 @@ class EvaluationReport:
     benchmark_in_sample_metrics: WindowReport | None = None
     benchmark_holdout_metrics: WindowReport | None = None
 
+    # Pre-screen rejection flag — when True the expensive statistical battery
+    # (holdout, stress, MC bootstrap, DSR) was skipped.
+    prescreen_rejected: bool = False
+
     def to_dict(self) -> dict[str, Any]:
         """Convert the report to a dictionary representation."""
         d = asdict(self)

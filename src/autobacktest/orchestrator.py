@@ -37,7 +37,12 @@ from autobacktest.evaluator.deflated_sharpe import (
     calculate_effective_trials,
     calculate_psr_dsr,
 )
-from autobacktest.evaluator.evaluate import _CacheProtocol, compute_dataset_hash, evaluate_strategy_detailed
+from autobacktest.evaluator.evaluate import (
+    _CacheProtocol,
+    _load_evaluation_data,
+    compute_dataset_hash,
+    evaluate_strategy_detailed,
+)
 from autobacktest.evaluator.report import EvaluationReport
 from autobacktest.gate import TargetMetric, _get_compare_metric_val, confirm, select
 from autobacktest.ledger.event_log import EventLog
@@ -51,6 +56,11 @@ from autobacktest.optimization.candidate import (
 )
 from autobacktest.optimization.eval_manager import (
     load_signals,
+)
+from autobacktest.optimization.param_search import (
+    _apply_optimized_config,
+    build_optimized_yaml,
+    optimize_numeric_params,
 )
 from autobacktest.optimization.persistence import (
     deflate_holdout,
@@ -398,6 +408,8 @@ class _OptimizationState:
             holdout_evaluated=True,
             holdout_observed_sharpe=baseline_report.holdout_metrics.sharpe_ratio,
             holdout_returns=baseline_report.holdout_net_returns,
+            optimization_applied=False,
+            optimization_gain=0.0,
         )
 
         baseline_warnings = _audit_baseline(self.incumbent, self.config_obj)
@@ -871,7 +883,13 @@ class _OptimizationState:
         Returns:
             List of candidate result dicts with validation metadata.
         """
-        n = getattr(settings, "n_candidates", 3)
+        if self.mode == "exploit":
+            effective_n = max(min(3, settings.n_candidates), settings.n_candidates // 2)
+        else:
+            effective_n = settings.n_candidates
+        if self.consecutive_no_accept >= settings.stuck_threshold // 2:
+            effective_n = min(effective_n, min(3, settings.n_candidates))
+        n = effective_n
         raw_edits = _generate_candidates(self.provider, ctx, n)
         n_gen = sum(1 for e in raw_edits if e is not None)
         progress.update(
@@ -1118,6 +1136,119 @@ class _OptimizationState:
             return top_ev, peeks_this_iteration
         return None, peeks_this_iteration
 
+    def _optimize_winner_params(self, k: int, winner: dict[str, Any]) -> None:
+        """Tune the winner's numeric params in-sample, then re-validate OOS.
+
+        Optuna optimizes the numeric config on the *in-sample* window only. A
+        tuned config is never trusted on its in-sample gain alone: it is
+        re-evaluated end-to-end (full statistical battery + holdout) and pushed
+        back through the ``select`` + ``confirm`` gates. The winner adopts the
+        tuned config only when both gates pass *and* the re-evaluated target
+        metric beats the original winner's — otherwise the original winner is
+        kept untouched. This keeps overfit, never-OOS-validated parameters out
+        of commits and keeps the recorded metrics consistent with the committed
+        config. Any failure is logged and the original winner is preserved.
+        """
+        strategy_code = winner["edit"].strategy_code
+        config_yaml = winner["edit"].config_yaml
+
+        temp_name = f"opt_{uuid.uuid4().hex}"
+        temp_py = self.strategies_dir / f"{temp_name}.py"
+        temp_yaml = self.configs_dir / f"{temp_name}.yaml"
+        try:
+            temp_py.write_text(strategy_code, encoding="utf-8")
+            temp_yaml.write_text(config_yaml, encoding="utf-8")
+
+            candidate_fn = load_signals(temp_py)
+            new_config = StrategyConfig.from_yaml(temp_yaml).model_dump()
+            prices, _ = _load_evaluation_data(
+                new_config, self.start_date, self.end_date, _prices=None, _bench_returns=None
+            )
+
+            exclude_raw = settings.numeric_opt_exclude.strip()
+            exclude_set = {x.strip() for x in exclude_raw.split(",") if x.strip()} if exclude_raw else None
+
+            opt_config, _best_sharpe, improved = optimize_numeric_params(
+                candidate_fn,
+                new_config,
+                prices,
+                n_trials=settings.numeric_opt_trials,
+                seed=settings.numeric_opt_seed + k,
+                exclude=exclude_set,
+            )
+        except Exception:
+            logger.exception("Iter %d: Optuna optimization failed, keeping original winner", k)
+            winner["optimization_applied"] = False
+            winner["optimization_gain"] = 0.0
+            return
+        finally:
+            for p in [temp_py, temp_yaml]:
+                p.unlink(missing_ok=True)
+
+        if not improved:
+            winner["optimization_applied"] = False
+            winner["optimization_gain"] = 0.0
+            return
+
+        # The tuned config must earn its place: re-evaluate it end-to-end
+        # (battery + holdout) and re-run the gates before it can replace the winner.
+        opt_yaml = build_optimized_yaml(opt_config)
+        opt_report, opt_returns, opt_flat, err = _eval_single_candidate(
+            self.strategy_name,
+            strategy_code,
+            opt_yaml,
+            self.strategies_dir,
+            self.configs_dir,
+            self.start_date,
+            self.end_date,
+            self._eval_cache,
+        )
+        if err or opt_report is None or opt_returns is None or opt_flat is None:
+            logger.warning("Iter %d: tuned-config re-evaluation failed (%s); keeping original winner", k, err)
+            winner["optimization_applied"] = False
+            winner["optimization_gain"] = 0.0
+            return
+
+        # Re-gate exactly like a candidate: in-sample DSR + select, then holdout DSR + confirm.
+        _deflate(
+            opt_report,
+            opt_returns,
+            self.ledger,
+            cscv_blocks=opt_flat.get("cscv_blocks", 10),
+            embargo_days=opt_flat.get("cscv_embargo_days", 5),
+        )
+        sel = select(opt_report, baseline=self.incumbent, target_metric=self.target_metric, config=opt_flat)
+        _deflate_holdout(opt_report, self.ledger)
+        cnf = confirm(opt_report, baseline=self.incumbent, config=opt_flat)
+
+        orig_metric = _get_metric_value(winner["_report"], self.target_metric)
+        opt_metric = _get_metric_value(opt_report, self.target_metric)
+
+        orig_val = orig_metric if not pd.isna(orig_metric) else -float("inf")
+        opt_val = opt_metric if not pd.isna(opt_metric) else -float("inf")
+
+        if sel.accepted and cnf.accepted and opt_val >= orig_val:
+            winner["_report"] = opt_report
+            winner["_returns"] = opt_returns
+            winner["_new_config"] = opt_flat
+            gain = opt_metric - orig_metric
+            _apply_optimized_config(winner, opt_config, improved=True, gain=gain)
+            logger.info(
+                "Iter %d: Optuna-tuned config adopted (%s %.4f -> %.4f, gain=%.4f)",
+                k,
+                self.target_metric.value,
+                orig_metric,
+                opt_metric,
+                gain,
+            )
+        else:
+            reason = "select" if not sel.accepted else ("confirm" if not cnf.accepted else "no metric gain")
+            logger.info(
+                "Iter %d: Optuna-tuned config rejected at re-validation (%s); keeping original winner", k, reason
+            )
+            winner["optimization_applied"] = False
+            winner["optimization_gain"] = 0.0
+
     def commit_winner(self, k: int, winner: dict[str, Any]) -> str | None:
         """Commit the winning strategy to git and update the incumbent state.
 
@@ -1171,6 +1302,8 @@ class _OptimizationState:
                 holdout_evaluated=True,
                 holdout_observed_sharpe=w_report.holdout_metrics.sharpe_ratio,
                 holdout_returns=w_report.holdout_net_returns,
+                optimization_applied=winner.get("optimization_applied", False),
+                optimization_gain=winner.get("optimization_gain", 0.0),
             )
 
             sha = self.git_ledger.commit_strategy(
@@ -1268,6 +1401,8 @@ class _OptimizationState:
                 holdout_evaluated=ho_evaluated,
                 holdout_observed_sharpe=rp.holdout_metrics.sharpe_ratio if ho_evaluated else None,
                 holdout_returns=rp.holdout_net_returns if ho_evaluated else None,
+                optimization_applied=False,
+                optimization_gain=0.0,
             )
 
         for ev in candidate_results:
@@ -1582,6 +1717,8 @@ class _OptimizationState:
 
         sha: str | None = None
         if winner is not None:
+            if settings.enable_numeric_optimization:
+                self._optimize_winner_params(k, winner)
             sha = self.commit_winner(k, winner)
 
         self.record_candidates(k, candidate_results, winner, sha)
@@ -2030,10 +2167,8 @@ def _validate_candidate(
             str(result.detail) if result.detail else None,
         )
     finally:
-        if temp_py.exists():
-            temp_py.unlink()
-        if temp_yaml.exists():
-            temp_yaml.unlink()
+        temp_py.unlink(missing_ok=True)
+        temp_yaml.unlink(missing_ok=True)
 
 
 def _generate_candidates(
@@ -2108,8 +2243,7 @@ def _eval_single_candidate(
         return None, None, None, str(e)
     finally:
         for p in [temp_py, temp_yaml]:
-            if p.exists():
-                p.unlink()
+            p.unlink(missing_ok=True)
 
 
 def _deflate(

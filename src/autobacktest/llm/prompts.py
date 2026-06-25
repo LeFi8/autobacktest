@@ -1,5 +1,6 @@
 """System and user prompts construction for the LLM strategy optimizer."""
 
+import difflib
 import re
 from typing import Any
 
@@ -256,6 +257,44 @@ def _text_block(text: str, cache: bool = False) -> dict[str, Any]:
     return block
 
 
+def _diff_code(old: str, new: str, context_lines: int = 3) -> str:
+    """Produce a unified diff between two code strings.
+
+    Returns empty string if either input is empty.
+
+    Args:
+        old: Baseline (incumbent) source code.
+        new: Candidate (failed) source code to compare.
+        context_lines: Number of context lines around each change (default 3).
+
+    Returns:
+        Unified diff string with `---`/`+++` markers, or empty string.
+    """
+    if not old or not new:
+        return ""
+    old_lines = old.splitlines(keepends=True)
+    new_lines = new.splitlines(keepends=True)
+    diff = difflib.unified_diff(old_lines, new_lines, fromfile="incumbent", tofile="candidate", n=context_lines)
+    return "".join(diff)
+
+
+def _diff_config(old_yaml: str, new_yaml: str) -> str:
+    """Produce a unified diff between two config YAML strings.
+
+    Returns empty string if either input is empty or if the configs are identical.
+
+    Args:
+        old_yaml: Baseline (incumbent) config YAML.
+        new_yaml: Candidate (failed) config YAML to compare.
+
+    Returns:
+        Unified diff string with ``---``/``+++`` markers, or empty string.
+    """
+    if not old_yaml or not new_yaml:
+        return ""
+    return _diff_code(old_yaml, new_yaml)
+
+
 def _format_previous_attempt_hint(error_code: str, detail: str) -> str:
     """Return a contextual remediation hint for a specific validation error.
 
@@ -492,16 +531,23 @@ def _format_attempt_history(context: AgentContext) -> str:
     return f"\n## Attempt History\n{table_str}{omit_note}\n"
 
 
-def _format_previous_validation(attempt: dict[str, Any], lines: list[str]) -> None:
+def _format_previous_validation(
+    attempt: dict[str, Any],
+    lines: list[str],
+    incumbent_code: str = "",
+    incumbent_config: str = "",
+) -> None:
     """Append validation failure details to the previous attempt section.
 
-    Formats the error code, detail, and failed code/config. For
+    Formats the error code, detail, and a diff of the failed code/config. For
     ``lookahead_detected`` errors, includes an extended explanation
     of common causes and fixes.
 
     Args:
         attempt: Attempt record dict with validation failure details.
         lines: Mutable list of markdown lines to append to.
+        incumbent_code: The incumbent strategy code to diff against.
+        incumbent_config: The incumbent config YAML to diff against.
     """
     error_code = attempt.get("error_code", "")
     detail = attempt.get("detail", "")
@@ -521,43 +567,89 @@ def _format_previous_validation(attempt: dict[str, Any], lines: list[str]) -> No
     code = attempt.get("candidate_strategy_code", "")
     config = attempt.get("candidate_config_yaml", "")
     if code:
-        lines.append(f"\n**Failed strategy code:**\n```python\n{code}\n```")
+        diff = _diff_code(incumbent_code, code)
+        if diff:
+            lines.append(f"\n**Failed strategy code (diff vs incumbent):**\n```diff\n{diff}\n```")
+        else:
+            lines.append(f"\n**Failed strategy code:**\n```python\n{code}\n```")
     if config:
-        lines.append(f"\n**Failed config:**\n```yaml\n{config}\n```")
+        config_diff = _diff_config(incumbent_config, config)
+        if config_diff:
+            lines.append(f"\n**Failed config (diff vs incumbent):**\n```diff\n{config_diff}\n```")
+        else:
+            lines.append(f"\n**Failed config:**\n```yaml\n{config}\n```")
 
 
-def _format_previous_diversity_config(attempt: dict[str, Any], lines: list[str]) -> None:
+def _format_previous_diversity_config(
+    attempt: dict[str, Any],
+    lines: list[str],
+    incumbent_code: str = "",
+    incumbent_config: str = "",
+) -> None:
     """Append config diversity gate failure details to the previous attempt section.
 
     Args:
         attempt: Attempt record dict with config diversity rejection details.
         lines: Mutable list of markdown lines to append to.
+        incumbent_code: The incumbent strategy code to diff against.
+        incumbent_config: The incumbent config YAML to diff against.
     """
     detail = attempt.get("detail", "")
     lines.append(f"**Detail:** {detail}")
+    code = attempt.get("candidate_strategy_code", "")
+    if code:
+        code_diff = _diff_code(incumbent_code, code)
+        if code_diff:
+            lines.append(f"\n**Rejected strategy code (diff vs incumbent):**\n```diff\n{code_diff}\n```")
+        else:
+            lines.append(f"\n**Rejected strategy code:**\n```python\n{code}\n```")
     config = attempt.get("candidate_config_yaml", "")
     if config:
-        lines.append(f"\n**Rejected config:**\n```yaml\n{config}\n```")
+        config_diff = _diff_config(incumbent_config, config)
+        if config_diff:
+            lines.append(f"\n**Rejected config (diff vs incumbent):**\n```diff\n{config_diff}\n```")
+        else:
+            lines.append(f"\n**Rejected config:**\n```yaml\n{config}\n```")
 
 
-def _format_previous_eval_error(attempt: dict[str, Any], lines: list[str]) -> None:
+def _format_previous_eval_error(
+    attempt: dict[str, Any],
+    lines: list[str],
+    incumbent_code: str = "",
+    incumbent_config: str = "",
+) -> None:
     """Append evaluation error details to the previous attempt section.
 
     Args:
         attempt: Attempt record dict with evaluation error details.
         lines: Mutable list of markdown lines to append to.
+        incumbent_code: The incumbent strategy code to diff against.
+        incumbent_config: The incumbent config YAML to diff against.
     """
     detail = attempt.get("detail", "")
     lines.append(f"**Error:** {detail}")
     code = attempt.get("candidate_strategy_code", "")
     config = attempt.get("candidate_config_yaml", "")
     if code:
-        lines.append(f"\n**Failed strategy code:**\n```python\n{code}\n```")
+        diff = _diff_code(incumbent_code, code)
+        if diff:
+            lines.append(f"\n**Failed strategy code (diff vs incumbent):**\n```diff\n{diff}\n```")
+        else:
+            lines.append(f"\n**Failed strategy code:**\n```python\n{code}\n```")
     if config:
-        lines.append(f"\n**Failed config:**\n```yaml\n{config}\n```")
+        config_diff = _diff_config(incumbent_config, config)
+        if config_diff:
+            lines.append(f"\n**Failed config (diff vs incumbent):**\n```diff\n{config_diff}\n```")
+        else:
+            lines.append(f"\n**Failed config:**\n```yaml\n{config}\n```")
 
 
-def _format_previous_diversity_returns(attempt: dict[str, Any], lines: list[str]) -> None:
+def _format_previous_diversity_returns(
+    attempt: dict[str, Any],
+    lines: list[str],
+    incumbent_code: str = "",
+    incumbent_config: str = "",
+) -> None:
     """Append returns correlation diversity failure details to the previous attempt section.
 
     Includes the detail message, observed metrics, and the rejected config YAML.
@@ -565,6 +657,8 @@ def _format_previous_diversity_returns(attempt: dict[str, Any], lines: list[str]
     Args:
         attempt: Attempt record dict with returns diversity rejection details.
         lines: Mutable list of markdown lines to append to.
+        incumbent_code: The incumbent strategy code to diff against.
+        incumbent_config: The incumbent config YAML to diff against.
     """
     detail = attempt.get("detail", "")
     lines.append(f"**Detail:** {detail}")
@@ -573,20 +667,38 @@ def _format_previous_diversity_returns(attempt: dict[str, Any], lines: list[str]
         lines.append("**Observed metrics:**")
         for k, v in metrics.items():
             lines.append(f"  - {k}: {v}")
+    code = attempt.get("candidate_strategy_code", "")
+    if code:
+        code_diff = _diff_code(incumbent_code, code)
+        if code_diff:
+            lines.append(f"\n**Rejected strategy code (diff vs incumbent):**\n```diff\n{code_diff}\n```")
+        else:
+            lines.append(f"\n**Rejected strategy code:**\n```python\n{code}\n```")
     config = attempt.get("candidate_config_yaml", "")
     if config:
-        lines.append(f"\n**Rejected config:**\n```yaml\n{config}\n```")
+        config_diff = _diff_config(incumbent_config, config)
+        if config_diff:
+            lines.append(f"\n**Rejected config (diff vs incumbent):**\n```diff\n{config_diff}\n```")
+        else:
+            lines.append(f"\n**Rejected config:**\n```yaml\n{config}\n```")
 
 
-def _format_previous_gate(attempt: dict[str, Any], lines: list[str]) -> None:
+def _format_previous_gate(
+    attempt: dict[str, Any],
+    lines: list[str],
+    incumbent_code: str = "",
+    incumbent_config: str = "",
+) -> None:
     """Append gate rejection details to the previous attempt section.
 
     Includes rejection reason, failed gate name, candidate metrics,
-    and the failed code/config.
+    and the diff of the failed code/config.
 
     Args:
         attempt: Attempt record dict with gate rejection details.
         lines: Mutable list of markdown lines to append to.
+        incumbent_code: The incumbent strategy code to diff against.
+        incumbent_config: The incumbent config YAML to diff against.
     """
     rejection_reason = attempt.get("rejection_reason", "")
     failed_gate = attempt.get("failed_gate", "")
@@ -600,9 +712,17 @@ def _format_previous_gate(attempt: dict[str, Any], lines: list[str]) -> None:
     code = attempt.get("candidate_strategy_code", "")
     config = attempt.get("candidate_config_yaml", "")
     if code:
-        lines.append(f"\n**Failed strategy code:**\n```python\n{code}\n```")
+        diff = _diff_code(incumbent_code, code)
+        if diff:
+            lines.append(f"\n**Failed strategy code (diff vs incumbent):**\n```diff\n{diff}\n```")
+        else:
+            lines.append(f"\n**Failed strategy code:**\n```python\n{code}\n```")
     if config:
-        lines.append(f"\n**Failed config:**\n```yaml\n{config}\n```")
+        config_diff = _diff_config(incumbent_config, config)
+        if config_diff:
+            lines.append(f"\n**Failed config (diff vs incumbent):**\n```diff\n{config_diff}\n```")
+        else:
+            lines.append(f"\n**Failed config:**\n```yaml\n{config}\n```")
 
 
 def _format_previous_attempt(context: AgentContext) -> str:
@@ -628,15 +748,25 @@ def _format_previous_attempt(context: AgentContext) -> str:
     lines: list[str] = ["## Previous Attempt Result", f"**Stage:** {stage}"]
 
     if stage == "validation":
-        _format_previous_validation(attempt, lines)
+        _format_previous_validation(
+            attempt, lines, incumbent_code=context.strategy_code, incumbent_config=context.config_yaml
+        )
     elif stage == "diversity_config":
-        _format_previous_diversity_config(attempt, lines)
+        _format_previous_diversity_config(
+            attempt, lines, incumbent_code=context.strategy_code, incumbent_config=context.config_yaml
+        )
     elif stage == "eval_error":
-        _format_previous_eval_error(attempt, lines)
+        _format_previous_eval_error(
+            attempt, lines, incumbent_code=context.strategy_code, incumbent_config=context.config_yaml
+        )
     elif stage == "diversity_returns":
-        _format_previous_diversity_returns(attempt, lines)
+        _format_previous_diversity_returns(
+            attempt, lines, incumbent_code=context.strategy_code, incumbent_config=context.config_yaml
+        )
     elif stage == "gate":
-        _format_previous_gate(attempt, lines)
+        _format_previous_gate(
+            attempt, lines, incumbent_code=context.strategy_code, incumbent_config=context.config_yaml
+        )
     else:
         detail = attempt.get("detail", attempt.get("rejection_reason", ""))
         if detail:
@@ -729,12 +859,14 @@ def _format_repair_request(context: AgentContext) -> str:
     err_code = req.get("error_code", "")
     err_detail = req.get("error_detail", "")
     hint = _format_previous_attempt_hint(err_code, err_detail)
+    diff = _diff_code(context.strategy_code, failed_code) if failed_code else ""
+    code_block = f"```diff\n{diff}\n```" if diff else f"```python\n{failed_code}\n```"
     return (
         f"## Repair Request\n"
         f"Your previous proposal failed preflight validation with the following error:\n"
         f"**Error Code:** {err_code}\n"
         f"**Error Detail:** {err_detail}\n\n"
-        f"**Failed Code:**\n```python\n{failed_code}\n```\n\n"
+        f"**Failed Code (diff vs incumbent):**\n{code_block}\n\n"
         f"**Failed Config:**\n```yaml\n{failed_config}\n```\n\n"
         f"**Instruction:** Fix ONLY this validation error. Make the minimal change. "
         f"Do not redesign the strategy.{hint}\n\n"
@@ -783,7 +915,9 @@ def build_messages(
     Args:
         context: Immutable context defining the current optimization state.
         cache_supported: When True, emit Anthropic-style cache_control breakpoints
-            on the stable prefix so the provider caches SYSTEM_PROMPT + program_text.
+            on the stable prefix so the provider caches SYSTEM_PROMPT + program_text
+            and the user-message stable body (iteration context, strategy code, config,
+            evaluation, instructions).
 
     Returns:
         List containing the system message and user message dicts.
@@ -873,47 +1007,51 @@ def build_messages(
 
     last_iteration_failures_section = _format_last_iteration_failures(context)
 
-    user_content = f"""{repair_request_section}## Iteration
-Current Loop Iteration: {context.iteration}
+    stable_body = (
+        f"## Iteration\n"
+        f"Current Loop Iteration: {context.iteration}\n\n"
+        f"{mode_section}"
+        f"\n\n## Lessons\n"
+        f"{injected_lessons}"
+        f"{warning_str}"
+        f"\n## Current Strategy Code\n"
+        f"```python\n{context.strategy_code}\n```\n\n"
+        f"## Current Config\n"
+        f"```yaml\n{context.config_yaml}\n```\n\n"
+        f"## Latest Evaluation\n"
+        f"{eval_report_str}{attempt_history_section}{explored_config_section}"
+        f"{diversity_warning}"
+        f"{last_iteration_failures_section}{previous_attempt_section}"
+        f"{performance_target_section}"
+        f"## Instructions\n"
+        f"Improve the strategy per the objective. Optimize parameters, signal\n"
+        f"logic, or asset weights.\n"
+        f"Your response must be returned as a JSON object containing the keys:\n"
+        f'- "strategy_code": Complete, updated Python source code for the strategy.\n'
+        f'- "config_yaml": Complete, updated YAML parameters content.\n'
+        f'- "reasoning": Concise explanation of the quantitative logic and changes.\n'
+        f'- "lessons_text": Complete, updated lessons markdown text incorporating learnings\n'
+        f"  from the previous and current iterations, pruning if needed.\n\n"
+        f"Strict JSON/Formatting Constraint: The response must be a single,\n"
+        f"valid JSON object. Do not wrap the JSON object in markdown code\n"
+        f"block markers (such as ```json or ```). The very first character\n"
+        f"immediately following the </think> tag must be the opening {{ of the\n"
+        f"JSON payload.\n"
+    )
 
-{mode_section}{directive_section}
+    dynamic_tail = f"{repair_request_section}{directive_section}"
 
-## Lessons
-{injected_lessons}
-{warning_str}
-## Current Strategy Code
-```python
-{context.strategy_code}
-```
+    if cache_supported:
+        user_content: list[dict[str, Any]] = [_text_block(stable_body, cache=True)]
+        if dynamic_tail:
+            user_content.append(_text_block(dynamic_tail))
+    else:
+        stripped = f"{stable_body}{dynamic_tail}".strip()
+        user_content = stripped  # type: ignore[assignment]
 
-## Current Config
-```yaml
-{context.config_yaml}
-```
-
-## Latest Evaluation
-{eval_report_str}{attempt_history_section}{explored_config_section}
-{diversity_warning}
-{last_iteration_failures_section}{previous_attempt_section}{performance_target_section}## Instructions
-Improve the strategy per the objective. Optimize parameters, signal
-logic, or asset weights.
-Your response must be returned as a JSON object containing the keys:
-- "strategy_code": Complete, updated Python source code for the strategy.
-- "config_yaml": Complete, updated YAML parameters content.
-- "reasoning": Concise explanation of the quantitative logic and changes.
-- "lessons_text": Complete, updated lessons markdown text incorporating learnings
-  from the previous and current iterations, pruning if needed.
-
-Strict JSON/Formatting Constraint: The response must be a single,
-valid JSON object. Do not wrap the JSON object in markdown code
-block markers (such as ```json or ```). The very first character
-immediately following the </think> tag must be the opening {{ of the
-JSON payload.
-"""
-
-    user_message = {
+    user_message: dict[str, Any] = {
         "role": "user",
-        "content": user_content.strip(),
+        "content": user_content,
     }
 
     return [system_message, user_message]

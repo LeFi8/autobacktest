@@ -70,7 +70,9 @@ CREATE TABLE IF NOT EXISTS attempts (
     created_at TEXT NOT NULL,
     holdout_evaluated INTEGER NOT NULL DEFAULT 0,
     holdout_observed_sharpe REAL,
-    holdout_returns_blob BLOB
+    holdout_returns_blob BLOB,
+    optimization_applied INTEGER NOT NULL DEFAULT 0,
+    optimization_gain REAL NOT NULL DEFAULT 0.0
 )
 """
 
@@ -144,6 +146,8 @@ class LedgerStore:
                 ("holdout_evaluated", "INTEGER NOT NULL DEFAULT 0"),
                 ("holdout_observed_sharpe", "REAL"),
                 ("holdout_returns_blob", "BLOB"),
+                ("optimization_applied", "INTEGER NOT NULL DEFAULT 0"),
+                ("optimization_gain", "REAL NOT NULL DEFAULT 0.0"),
             ]
             if self._ensure_columns(conn, "attempts", column_specs):
                 conn.execute("UPDATE attempts SET target_metric_value = observed_sharpe WHERE target_metric = 'sharpe'")
@@ -255,6 +259,8 @@ class LedgerStore:
         holdout_evaluated: bool = False,
         holdout_observed_sharpe: float | None = None,
         holdout_returns: pd.Series | None = None,
+        optimization_applied: bool = False,
+        optimization_gain: float = 0.0,
     ) -> int:
         """Serialize in-sample selection returns and insert an attempt record.
 
@@ -276,10 +282,12 @@ class LedgerStore:
                  committed, commit_sha, rejection_reason, report_json,
                  returns_blob, prompt_tokens, completion_tokens, total_tokens, cost,
                  created_at,
-                 holdout_evaluated, holdout_observed_sharpe, holdout_returns_blob)
+                 holdout_evaluated, holdout_observed_sharpe, holdout_returns_blob,
+                 optimization_applied, optimization_gain)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                     datetime('now'),
-                    ?, ?, ?)
+                    ?, ?, ?,
+                    ?, ?)
             """,
             (
                 run_id,
@@ -307,6 +315,8 @@ class LedgerStore:
                 int(holdout_evaluated),
                 holdout_observed_sharpe,
                 holdout_blob,
+                int(optimization_applied),
+                optimization_gain,
             ),
         )
         self._conn().commit()

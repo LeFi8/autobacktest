@@ -222,6 +222,7 @@ class LiteLLMProvider(LLMProvider):
                 temperature=self.temperature,
                 max_tokens=run_max_tokens,
                 request_timeout=settings.llm_request_timeout,
+                num_retries=2,
             )
 
             if not response.choices:
