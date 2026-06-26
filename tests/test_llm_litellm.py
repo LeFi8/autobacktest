@@ -202,3 +202,118 @@ def test_litellm_provider_malformed_json_raises_error(mock_completion: MagicMock
     mock_completion.return_value = _mock_response("garbage stuff {not json")
     with pytest.raises(LLMError):
         provider.generate_edit(_make_context())
+
+
+# --- _compute_run_max_tokens unit tests ---
+
+
+@patch("litellm.get_max_tokens")
+@patch("litellm.token_counter")
+def test_compute_run_max_tokens_basic(
+    mock_token_counter: MagicMock,
+    mock_get_max_tokens: MagicMock,
+) -> None:
+    """Test basic token computation with mocked litellm functions."""
+    from autobacktest.llm.litellm_provider import _compute_run_max_tokens
+
+    mock_token_counter.return_value = 1000
+    mock_get_max_tokens.return_value = 8192
+
+    result = _compute_run_max_tokens("gpt-4o", 4096, None)
+
+    # 8192 - 4096 (buffer) = 4096, capped by env_limit 4096
+    assert result == 4096
+
+
+@patch("litellm.get_max_tokens")
+@patch("litellm.token_counter")
+def test_compute_run_max_tokens_reasoning_model(
+    mock_token_counter: MagicMock,
+    mock_get_max_tokens: MagicMock,
+) -> None:
+    """Test with reasoning model (deepseek-v4-pro) - should NOT subtract prompt tokens."""
+    from autobacktest.llm.litellm_provider import _compute_run_max_tokens
+
+    mock_token_counter.return_value = 3637
+    mock_get_max_tokens.return_value = 8192
+
+    result = _compute_run_max_tokens("deepseek/deepseek-v4-pro", 4096, None)
+
+    # 8192 - 4096 (buffer) = 4096, capped by env_limit 4096
+    # Before fix: would be 8192 - 3637 - 4096 = 459 (too small)
+    assert result == 4096
+
+
+@patch("litellm.get_max_tokens")
+@patch("litellm.token_counter")
+def test_compute_run_max_tokens_instance_override(
+    mock_token_counter: MagicMock,
+    mock_get_max_tokens: MagicMock,
+) -> None:
+    """Test instance_max_tokens override when it differs from env_limit."""
+    from autobacktest.llm.litellm_provider import _compute_run_max_tokens
+
+    mock_token_counter.return_value = 1000
+    mock_get_max_tokens.return_value = 8192
+
+    # instance_max_tokens=2048 differs from env_limit=4096, so it overrides
+    result = _compute_run_max_tokens("gpt-4o", 4096, 2048)
+
+    # 8192 - 4096 (buffer) = 4096, capped by instance_max_tokens 2048
+    assert result == 2048
+
+
+@patch("litellm.get_max_tokens")
+@patch("litellm.token_counter")
+def test_compute_run_max_tokens_instance_matches_env(
+    mock_token_counter: MagicMock,
+    mock_get_max_tokens: MagicMock,
+) -> None:
+    """Test when instance_max_tokens equals env_limit (no override)."""
+    from autobacktest.llm.litellm_provider import _compute_run_max_tokens
+
+    mock_token_counter.return_value = 1000
+    mock_get_max_tokens.return_value = 8192
+
+    # instance_max_tokens=4096 equals env_limit=4096, no override
+    result = _compute_run_max_tokens("gpt-4o", 4096, 4096)
+
+    # 8192 - 4096 (buffer) = 4096, capped by env_limit 4096
+    assert result == 4096
+
+
+@patch("litellm.get_max_tokens")
+@patch("litellm.token_counter")
+def test_compute_run_max_tokens_fallback(
+    mock_token_counter: MagicMock,
+    mock_get_max_tokens: MagicMock,
+) -> None:
+    """Test fallback when litellm functions raise exceptions."""
+    from autobacktest.llm.litellm_provider import _compute_run_max_tokens
+
+    mock_token_counter.side_effect = Exception("token_counter failed")
+    mock_get_max_tokens.side_effect = Exception("get_max_tokens failed")
+
+    result = _compute_run_max_tokens("unknown-model", 4096, None)
+
+    # Fallback: context_window = 128_000
+    # 128_000 - 4096 (buffer) = 123_904, capped by env_limit 4096
+    assert result == 4096
+
+
+@patch("litellm.get_max_tokens")
+@patch("litellm.token_counter")
+def test_compute_run_max_tokens_small_context(
+    mock_token_counter: MagicMock,
+    mock_get_max_tokens: MagicMock,
+) -> None:
+    """Test with small context window model where dynamic_max < env_limit."""
+    from autobacktest.llm.litellm_provider import _compute_run_max_tokens
+
+    mock_token_counter.return_value = 500
+    mock_get_max_tokens.return_value = 4096  # Small model
+
+    result = _compute_run_max_tokens("gpt-3.5-turbo", 4096, None)
+
+    # 4096 - 4096 (buffer) = 0, clamped to 1 by max(1, ...)
+    assert result == 1

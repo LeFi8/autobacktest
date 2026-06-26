@@ -27,19 +27,21 @@ logger = logging.getLogger(__name__)
 
 def _compute_run_max_tokens(
     model: str,
-    messages: list[dict[str, object]],
     env_limit: int,
     instance_max_tokens: int | None,
 ) -> int:
     """Compute the effective ``max_tokens`` for a single LLM completion call.
 
-    Respects the configured limit while capping by remaining context window
-    headroom.  An explicit *instance_max_tokens* overrides *env_limit* when
+    Respects the configured limit while capping by the model's max output tokens.
+    An explicit *instance_max_tokens* overrides *env_limit* when
     the two differ (used for per-call retry overrides).
+
+    Note: ``litellm.get_max_tokens()`` returns the model's max OUTPUT tokens,
+    not the total context window. We subtract a buffer for response overhead
+    but do NOT subtract prompt tokens (they consume input, not output budget).
 
     Args:
         model: LiteLLM model identifier.
-        messages: Prompt messages list (used for token counting).
         env_limit: Global ``llm_max_tokens`` setting from the environment.
         instance_max_tokens: Per-instance override, or ``None`` to use *env_limit*.
 
@@ -47,19 +49,14 @@ def _compute_run_max_tokens(
         int: Positive effective token budget.
     """
     try:
-        prompt_tokens = litellm.token_counter(model=model, messages=messages)
+        max_output_tokens = litellm.get_max_tokens(model) or 128_000
     except Exception:
-        prompt_tokens = len(str(messages)) // 4
-
-    try:
-        context_window = litellm.get_max_tokens(model) or 128_000
-    except Exception:
-        context_window = 128_000
+        max_output_tokens = 128_000
 
     buffer = 4096
-    dynamic_max = context_window - prompt_tokens - buffer
+    dynamic_max = max_output_tokens - buffer
     cap = instance_max_tokens if instance_max_tokens is not None and instance_max_tokens != env_limit else env_limit
-    return max(1, min(dynamic_max, cap))  # type: ignore[no-any-return]
+    return max(1, min(dynamic_max, cap))
 
 
 def _extract_clean_json(content: str) -> str:
@@ -235,7 +232,7 @@ class LiteLLMProvider(LLMProvider):
 
         env_limit = getattr(settings, "llm_max_tokens", 4096)
         instance_override = self.max_tokens if self.max_tokens != env_limit else None
-        run_max_tokens = _compute_run_max_tokens(self.model, messages, env_limit, instance_override)
+        run_max_tokens = _compute_run_max_tokens(self.model, env_limit, instance_override)
 
         # Build ordered list of response_format candidates to try.
         resp_format_candidates: list[object | None] = []
