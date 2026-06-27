@@ -138,10 +138,19 @@ def test_litellm_provider_error_handling(mock_completion: MagicMock) -> None:
 
 @patch("litellm.completion")
 @patch("litellm.supports_response_schema")
+@patch("autobacktest.llm.litellm_provider.settings")
 def test_litellm_provider_response_format_selection(
+    mock_settings: MagicMock,
     mock_supports_schema: MagicMock,
     mock_completion: MagicMock,
 ) -> None:
+    # Override response_format_override to enable format selection
+    mock_settings.response_format_override = None
+    mock_settings.llm_max_tokens = 4096
+    mock_settings.llm_prompt_cache = False
+    mock_settings.llm_request_timeout = 600.0
+    mock_settings.llm_num_retries = 2
+
     # 1. Test when model supports response schema
     mock_supports_schema.return_value = True
     mock_completion.return_value = _mock_response(_CLEAN_JSON)
@@ -317,3 +326,126 @@ def test_compute_run_max_tokens_small_context(
 
     # 4096 - 4096 (buffer) = 0, clamped to 1 by max(1, ...)
     assert result == 1
+
+
+@patch("litellm.completion")
+@patch("litellm.supports_response_schema")
+@patch("autobacktest.llm.litellm_provider.settings")
+def test_litellm_provider_response_format_fallback_skips_retries(
+    mock_settings: MagicMock,
+    mock_supports_schema: MagicMock,
+    mock_completion: MagicMock,
+) -> None:
+    """Test that response_format fallback uses num_retries=0 for format attempts.
+
+    When a response_format is rejected (400 error), the provider should not retry
+    the same failing format. Only the final None format attempt should use retries.
+    """
+    import litellm
+
+    # Override response_format_override to enable format selection
+    mock_settings.response_format_override = None
+    mock_settings.llm_max_tokens = 4096
+    mock_settings.llm_prompt_cache = False
+    mock_settings.llm_request_timeout = 600.0
+    mock_settings.llm_num_retries = 2
+
+    # Mock model that claims schema support
+    mock_supports_schema.return_value = True
+
+    # Track all call args
+    call_args_list = []
+
+    def mock_completion_side_effect(**kwargs):
+        call_args_list.append(kwargs.copy())
+        resp_format = kwargs.get("response_format")
+
+        # First two calls with response_format: return 400 error (response_format rejected)
+        if resp_format in (AgentEditResponse, {"type": "json_object"}):
+            raise litellm.BadRequestError(
+                message="This response_format type is unavailable now",
+                model="openai/gpt-4o",
+                response=MagicMock(),
+                llm_provider="openai",
+            )
+        # Third call with None: return success
+        else:
+            return _mock_response(_CLEAN_JSON)
+
+    mock_completion.side_effect = mock_completion_side_effect
+
+    # Use a model NOT in MODELS_WITHOUT_RESPONSE_FORMAT to test the fallback chain
+    provider = LiteLLMProvider(model="openai/gpt-4o")
+    edit = provider.generate_edit(_make_context())
+
+    # Verify the result is successful
+    assert edit.strategy_code == _EXPECTED_PAYLOAD["strategy_code"]
+    assert edit.config_yaml == _EXPECTED_PAYLOAD["config_yaml"]
+
+    # Verify exactly 3 calls were made (AgentEditResponse, json_object, None)
+    assert len(call_args_list) == 3
+
+    # Verify num_retries=0 for response_format attempts
+    assert call_args_list[0]["num_retries"] == 0, "AgentEditResponse should use num_retries=0"
+    assert call_args_list[1]["num_retries"] == 0, "json_object should use num_retries=0"
+
+    # Verify num_retries=settings.llm_num_retries for None format
+    assert call_args_list[2]["num_retries"] == mock_settings.llm_num_retries, (
+        "None format should use num_retries=settings.llm_num_retries"
+    )
+
+
+@patch("litellm.completion")
+@patch("litellm.supports_response_schema")
+@patch("autobacktest.llm.litellm_provider.settings")
+def test_litellm_provider_response_format_fallback_all_retries_skipped(
+    mock_settings: MagicMock,
+    mock_supports_schema: MagicMock,
+    mock_completion: MagicMock,
+) -> None:
+    """Test that when all response_format attempts fail, only None format uses retries.
+
+    This verifies the total API call count is 2 (not 4) when all formats are rejected.
+    """
+    import litellm
+
+    # Override response_format_override to enable format selection
+    mock_settings.response_format_override = None
+    mock_settings.llm_max_tokens = 4096
+    mock_settings.llm_prompt_cache = False
+    mock_settings.llm_request_timeout = 600.0
+    mock_settings.llm_num_retries = 2
+
+    # Mock model that does NOT claim schema support (skip AgentEditResponse)
+    mock_supports_schema.return_value = False
+
+    call_count = 0
+
+    def mock_completion_side_effect(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        resp_format = kwargs.get("response_format")
+
+        # First call with json_object: return 400 error
+        if resp_format == {"type": "json_object"}:
+            raise litellm.BadRequestError(
+                message="This response_format type is unavailable now",
+                model="openai/gpt-4o",
+                response=MagicMock(),
+                llm_provider="openai",
+            )
+        # Second call with None: return success
+        else:
+            return _mock_response(_CLEAN_JSON)
+
+    mock_completion.side_effect = mock_completion_side_effect
+
+    # Use a model NOT in MODELS_WITHOUT_RESPONSE_FORMAT to test the fallback chain
+    provider = LiteLLMProvider(model="openai/gpt-4o")
+    edit = provider.generate_edit(_make_context())
+
+    # Verify the result is successful
+    assert edit.strategy_code == _EXPECTED_PAYLOAD["strategy_code"]
+
+    # Verify exactly 2 calls were made (json_object, None) - not 4 (2 json_object retries + 2 None retries)
+    assert call_count == 2, f"Expected 2 API calls, got {call_count}"

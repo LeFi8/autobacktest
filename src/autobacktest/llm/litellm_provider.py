@@ -24,6 +24,16 @@ class AgentEditResponse(BaseModel):
 
 logger = logging.getLogger(__name__)
 
+# Models that don't support any response_format type (json_schema, json_object)
+# These models should skip all response_format attempts and go directly to None.
+# litellm.model_cost metadata may incorrectly claim supports_response_schema: True
+# for some models, so we maintain this list based on actual API behavior.
+MODELS_WITHOUT_RESPONSE_FORMAT = frozenset({
+    "deepseek/deepseek-v4-pro",
+    "deepseek/deepseek-v3",
+    "deepseek/deepseek-v2",
+})
+
 
 def _compute_run_max_tokens(
     model: str,
@@ -200,9 +210,12 @@ class LiteLLMProvider(LLMProvider):
         except Exception:
             self.supports_schema = False
 
-        try:
-            self.supports_cache = litellm.supports_prompt_caching(model=self.model)
-        except Exception:
+        if hasattr(litellm, "supports_prompt_caching"):
+            try:
+                self.supports_cache = litellm.supports_prompt_caching(model=self.model)
+            except Exception:
+                self.supports_cache = False
+        else:
             self.supports_cache = False
 
     @property
@@ -235,15 +248,27 @@ class LiteLLMProvider(LLMProvider):
         run_max_tokens = _compute_run_max_tokens(self.model, env_limit, instance_override)
 
         # Build ordered list of response_format candidates to try.
+        # Check if model supports any response_format type
+        model_key = self.model.lower()
+        skip_all_formats = (
+            settings.response_format_override == "none"
+            or any(model_key.endswith(m) or model_key == m for m in MODELS_WITHOUT_RESPONSE_FORMAT)
+        )
+
         resp_format_candidates: list[object | None] = []
-        if self.supports_schema:
-            resp_format_candidates.append(AgentEditResponse)
-        resp_format_candidates.append({"type": "json_object"})
+        if not skip_all_formats:
+            if self.supports_schema:
+                resp_format_candidates.append(AgentEditResponse)
+            resp_format_candidates.append({"type": "json_object"})
         resp_format_candidates.append(None)
 
         last_exception: Exception | None = None
         for resp_format in resp_format_candidates:
             try:
+                # Skip retries for response_format attempts to avoid wasting API calls
+                # on formats that the provider doesn't support. Only the final None
+                # format attempt uses retries for transient errors.
+                num_retries = settings.llm_num_retries if resp_format is None else 0
                 response = litellm.completion(
                     model=self.model,
                     messages=messages,
@@ -251,7 +276,7 @@ class LiteLLMProvider(LLMProvider):
                     temperature=self.temperature,
                     max_tokens=run_max_tokens,
                     request_timeout=settings.llm_request_timeout,
-                    num_retries=settings.llm_num_retries,
+                    num_retries=num_retries,
                 )
 
                 if not response.choices:
