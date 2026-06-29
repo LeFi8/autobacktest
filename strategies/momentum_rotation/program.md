@@ -1,30 +1,33 @@
 # Objective
 
-Optimize the **__NAME__** strategy (__UNIVERSE__ universe, benchmark: __BENCHMARK__).
+Optimize the **momentum_rotation** strategy for the SPY / QQQ / BIL universe, benchmarked against SPY.
 
-Describe your specific targets here — the LLM optimizer uses this as its north star.
+Primary target: reduce crisis drawdowns while preserving competitive risk-adjusted returns.
 
-Examples:
-- "Increase Sharpe ratio above 1.2 while keeping drawdown below __DRAWDOWN_PCT__%"
-- "Improve risk-adjusted returns; reduce turnover below __TURNOVER__"
-- "Maintain CAGR above 10% with max drawdown under __DRAWDOWN_PCT__%"
+Specific goals:
+- Keep in-sample and holdout max drawdown at or below 20%.
+- Improve observed Sharpe above the current baseline of roughly 0.64.
+- Preserve annualized turnover at or below 2.0x.
+- Pass regime stress tests for 2008 GFC, 2020 COVID, and 2022 bear market.
 
 # Constraints
 
-- Maximum drawdown in the holdout period must not exceed __DRAWDOWN_PCT__%.
-- Annualized portfolio turnover must remain below __TURNOVER__.
+- Maximum drawdown in the holdout period must not exceed 20%.
+- Annualized portfolio turnover must remain below 2.0x.
 - The strategy must pass all regime stress tests (2008 GFC, 2020 COVID, 2022 bear market).
-- Monthly rebalancing on the last trading day must be preserved (momentum lookback: __LOOKBACK__ months).
+- Monthly rebalancing on the last trading day must be preserved (current momentum lookback: 12 months).
 - Only ``pandas`` and ``numpy`` imports are permitted in the strategy code.
 - The ``generate_signals(prices: pd.DataFrame, config: dict) -> pd.DataFrame`` signature must be preserved.
 
 ## Strategy Details
 
-Optional: Add background, references, or design notes here.
+The baseline ranks SPY and QQQ by trailing momentum and moves to BIL only when no risky asset has positive momentum. This has left crisis drawdowns above the 20% gate. Prefer structural risk controls over tiny parameter-only edits.
 
-**Asset universe:** __UNIVERSE__
-**Benchmark:** __BENCHMARK__
+Useful directions:
+- Add a risk-off regime filter using trend and/or realized volatility.
+- Cap combined SPY/QQQ exposure when trend is weak or volatility is elevated.
+- Move partially or fully to BIL during weak momentum regimes.
+- Keep the implementation simple enough to pass AST complexity and sandbox validation.
 
----
-
-**Tip:** Run ``uv run autobacktest run --program program-__NAME__.md --strategy __NAME__ --iterations 5`` to start optimizing.
+**Asset universe:** SPY, QQQ, BIL
+**Benchmark:** SPY

@@ -242,6 +242,24 @@ def test_build_messages_lessons_warning() -> None:
     assert long_lessons in user_msg
 
 
+def test_build_messages_lessons_text_instruction_is_optional_and_concise() -> None:
+    context = AgentContext(
+        strategy_name="haa",
+        strategy_code="def signals(): pass",
+        config_yaml="universe: []",
+        program_text="make it conservative",
+        evaluation_report=None,
+        iteration=1,
+    )
+    messages = build_messages(context)
+    user_msg = messages[1]["content"]
+
+    assert '"lessons_text": Optional' in user_msg
+    assert "Use null when there is no new reusable lesson" in user_msg
+    assert "Do not repeat the existing lessons document" in user_msg
+    assert "Complete, updated lessons markdown text" not in user_msg
+
+
 def _make_mock_report() -> EvaluationReport:
     mock_window = WindowReport(
         start_date="2020-01-01",
