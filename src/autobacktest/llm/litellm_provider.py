@@ -1,7 +1,6 @@
 """LiteLLM integration provider implementing structured response outputs."""
 
 import logging
-import re
 
 import litellm
 from pydantic import BaseModel, Field
@@ -100,8 +99,28 @@ def _extract_clean_json(content: str) -> str:
 
 
 def _salvage_json(content: str) -> str:
-    """Apply conservative repairs to common model JSON formatting mistakes."""
-    return re.sub(r",\s*([}\]])", r"\1", content)
+    """Strip trailing commas before ``}`` or ``]`` outside of string literals."""
+    chars = list(content)
+    in_string = False
+    escaped = False
+    i = 0
+    while i < len(chars):
+        c = chars[i]
+        if escaped:
+            escaped = False
+        elif c == "\\" and in_string:
+            escaped = True
+        elif c == '"':
+            in_string = not in_string
+        elif c == "," and not in_string:
+            j = i + 1
+            while j < len(chars) and chars[j] in (" ", "\t", "\n", "\r"):
+                j += 1
+            if j < len(chars) and chars[j] in ("}", "]"):
+                chars.pop(i)
+                continue
+        i += 1
+    return "".join(chars)
 
 
 def _extract_usage_stats(
@@ -272,10 +291,10 @@ class LiteLLMProvider(LLMProvider):
         for resp_format in resp_format_candidates:
             usage_stats: tuple[int, int, int, int, float] = (0, 0, 0, 0, 0.0)
             try:
-                # Skip retries for response_format attempts to avoid wasting API calls
-                # on formats that the provider doesn't support. Only the final None
-                # format attempt uses retries for transient errors.
-                num_retries = settings.llm_num_retries if resp_format is None else 0
+                # Always use configured retries — transient errors (503, 429) should
+                # be retried regardless of format. Unsupported-format 400 errors are
+                # handled by the fallback loop below, not by skipping retries.
+                num_retries = settings.llm_num_retries
                 response = litellm.completion(
                     model=self.model,
                     messages=messages,

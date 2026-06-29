@@ -150,6 +150,22 @@ def test_litellm_provider_salvages_trailing_comma_json(mock_completion: MagicMoc
     assert edit.lessons_text == _EXPECTED_PAYLOAD["lessons_text"]
 
 
+def test_salvage_json_preserves_commas_inside_string_literals() -> None:
+    """Trailing commas inside JSON string values must not be stripped."""
+    from autobacktest.llm.litellm_provider import _salvage_json
+
+    # Comma inside a string value — must be preserved
+    assert _salvage_json('{"pattern": "[a-z, ]"}') == '{"pattern": "[a-z, ]"}'
+    # Trailing comma outside strings — must be stripped
+    assert _salvage_json('{"a": 1,}') == '{"a": 1}'
+    # Mixed: comma inside string + trailing comma outside
+    assert _salvage_json('{"pattern": "[a-z, ]", "b": 2,}') == '{"pattern": "[a-z, ]", "b": 2}'
+    # Escaped quote inside string — must not break state
+    assert _salvage_json('{"key": "value\\"with\\"quotes",}') == '{"key": "value\\"with\\"quotes"}'
+    # Array with commas inside strings
+    assert _salvage_json('{"tags": ["a, b", "c, d"]}') == '{"tags": ["a, b", "c, d"]}'
+
+
 @patch("litellm.completion")
 def test_litellm_provider_error_handling(mock_completion: MagicMock) -> None:
     mock_completion.side_effect = Exception("API connection failure")
@@ -409,15 +425,16 @@ def test_compute_run_max_tokens_small_context(
 @patch("litellm.completion")
 @patch("litellm.supports_response_schema")
 @patch("autobacktest.llm.litellm_provider.settings")
-def test_litellm_provider_response_format_fallback_skips_retries(
+def test_litellm_provider_response_format_fallback_retries_all_formats(
     mock_settings: MagicMock,
     mock_supports_schema: MagicMock,
     mock_completion: MagicMock,
 ) -> None:
-    """Test that response_format fallback uses num_retries=0 for format attempts.
+    """Test that all response_format attempts use the configured retry count.
 
-    When a response_format is rejected (400 error), the provider should not retry
-    the same failing format. Only the final None format attempt should use retries.
+    When a response_format is rejected (400 error), the fallback loop moves to
+    the next format. Transient errors (503, 429) on any format should still be
+    retried via tenacity using the configured num_retries.
     """
     import litellm
 
@@ -463,14 +480,13 @@ def test_litellm_provider_response_format_fallback_skips_retries(
     # Verify exactly 3 calls were made (AgentEditResponse, json_object, None)
     assert len(call_args_list) == 3
 
-    # Verify num_retries=0 for response_format attempts
-    assert call_args_list[0]["num_retries"] == 0, "AgentEditResponse should use num_retries=0"
-    assert call_args_list[1]["num_retries"] == 0, "json_object should use num_retries=0"
-
-    # Verify num_retries=settings.llm_num_retries for None format
-    assert call_args_list[2]["num_retries"] == mock_settings.llm_num_retries, (
-        "None format should use num_retries=settings.llm_num_retries"
-    )
+    # All attempts use the configured retry count — transient errors should be
+    # retried regardless of response_format. Unsupported-format 400 errors are
+    # handled by the fallback loop, not by skipping retries.
+    for i, call in enumerate(call_args_list):
+        assert call["num_retries"] == mock_settings.llm_num_retries, (
+            f"Call {i} should use num_retries=settings.llm_num_retries"
+        )
 
 
 @patch("litellm.completion")
@@ -481,9 +497,11 @@ def test_litellm_provider_response_format_fallback_all_retries_skipped(
     mock_supports_schema: MagicMock,
     mock_completion: MagicMock,
 ) -> None:
-    """Test that when all response_format attempts fail, only None format uses retries.
+    """Test that 400 format errors trigger fallback without retrying the failing format.
 
-    This verifies the total API call count is 2 (not 4) when all formats are rejected.
+    BadRequestError (400) is classified as non-retryable by tenacity, so even
+    with num_retries > 0, the failing format is not retried. The fallback loop
+    moves directly to the next format candidate.
     """
     import litellm
 
