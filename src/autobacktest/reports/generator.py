@@ -310,6 +310,10 @@ def _tally_legacy_event(event: dict[str, object], summary: dict[str, Any]) -> No
         return
     if event.get("llm_error") is not None:
         summary["LLM Error"] = summary["LLM Error"] + 1
+        detail = event.get("detail")
+        if isinstance(detail, str) and detail:
+            summary.setdefault("LLM Error Details", {})
+            summary["LLM Error Details"][detail] = summary["LLM Error Details"].get(detail, 0) + 1
         return
     eval_err = event.get("evaluation")
     if isinstance(eval_err, dict) and eval_err.get("error") is not None:
@@ -328,6 +332,17 @@ def _tally_candidate(c: dict[str, object], summary: dict[str, Any]) -> None:
         return
     if c.get("llm_error"):
         summary["LLM Error"] = summary["LLM Error"] + 1
+        detail = c.get("detail")
+        finish_reason = c.get("finish_reason")
+        if isinstance(finish_reason, str) and finish_reason:
+            detail_key = f"finish_reason={finish_reason}"
+        elif isinstance(detail, str) and detail:
+            detail_key = detail[:200]
+        else:
+            detail_key = None
+        if detail_key:
+            summary.setdefault("LLM Error Details", {})
+            summary["LLM Error Details"][detail_key] = summary["LLM Error Details"].get(detail_key, 0) + 1
         return
     stage = c.get("stage", "")
     if stage == "validation":
@@ -366,6 +381,7 @@ def compile_failure_summary(run_dir: Path) -> dict[str, Any]:
         "Gate": {},
         "Diversity": {},
         "LLM Error": 0,
+        "LLM Error Details": {},
         "Eval Error": 0,
     }
 

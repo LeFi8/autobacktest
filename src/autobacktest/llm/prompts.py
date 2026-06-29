@@ -1030,8 +1030,8 @@ def build_messages(
         f'- "strategy_code": Complete, updated Python source code for the strategy.\n'
         f'- "config_yaml": Complete, updated YAML parameters content.\n'
         f'- "reasoning": Concise explanation of the quantitative logic and changes.\n'
-        f'- "lessons_text": Complete, updated lessons markdown text incorporating learnings\n'
-        f"  from the previous and current iterations, pruning if needed.\n\n"
+        f'- "lessons_text": Optional concise markdown lesson update, or null.\n'
+        f"  Use null when there is no new reusable lesson. Do not repeat the existing lessons document.\n\n"
         f"Strict JSON/Formatting Constraint: The response must be a single,\n"
         f"valid JSON object. Do not wrap the JSON object in markdown code\n"
         f"block markers (such as ```json or ```). The very first character\n"
