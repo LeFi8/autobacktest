@@ -52,6 +52,15 @@ def _mock_response(content: str) -> MagicMock:
     return mock_response
 
 
+def _mock_response_with_usage(content: str) -> MagicMock:
+    mock_response = _mock_response(content)
+    mock_response.usage.prompt_tokens = 123
+    mock_response.usage.completion_tokens = 456
+    mock_response.usage.total_tokens = 579
+    mock_response.usage.prompt_tokens_details.cached_tokens = 17
+    return mock_response
+
+
 _EXPECTED_PAYLOAD = {
     "strategy_code": "def generate_signals(): return None",
     "config_yaml": "universe: [SPY]",
@@ -123,6 +132,25 @@ def test_litellm_provider_prose_wrapped(mock_completion: MagicMock) -> None:
 
 
 @patch("litellm.completion")
+def test_litellm_provider_salvages_trailing_comma_json(mock_completion: MagicMock) -> None:
+    payload = """{
+    "strategy_code": "def generate_signals(): return None",
+    "config_yaml": "universe: [SPY]",
+    "reasoning": "Conservative change",
+    "lessons_text": "Mock lessons",
+}"""
+    mock_completion.return_value = _mock_response(payload)
+    provider = LiteLLMProvider(model="gpt-4o")
+
+    edit = provider.generate_edit(_make_context())
+
+    assert edit.strategy_code == _EXPECTED_PAYLOAD["strategy_code"]
+    assert edit.config_yaml == _EXPECTED_PAYLOAD["config_yaml"]
+    assert edit.reasoning == _EXPECTED_PAYLOAD["reasoning"]
+    assert edit.lessons_text == _EXPECTED_PAYLOAD["lessons_text"]
+
+
+@patch("litellm.completion")
 def test_litellm_provider_error_handling(mock_completion: MagicMock) -> None:
     mock_completion.side_effect = Exception("API connection failure")
 
@@ -134,6 +162,27 @@ def test_litellm_provider_error_handling(mock_completion: MagicMock) -> None:
     assert exc_info.value.provider == "litellm"
     assert exc_info.value.model == "gpt-4o"
     assert "API connection failure" in exc_info.value.detail
+
+
+@patch("litellm.completion")
+@patch("litellm.completion_cost")
+def test_litellm_provider_parse_error_carries_usage(
+    mock_completion_cost: MagicMock,
+    mock_completion: MagicMock,
+) -> None:
+    mock_completion.return_value = _mock_response_with_usage("not json")
+    mock_completion_cost.return_value = 0.042
+    provider = LiteLLMProvider(model="gpt-4o")
+
+    with pytest.raises(LLMError) as exc_info:
+        provider.generate_edit(_make_context())
+
+    err = exc_info.value
+    assert err.prompt_tokens == 123
+    assert err.completion_tokens == 456
+    assert err.total_tokens == 579
+    assert err.cached_tokens == 17
+    assert err.cost == 0.042
 
 
 @patch("litellm.completion")
@@ -168,6 +217,22 @@ def test_litellm_provider_response_format_selection(
     provider_incapable.generate_edit(_make_context())
     _, kwargs_incapable = mock_completion.call_args
     assert kwargs_incapable["response_format"] == {"type": "json_object"}
+
+
+@patch("litellm.completion")
+@patch("litellm.supports_response_schema")
+def test_litellm_provider_uses_response_format_by_default(
+    mock_supports_schema: MagicMock,
+    mock_completion: MagicMock,
+) -> None:
+    mock_supports_schema.return_value = True
+    mock_completion.return_value = _mock_response(_CLEAN_JSON)
+    provider = LiteLLMProvider(model="openai/gpt-4o")
+
+    provider.generate_edit(_make_context())
+
+    _, kwargs = mock_completion.call_args
+    assert kwargs["response_format"] == AgentEditResponse
 
 
 @patch("litellm.completion")
@@ -230,7 +295,7 @@ def test_compute_run_max_tokens_basic(
 
     result = _compute_run_max_tokens("gpt-4o", 4096, None)
 
-    # 8192 - 4096 (buffer) = 4096, capped by env_limit 4096
+    # env_limit caps the model's output-token budget.
     assert result == 4096
 
 
@@ -248,9 +313,24 @@ def test_compute_run_max_tokens_reasoning_model(
 
     result = _compute_run_max_tokens("deepseek/deepseek-v4-pro", 4096, None)
 
-    # 8192 - 4096 (buffer) = 4096, capped by env_limit 4096
-    # Before fix: would be 8192 - 3637 - 4096 = 459 (too small)
+    # env_limit caps the model's output-token budget.
     assert result == 4096
+
+
+@patch("litellm.get_max_tokens")
+@patch("litellm.token_counter")
+def test_compute_run_max_tokens_does_not_subtract_output_buffer(
+    mock_token_counter: MagicMock,
+    mock_get_max_tokens: MagicMock,
+) -> None:
+    from autobacktest.llm.litellm_provider import _compute_run_max_tokens
+
+    mock_token_counter.return_value = 1000
+    mock_get_max_tokens.return_value = 8192
+
+    result = _compute_run_max_tokens("deepseek/deepseek-v4-pro", 64000, None)
+
+    assert result == 8192
 
 
 @patch("litellm.get_max_tokens")
@@ -268,7 +348,7 @@ def test_compute_run_max_tokens_instance_override(
     # instance_max_tokens=2048 differs from env_limit=4096, so it overrides
     result = _compute_run_max_tokens("gpt-4o", 4096, 2048)
 
-    # 8192 - 4096 (buffer) = 4096, capped by instance_max_tokens 2048
+    # instance override caps the model's output-token budget.
     assert result == 2048
 
 
@@ -287,7 +367,7 @@ def test_compute_run_max_tokens_instance_matches_env(
     # instance_max_tokens=4096 equals env_limit=4096, no override
     result = _compute_run_max_tokens("gpt-4o", 4096, 4096)
 
-    # 8192 - 4096 (buffer) = 4096, capped by env_limit 4096
+    # env_limit caps the model's output-token budget.
     assert result == 4096
 
 
@@ -305,8 +385,7 @@ def test_compute_run_max_tokens_fallback(
 
     result = _compute_run_max_tokens("unknown-model", 4096, None)
 
-    # Fallback: context_window = 128_000
-    # 128_000 - 4096 (buffer) = 123_904, capped by env_limit 4096
+    # Fallback output-token budget is capped by env_limit.
     assert result == 4096
 
 
@@ -324,8 +403,7 @@ def test_compute_run_max_tokens_small_context(
 
     result = _compute_run_max_tokens("gpt-3.5-turbo", 4096, None)
 
-    # 4096 - 4096 (buffer) = 0, clamped to 1 by max(1, ...)
-    assert result == 1
+    assert result == 4096
 
 
 @patch("litellm.completion")

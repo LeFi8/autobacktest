@@ -87,6 +87,11 @@ class LLMError(Exception):
         detail: str,
         retryable: bool = True,
         finish_reason: str | None = None,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        total_tokens: int = 0,
+        cost: float = 0.0,
+        cached_tokens: int = 0,
     ) -> None:
         """Initialize the error with details of the failing call.
 
@@ -96,6 +101,11 @@ class LLMError(Exception):
             detail: Detailed error message from the provider or library.
             retryable: Whether the error is transient and can be retried.
             finish_reason: The token completion stop condition if truncated (e.g. "length").
+            prompt_tokens: Prompt tokens consumed before failure, when available.
+            completion_tokens: Completion tokens consumed before failure, when available.
+            total_tokens: Total tokens consumed before failure, when available.
+            cost: Estimated provider cost before failure, when available.
+            cached_tokens: Prompt-cache tokens used before failure, when available.
         """
         super().__init__(f"LLMError (provider={provider}, model={model}): {detail}")
         self.provider = provider
@@ -103,6 +113,11 @@ class LLMError(Exception):
         self.detail = detail
         self.retryable = retryable
         self.finish_reason = finish_reason
+        self.prompt_tokens = prompt_tokens
+        self.completion_tokens = completion_tokens
+        self.total_tokens = total_tokens
+        self.cost = cost
+        self.cached_tokens = cached_tokens
 
     def __str__(self) -> str:
         """Return a structured string representation for logging and debugging.

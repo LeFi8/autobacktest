@@ -69,13 +69,13 @@ def generate_candidates(
     provider: LLMProvider,
     ctx: AgentContext,
     n: int,
-) -> list[tuple[AgentEdit | None, str | None]]:
+) -> list[tuple[AgentEdit | None, LLMError | None]]:
     """Generate N candidate edits in parallel, returning None for transient failures.
 
     In explore mode, each candidate receives a unique diversity directive
     to encourage structurally different mutations.  Non-retryable errors
     (e.g. auth failures) are raised immediately; transient LLM errors
-    return ``(None, error_detail)`` for that slot.
+    return ``(None, error)`` for that slot.
 
     Args:
         provider: LLM provider used to generate edits.
@@ -83,18 +83,18 @@ def generate_candidates(
         n: Number of parallel candidates to generate.
 
     Returns:
-        list[tuple[AgentEdit | None, str | None]]: One entry per slot.
+        list[tuple[AgentEdit | None, LLMError | None]]: One entry per slot.
         The first element is the edit (or None on transient failure).
-        The second element is the error detail string (or None on success).
+        The second element is the LLM error object (or None on success).
     """
 
-    def _try(c: AgentContext) -> tuple[AgentEdit | None, str | None]:
+    def _try(c: AgentContext) -> tuple[AgentEdit | None, LLMError | None]:
         try:
             return provider.generate_edit(c), None
         except LLMError as e:
             if not e.retryable:
                 raise
-            return None, str(e)
+            return None, e
 
     with ThreadPoolExecutor(max_workers=n) as pool:
         futures = []

@@ -91,10 +91,24 @@ def test_llm_provider_abc_enforcement() -> None:
 
 
 def test_llm_error_fields() -> None:
-    err = LLMError(provider="openai", model="gpt-4o", detail="Rate limit exceeded")
+    err = LLMError(
+        provider="openai",
+        model="gpt-4o",
+        detail="Rate limit exceeded",
+        prompt_tokens=12,
+        completion_tokens=34,
+        total_tokens=46,
+        cost=0.123,
+        cached_tokens=5,
+    )
     assert err.provider == "openai"
     assert err.model == "gpt-4o"
     assert err.detail == "Rate limit exceeded"
+    assert err.prompt_tokens == 12
+    assert err.completion_tokens == 34
+    assert err.total_tokens == 46
+    assert err.cost == 0.123
+    assert err.cached_tokens == 5
     assert "openai" in str(err)
     assert "gpt-4o" in str(err)
     assert "Rate limit exceeded" in str(err)

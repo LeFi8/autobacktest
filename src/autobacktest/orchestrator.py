@@ -49,7 +49,7 @@ from autobacktest.ledger.event_log import EventLog
 from autobacktest.ledger.git_ops import GitLedger
 from autobacktest.ledger.store import LedgerStore
 from autobacktest.lessons import LessonStore
-from autobacktest.llm.base import AgentContext, AgentEdit, LLMProvider
+from autobacktest.llm.base import AgentContext, AgentEdit, LLMError, LLMProvider
 from autobacktest.optimization.candidate import (
     generate_candidates,
     process_and_repair_candidate,
@@ -900,19 +900,35 @@ class _OptimizationState:
         )
 
         candidate_results: list[dict[str, Any]] = []
-        for i, (edit, error_detail) in enumerate(raw_edits):
+        for i, (edit, error) in enumerate(raw_edits):
             directive = (
                 CANDIDATE_DIRECTIVES[i % len(CANDIDATE_DIRECTIVES)]
                 if settings.enable_candidate_directives and ctx.mode == "explore"
                 else ""
             )
             if edit is None:
+                detail = str(error) if error else "LLM failed to return a valid candidate."
+                prompt_tokens = error.prompt_tokens if isinstance(error, LLMError) else 0
+                completion_tokens = error.completion_tokens if isinstance(error, LLMError) else 0
+                total_tokens = error.total_tokens if isinstance(error, LLMError) else 0
+                cost = error.cost if isinstance(error, LLMError) else 0.0
+                cached_tokens = error.cached_tokens if isinstance(error, LLMError) else 0
+                self.total_prompt_tokens += prompt_tokens
+                self.total_completion_tokens += completion_tokens
+                self.total_cost += cost
                 candidate_results.append(
                     {
                         "edit": None,
                         "directive": directive,
                         "llm_error": True,
-                        "detail": error_detail or "LLM failed to return a valid candidate.",
+                        "detail": detail,
+                        "finish_reason": error.finish_reason if isinstance(error, LLMError) else None,
+                        "retryable": error.retryable if isinstance(error, LLMError) else None,
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": completion_tokens,
+                        "total_tokens": total_tokens,
+                        "cost": cost,
+                        "cached_tokens": cached_tokens,
                     }
                 )
             else:
@@ -1551,7 +1567,20 @@ class _OptimizationState:
         summary_list = []
         for ev in candidate_results:
             if ev.get("llm_error"):
-                summary_list.append({"llm_error": True})
+                summary_list.append(
+                    {
+                        "llm_error": True,
+                        "detail": ev.get("detail"),
+                        "finish_reason": ev.get("finish_reason"),
+                        "retryable": ev.get("retryable"),
+                        "directive": ev.get("directive", ""),
+                        "prompt_tokens": ev.get("prompt_tokens", 0),
+                        "completion_tokens": ev.get("completion_tokens", 0),
+                        "total_tokens": ev.get("total_tokens", 0),
+                        "cost": ev.get("cost", 0.0),
+                        "cached_tokens": ev.get("cached_tokens", 0),
+                    }
+                )
             elif not ev.get("valid"):
                 summary_list.append(self._build_candidate_failure_item(ev))
             else:
@@ -2189,7 +2218,7 @@ def _generate_candidates(
     provider: LLMProvider,
     ctx: AgentContext,
     n: int,
-) -> list[tuple[AgentEdit | None, str | None]]:
+) -> list[tuple[AgentEdit | None, LLMError | None]]:
     """Generate N candidate edits in parallel.
 
     Delegates to ``optimization.candidate.generate_candidates``.
@@ -2200,7 +2229,7 @@ def _generate_candidates(
         n: Number of parallel candidates.
 
     Returns:
-        list[tuple[AgentEdit | None, str | None]]: One entry per slot.
+        list[tuple[AgentEdit | None, LLMError | None]]: One entry per slot.
     """
     return generate_candidates(provider, ctx, n)
 

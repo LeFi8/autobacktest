@@ -1,6 +1,7 @@
 """LiteLLM integration provider implementing structured response outputs."""
 
 import logging
+import re
 
 import litellm
 from pydantic import BaseModel, Field
@@ -28,11 +29,13 @@ logger = logging.getLogger(__name__)
 # These models should skip all response_format attempts and go directly to None.
 # litellm.model_cost metadata may incorrectly claim supports_response_schema: True
 # for some models, so we maintain this list based on actual API behavior.
-MODELS_WITHOUT_RESPONSE_FORMAT = frozenset({
-    "deepseek/deepseek-v4-pro",
-    "deepseek/deepseek-v3",
-    "deepseek/deepseek-v2",
-})
+MODELS_WITHOUT_RESPONSE_FORMAT = frozenset(
+    {
+        "deepseek/deepseek-v4-pro",
+        "deepseek/deepseek-v3",
+        "deepseek/deepseek-v2",
+    }
+)
 
 
 def _compute_run_max_tokens(
@@ -47,8 +50,8 @@ def _compute_run_max_tokens(
     the two differ (used for per-call retry overrides).
 
     Note: ``litellm.get_max_tokens()`` returns the model's max OUTPUT tokens,
-    not the total context window. We subtract a buffer for response overhead
-    but do NOT subtract prompt tokens (they consume input, not output budget).
+    not the total context window. Prompt tokens consume input, not output budget,
+    so they are not subtracted here.
 
     Args:
         model: LiteLLM model identifier.
@@ -63,10 +66,8 @@ def _compute_run_max_tokens(
     except Exception:
         max_output_tokens = 128_000
 
-    buffer = 4096
-    dynamic_max = max_output_tokens - buffer
     cap = instance_max_tokens if instance_max_tokens is not None and instance_max_tokens != env_limit else env_limit
-    return max(1, min(dynamic_max, cap))
+    return max(1, min(max_output_tokens, cap))
 
 
 def _extract_clean_json(content: str) -> str:
@@ -96,6 +97,11 @@ def _extract_clean_json(content: str) -> str:
         if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
             clean = clean[start_idx : end_idx + 1]
     return clean
+
+
+def _salvage_json(content: str) -> str:
+    """Apply conservative repairs to common model JSON formatting mistakes."""
+    return re.sub(r",\s*([}\]])", r"\1", content)
 
 
 def _extract_usage_stats(
@@ -250,9 +256,8 @@ class LiteLLMProvider(LLMProvider):
         # Build ordered list of response_format candidates to try.
         # Check if model supports any response_format type
         model_key = self.model.lower()
-        skip_all_formats = (
-            settings.response_format_override == "none"
-            or any(model_key.endswith(m) or model_key == m for m in MODELS_WITHOUT_RESPONSE_FORMAT)
+        skip_all_formats = settings.response_format_override == "none" or any(
+            model_key.endswith(m) or model_key == m for m in MODELS_WITHOUT_RESPONSE_FORMAT
         )
 
         resp_format_candidates: list[object | None] = []
@@ -263,7 +268,9 @@ class LiteLLMProvider(LLMProvider):
         resp_format_candidates.append(None)
 
         last_exception: Exception | None = None
+        last_usage: tuple[int, int, int, int, float] = (0, 0, 0, 0, 0.0)
         for resp_format in resp_format_candidates:
+            usage_stats: tuple[int, int, int, int, float] = (0, 0, 0, 0, 0.0)
             try:
                 # Skip retries for response_format attempts to avoid wasting API calls
                 # on formats that the provider doesn't support. Only the final None
@@ -278,6 +285,7 @@ class LiteLLMProvider(LLMProvider):
                     request_timeout=settings.llm_request_timeout,
                     num_retries=num_retries,
                 )
+                usage_stats = _extract_usage_stats(response)
 
                 if not response.choices:
                     raise ValueError("LLM returned no choices.")
@@ -294,8 +302,11 @@ class LiteLLMProvider(LLMProvider):
                         f"content_length: {length_or_zero}"
                     )
 
-                parsed_response = AgentEditResponse.model_validate_json(_extract_clean_json(content))
-                prompt_tokens, completion_tokens, total_tokens, cached_tokens, cost = _extract_usage_stats(response)
+                clean_json = _extract_clean_json(content)
+                if settings.enable_json_salvage:
+                    clean_json = _salvage_json(clean_json)
+                parsed_response = AgentEditResponse.model_validate_json(clean_json)
+                prompt_tokens, completion_tokens, total_tokens, cached_tokens, cost = usage_stats
 
                 logger.debug(
                     "LLM call complete: prompt=%d completion=%d cached=%d cost=$%.4f",
@@ -320,6 +331,7 @@ class LiteLLMProvider(LLMProvider):
 
             except Exception as e:
                 last_exception = e
+                last_usage = usage_stats
                 # Only fall back on response_format-related 400 errors.
                 is_response_format_error = (
                     getattr(e, "status_code", None) == 400 and "response_format" in str(e).lower()
@@ -337,12 +349,18 @@ class LiteLLMProvider(LLMProvider):
         # All fallbacks exhausted or a non-fallback error occurred.
         if last_exception is not None:
             finish_reason, retryable = _classify_llm_error(last_exception)
+            prompt_tokens, completion_tokens, total_tokens, cached_tokens, cost = last_usage
             raise LLMError(
                 provider="litellm",
                 model=self.model,
                 detail=str(last_exception),
                 retryable=retryable,
                 finish_reason=finish_reason,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                cost=cost,
+                cached_tokens=cached_tokens,
             ) from last_exception
 
         raise LLMError(
